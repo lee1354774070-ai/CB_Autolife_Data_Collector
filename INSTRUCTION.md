@@ -14,6 +14,7 @@ This document describes implementation constraints. Daily commands belong in
 | `shm_camera.py` | Reads stable metadata/image pairs and decodes BGR or uint16 depth frames. |
 | `time_sync.py` | Provides timestamp normalization, FIFO selection, and interpolation primitives. |
 | `collector_control.py` | Implements launcher-to-recorder IPC, status reports, and dataset summaries. |
+| `vr_collector_control.py` | Optional guarded VR gestures, nonblocking countdown, recorder receipts, and TTS feedback. |
 
 Default direct-SHM runtime:
 
@@ -94,6 +95,39 @@ Resuming a dataset requires the same FPS, camera features, depth mode, joint
 schema, and action mode. LeRobot may split videos into multiple files; metadata
 indexes them, so they must not be concatenated.
 
+## VR control protocol
+
+`VR_CONTROL=1` starts the helper only after recorder/camera initialization, using
+`ROBOT_PY` and the same ROS domain/robot suffix as the recorder. It subscribes to
+`/control_topic_<domain>_<robot>` (`std_msgs/String` JSON); `l/r.b[1].p` are grips,
+indices 4/5 are X/Y on the left and A/B on the right. It publishes only speech
+requests (`status=play`, `text`) to `/topic_tts_<domain>_<robot>`, never motion.
+It does not infer ASYNC/HOME/SYNC or alter the factory teleoperation mode.
+
+Gestures require neutral, a single face press, and release with both grips held.
+Malformed packets, multiple face buttons, grip loss, and input gaps cancel the
+gesture. Start has a configurable countdown and requires recent VR input
+(within 0.75 seconds). Countdown cancellation sends no recorder command.
+
+One worker waits for command receipts while ROS callbacks continue processing
+button releases. Extra commands during a pending operation are ignored, except
+confirmed quit, which waits until that operation returns. Keyboard and VR
+clients share `.official_control.lock` (flock held through the acknowledgement)
+to prevent overwriting each other's single status file. Busy clients fail fast.
+The empty lock file remains on disk to preserve its inode; it is not a running
+session indicator. Start now acknowledges rejection as well as success.
+
+Only the helper observes the atomic invalid-episode event in VR mode; the shell
+does not delete it. Events and receipts are deduplicated, not inferred from
+human-readable logs. Save of invalid data receives a discard acknowledgement
+and is announced as discarded. A timeout means unknown outcome, not failure to
+execute: never resend automatically. Check the recorder before restarting.
+
+Launcher shutdown stops its own VR helper before recorder finalization. Helper
+failure stops the session through normal cleanup. No SDK service is restarted,
+no audio mixer is changed, and the colleague's separate HG-DAgger pre-roll
+extension is not required or incorporated into ordinary collection.
+
 ## Extension rules
 
 - Add cameras in `camera_config.py`, then cover them with configuration and SHM tests.
@@ -107,6 +141,8 @@ indexes them, so they must not be concatenated.
 PYTHONPATH=. python -m pytest -q tests
 python -m py_compile *.py
 bash -n start_lerobot_official_collect.sh
+# Optional: ROS transport only, isolated topics + fake recorder, no motion/audio.
+python tests/vr_ros_smoke.py
 ```
 
 On the robot, also verify ROS discovery, SHM files, camera source FPS, video

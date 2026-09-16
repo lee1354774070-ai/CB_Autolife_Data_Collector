@@ -14,9 +14,11 @@ active.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import math
 import os
+import threading
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -120,11 +122,14 @@ def wait_for_status(
     request_id: str,
     recorder_pid: int,
     timeout_sec: float,
+    cancel: threading.Event | None = None,
 ) -> dict[str, Any]:
     """Wait for the matching atomic acknowledgement from the recorder."""
 
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
+        if cancel is not None and cancel.is_set():
+            raise RuntimeError("Command wait cancelled; command may already have executed")
         try:
             status = json.loads(status_path.read_text(encoding="utf-8"))
             if status.get("request_id") == request_id:
@@ -159,7 +164,9 @@ def format_status(status: dict[str, Any]) -> str:
     frames = int(status.get("frames", 0))
     episode_index = status.get("episode_index")
 
-    if event == "save" and success:
+    if event == "start" and success:
+        lines = [f"[STARTED] Episode {episode_index} | Task: {task}"]
+    elif event == "save" and success:
         lines = [f"[SAVED] Episode {episode_index} | {frames} frames | Task: {task}"]
     elif event == "discard" and success:
         lines = [f"[DISCARDED] {frames} frames | Task: {task} | Saved counts unchanged"]
@@ -184,7 +191,10 @@ def format_status(status: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def run_command(base_dir: Path, command: str, wait: bool, timeout_sec: float) -> dict[str, Any] | None:
+def run_command(
+    base_dir: Path, command: str, wait: bool, timeout_sec: float,
+    cancel: threading.Event | None = None,
+) -> dict[str, Any] | None:
     """Validate a session, send a command, and optionally await its result."""
 
     paths = SessionPaths(base_dir)
@@ -192,13 +202,20 @@ def run_command(base_dir: Path, command: str, wait: bool, timeout_sec: float) ->
     if not process_is_running(recorder_pid):
         raise RuntimeError(f"Recorder is not running (PID {recorder_pid})")
 
-    request_id = f"{os.getpid()}-{time.time_ns()}" if wait else None
-    if wait:
-        paths.status_file.unlink(missing_ok=True)
-    send_fifo_command(paths.control_fifo, command, request_id)
-    if not wait or request_id is None:
-        return None
-    return wait_for_status(paths.status_file, request_id, recorder_pid, timeout_sec)
+    # The recorder has one acknowledgement file. Serialize the full round trip,
+    # not just the write: a keyboard command must not overwrite a VR receipt.
+    # Fail fast when busy instead of queuing an unexpected future start/save.
+    # Keep this lock file's inode across sessions; unlinking a held flock races.
+    with (base_dir / ".official_control.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("Another collector command is awaiting acknowledgement; try again later") from exc
+        request_id = f"{os.getpid()}-{time.time_ns()}" if wait else None
+        send_fifo_command(paths.control_fifo, command, request_id)
+        if not wait or request_id is None:
+            return None
+        return wait_for_status(paths.status_file, request_id, recorder_pid, timeout_sec, cancel)
 
 
 def format_dataset_summary(dataset_root: Path) -> str:
@@ -237,6 +254,11 @@ def read_active_cameras(dataset_root: Path, recorder_log: Path) -> list[str]:
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         pass
 
+    return read_camera_startup_log(recorder_log)
+
+
+def read_camera_startup_log(recorder_log: Path) -> list[str]:
+    """The unique per-run log marker is emitted only after create_dataset()."""
     try:
         for line in reversed(recorder_log.read_text(encoding="utf-8", errors="replace").splitlines()):
             marker = "active cameras:"
@@ -253,15 +275,19 @@ def wait_for_active_cameras(
     timeout_sec: float,
     recorder_pid: int | None = None,
 ) -> list[str]:
-    """Poll until dataset metadata lists cameras or the recorder exits."""
+    """Wait for this run's initialization, never a previous dataset's metadata.
+
+    ``dataset_root`` is retained for callers using the public helper signature;
+    an existing info.json describes past data, not current camera readiness.
+    """
 
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
-        cameras = read_active_cameras(dataset_root, recorder_log)
-        if cameras:
-            return cameras
         if recorder_pid is not None and not process_is_running(recorder_pid):
             raise RuntimeError("Recorder exited before camera initialization completed")
+        cameras = read_camera_startup_log(recorder_log)
+        if cameras:
+            return cameras
         time.sleep(0.5)
     return []
 

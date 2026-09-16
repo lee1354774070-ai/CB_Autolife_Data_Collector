@@ -13,6 +13,7 @@
 | `shm_camera.py` | 读取稳定的 metadata/图像对，并解码 BGR 或 uint16 depth 帧。 |
 | `time_sync.py` | 提供时间戳归一化、FIFO 选择和插值函数。 |
 | `collector_control.py` | 实现 launcher 与 recorder 的 IPC、状态报告和数据集摘要。 |
+| `vr_collector_control.py` | 可选的 VR 组合键、非阻塞倒计时、recorder 结果确认和 TTS 语音。 |
 
 默认 direct-SHM 运行结构：
 
@@ -84,6 +85,31 @@ IPC 位于 task 目录下：命令 FIFO、原子 status JSON、ready JSON、epis
 续采要求 FPS、相机 feature、depth、关节 schema 和 action mode 完全一致。LeRobot
 生成多个视频文件属于正常行为，metadata 会索引它们，不能手动拼接。
 
+## VR 控制协议
+
+`VR_CONTROL=1` 在 recorder 和相机初始化后才启动 VR 辅助进程，使用 `ROBOT_PY`，
+ROS domain 和机器人编号与录制器一致。输入为 `/control_topic_<domain>_<robot>` 的
+`std_msgs/String` JSON：`l/r.b[1].p` 为握持键，左侧 4/5 为 X/Y，右侧 4/5 为 A/B。
+仅向 `/topic_tts_<domain>_<robot>` 发布 `status=play`、`text` 的播报请求，不发布运动指令。
+不再猜测 ASYNC/HOME/SYNC 状态，也不改变原厂遥操作模式。
+
+组合键要求先无面板按钮、按下单个按钮、保持双握持键并松开按钮。
+消息格式错误、多键混按、握持键松开或消息间隔过大均取消当前手势。
+开始录制使用可配置倒计时，并要求最近 0.75 秒内收到有效 VR 消息；取消倒计时不会发送 start。
+
+工作线程等待 recorder 确认，ROS 回调继续处理按键释放。等待期间忽略其他操作，
+双击 Y 则在当前操作返回后退出。键盘与 VR 共用 `.official_control.lock`，从发送命令到
+收到对应 request_id 期间持有 flock，避免单个 status 文件被并发覆盖。忙碌时直接拒绝新命令。
+空锁文件保留以避免 inode 竞争，它的存在不代表采集仍在运行。start 成功和拒绝均有明确回执。
+
+VR 模式由辅助进程读取原子的 episode-event 文件，终端不再抢先删除它。
+事件和回执去重，不依赖解析日志文字。对无效数据执行 save 会收到 discard 回执，只播报丢弃。
+超时代表结果未知，不能推断命令没执行，也不能自动重发；应检查 recorder 后再重启工具。
+
+退出时先停本工具自己的 VR 辅助进程，再 finalize recorder；VR 辅助进程异常退出时，
+主启动器进入正常清理流程。不重启 SDK 服务、不调整系统音量。
+同事额外开发的 HG-DAgger 预录功能不属于普通数采，本次未将其合入，也不依赖它。
+
 ## 扩展规则
 
 - 新增相机：修改 `camera_config.py`，并补充配置与 SHM 测试。
@@ -97,6 +123,8 @@ IPC 位于 task 目录下：命令 FIFO、原子 status JSON、ready JSON、epis
 PYTHONPATH=. python -m pytest -q tests
 python -m py_compile *.py
 bash -n start_lerobot_official_collect.sh
+# 可选：ROS 链路测试，独立话题和模拟 recorder，不运动、不实际播音。
+python tests/vr_ros_smoke.py
 ```
 
 机器人现场还应检查 ROS 发现、SHM 文件、相机源 FPS、编码器、CPU、磁盘吞吐和

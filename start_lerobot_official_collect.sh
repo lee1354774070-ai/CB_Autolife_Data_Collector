@@ -50,6 +50,20 @@ show_help() {
                 echo "Usage: WITH_DEPTH=1 bash start_lerobot_official_collect.sh task_name"
                 echo "Record rgbd_head_depth in addition to the three default RGB cameras. Default: 0"
                 ;;
+            VR_CONTROL)
+                echo "VR_CONTROL"
+                echo "Usage: VR_CONTROL=1 bash start_lerobot_official_collect.sh task_name"
+                echo "Enable single-operator VR episode control after recorder startup. Default: 0 (keyboard only)."
+                echo "Hold GL+GR and tap/release: A=start after countdown, B=save, X=discard, double Y within 5s=save and quit."
+                echo "Keyboard controls remain available. Requires factory /control_topic_<domain>_<robot> String messages."
+                ;;
+            VR_START_DELAY_SEC|VR_SPEECH)
+                echo "${parameter}"
+                echo "Usage: VR_CONTROL=1 ${parameter}=<value> bash start_lerobot_official_collect.sh task_name"
+                echo "VR_START_DELAY_SEC: countdown seconds, 0 through 30, default 3. B/X cancels countdown."
+                echo "VR_SPEECH: 1=use existing robot TTS service, 0=silent, default 1. System volume is unchanged."
+                echo "Command confirmation timeout uses CONTROL_ACK_TIMEOUT_SEC (default 300 seconds)."
+                ;;
             IMAGE_SOURCE)
                 echo "IMAGE_SOURCE"
                 echo "Usage: IMAGE_SOURCE=shm|ros bash start_lerobot_official_collect.sh task_name"
@@ -176,6 +190,9 @@ Common parameters:
   WITH_UPPER_WAIST           Add only waist pitch/yaw. Cannot combine with WITH_WAIST. Default: 0
   WITH_WAIST                 Add 4 leg/waist joints. Default: 0
   WITH_DEPTH                 Add rgbd_head_depth. Default: 0
+  VR_CONTROL                 Enable VR episode buttons alongside keyboard controls. Default: 0
+  VR_START_DELAY_SEC         VR start countdown, 0 through 30 seconds. Default: 3
+  VR_SPEECH                  Use existing robot TTS service; does not change volume. Default: 1
   IMAGE_SOURCE               shm or ros. Default: shm
   IMAGE_POLL_FPS             SHM metadata polling rate. Default: 120
   SYNC_REFERENCE_CAMERA      Timestamp anchor camera. Default: hand_left
@@ -235,6 +252,12 @@ fi
 WITH_HEAD="${WITH_HEAD:-0}"
 WITH_UPPER_WAIST="${WITH_UPPER_WAIST:-0}"
 WITH_WAIST="${WITH_WAIST:-0}"
+VR_CONTROL="${VR_CONTROL:-0}"
+VR_SPEECH="${VR_SPEECH:-1}"
+if [[ ! "${VR_CONTROL}" =~ ^[01]$ ]] || [[ ! "${VR_SPEECH}" =~ ^[01]$ ]]; then
+    echo "ERROR: VR_CONTROL and VR_SPEECH must be 0 or 1." >&2
+    exit 2
+fi
 if [ "${WITH_UPPER_WAIST}" = "1" ] && [ "${WITH_WAIST}" = "1" ]; then
     echo "ERROR: WITH_UPPER_WAIST and WITH_WAIST cannot both be 1." >&2
     exit 2
@@ -260,6 +283,7 @@ BRIDGE_SCRIPT="${SCRIPT_DIR}/shm_camera_topic_bridge.py"
 RECORDER_SCRIPT="${SCRIPT_DIR}/record_lerobot_official.py"
 HAND_PRODUCER_SCRIPT="${SCRIPT_DIR}/hand_camera_producer.py"
 CONTROL_SCRIPT="${SCRIPT_DIR}/collector_control.py"
+VR_SCRIPT="${SCRIPT_DIR}/vr_collector_control.py"
 
 HOST_ROBOT_ID="$(hostname | sed -n 's/.*-\([0-9][0-9]*\)$/\1/p')"
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
@@ -267,6 +291,16 @@ export ROBOT_ID="${ROBOT_ID:-${HOST_ROBOT_ID:-283}}"
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 TOPIC_NODE_ID="${ROS_DOMAIN_ID}_${ROBOT_ID}"
 MOTION_LOCK_FILE="${MOTION_LOCK_FILE:-/tmp/lerobot_robot_${TOPIC_NODE_ID}.motion.lock}"
+
+VR_ARGS=("${VR_SCRIPT}" --base-dir "${BASE_DIR}"
+    --topic "/control_topic_${TOPIC_NODE_ID}" --tts-topic "/topic_tts_${TOPIC_NODE_ID}"
+    --start-delay "${VR_START_DELAY_SEC:-3}" --command-timeout "${CONTROL_ACK_TIMEOUT_SEC:-300}")
+if [ "${VR_SPEECH}" = "0" ]; then
+    VR_ARGS+=(--no-speech)
+fi
+if [ "${VR_CONTROL}" = "1" ]; then
+    python3 "${VR_ARGS[@]}" --check-config
+fi
 
 mkdir -p "${BASE_DIR}" "${LOG_DIR}"
 
@@ -307,6 +341,15 @@ cleanup_session() {
         return
     fi
     CLEANUP_DONE=1
+
+    # Stop our input helper first, so it cannot send new commands during finalization.
+    if [ -n "${VR_PID:-}" ] && kill -0 "${VR_PID}" 2>/dev/null; then
+        kill -INT "${VR_PID}" 2>/dev/null || true
+        for _ in $(seq 1 20); do
+            kill -0 "${VR_PID}" 2>/dev/null || break
+            sleep 0.1
+        done
+    fi
 
     # Give the recorder time to save pending frames and finalize metadata before
     # stopping camera processes in reverse launch order.
@@ -534,6 +577,17 @@ python3 "${CONTROL_SCRIPT}" cameras \
     --pid "${RECORDER_PID}" \
     --timeout "${CAMERA_DETECTION_TIMEOUT_SEC:-15}"
 
+if [ "${VR_CONTROL}" = "1" ]; then
+    # Keep VR output in this terminal and in the session log. Only the helper
+    # consumes invalid-episode events in VR mode, avoiding two racing readers.
+    env CYCLONEDDS_URI="${COLLECT_CYCLONEDDS_URI}" \
+        LD_LIBRARY_PATH="${ROBOT_ENV_LIB}:${ROS_LD_LIBRARY_PATH}" PYTHONPATH="${ROS_PYTHONPATH}" \
+        "${ROBOT_PY}" -u "${VR_ARGS[@]}" > >(tee "${LOG_PREFIX}.vr_control.log") 2>&1 &
+    VR_PID=$!
+    echo "vr_control ${VR_PID} ${LOG_PREFIX}.vr_control.log" >> "${PIDFILE}"
+    echo "  VR controls       : hold GL+GR; A=start, B=save, X=discard, double Y=save and quit"
+fi
+
 echo "============================================================"
 echo "Interactive controls"
 echo "  Enter   - Start a new episode"
@@ -543,7 +597,7 @@ echo "  Q / q   - Save pending data and quit"
 echo "============================================================"
 
 while true; do
-    if [ -f "${EPISODE_EVENT_FILE}" ]; then
+    if [ "${VR_CONTROL}" = "0" ] && [ -f "${EPISODE_EVENT_FILE}" ]; then
         echo ""
         python3 "${CONTROL_SCRIPT}" episode-event --path "${EPISODE_EVENT_FILE}" || true
     fi
@@ -554,12 +608,23 @@ while true; do
         break
     fi
 
+    if [ -n "${VR_PID:-}" ] && ! kill -0 "${VR_PID}" 2>/dev/null; then
+        echo "ERROR: VR controller exited; stopping session. Check ${LOG_PREFIX}.vr_control.log" >&2
+        exit 1
+    fi
+
+    # Detached VR sessions have no stdin. Avoid an EOF busy loop consuming a CPU.
+    if [ "${INPUT_CLOSED:-0}" = "1" ]; then
+        sleep 0.2
+        continue
+    fi
+
     if IFS= read -rsn1 -t 0.2 key; then
         case "${key}" in
             "")
                 echo ""
                 echo "[control] start"
-                send_control "start" || true
+                send_control_and_report "start" || true
                 ;;
             [sS])
                 echo ""
@@ -580,5 +645,14 @@ while true; do
             *)
                 ;;
         esac
+    else
+        read_status=$?
+        if [ "${read_status}" = "1" ]; then
+            if [ "${VR_CONTROL}" = "0" ]; then
+                echo "Input closed. Stopping collection ..."
+                break
+            fi
+            INPUT_CLOSED=1
+        fi
     fi
 done

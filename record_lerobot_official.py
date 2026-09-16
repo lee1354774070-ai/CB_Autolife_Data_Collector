@@ -686,6 +686,8 @@ class OfficialLeRobotRecorder(Node):
         payload = {
             "event": event,
             "success": success,
+            "recording": self.is_recording,
+            "episode_invalid": self.episode_invalid,
             "request_id": request_id,
             "task": self.args.task_name,
             "episode_index": episode_index,
@@ -1357,20 +1359,23 @@ class OfficialLeRobotRecorder(Node):
         if self.motion_lock_handle is not None:
             fcntl.flock(self.motion_lock_handle.fileno(), fcntl.LOCK_UN)
 
-    def start_episode(self, reason: str) -> bool:
+    def start_episode(self, reason: str, request_id: str | None = None) -> bool:
+        # Both keyboard and VR clients need an explicit outcome, including a
+        # rejected start. Sending a command alone does not mean recording began.
+        rejection = None
         if self.dataset is None:
-            self.get_logger().warn("dataset is not ready yet")
-            return False
-        if self.is_recording:
-            self.get_logger().warn("episode is already recording")
-            return False
-        if self.episode_invalid:
-            self.get_logger().warn("invalid episode must be discarded before starting another episode")
-            return False
-        if self.has_pending_episode() or self.current_episode_frames > 0:
-            self.get_logger().warn("cannot start a new episode while pending frames still exist")
-            return False
-        if not self._acquire_motion_lock():
+            rejection = "dataset is not ready yet"
+        elif self.is_recording:
+            rejection = "episode is already recording"
+        elif self.episode_invalid:
+            rejection = "invalid episode must be discarded before starting another episode"
+        elif self.has_pending_episode() or self.current_episode_frames > 0:
+            rejection = "pending episode frames still exist"
+        elif not self._acquire_motion_lock():
+            rejection = "robot motion lock is busy"
+        if rejection:
+            self.get_logger().warn(rejection)
+            self._write_command_status("start", False, request_id, message=rejection)
             return False
         episode_index = self.saved_episodes
         # Warmup frames are useful for dataset creation but belong before the
@@ -1400,6 +1405,9 @@ class OfficialLeRobotRecorder(Node):
             "wall_time": time.time(),
         })
         self.get_logger().info(f"episode {episode_index} started ({reason})")
+        self._write_command_status(
+            "start", True, request_id, episode_index=episode_index, message="episode started"
+        )
         return True
 
     def save_current_episode(self, reason: str, request_id: str | None = None) -> bool:
@@ -1538,7 +1546,7 @@ class OfficialLeRobotRecorder(Node):
             command = parts[0]
             request_id = parts[1] if len(parts) == 2 else None
             if command in ("start", "enter", "resume"):
-                self.start_episode(f"command:{command}")
+                self.start_episode(f"command:{command}", request_id)
             elif command == "save":
                 self.save_current_episode("command:save", request_id)
             elif command == "discard":

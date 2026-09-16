@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import json
+import fcntl
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from collector_control import (
     SessionPaths,
@@ -17,11 +20,59 @@ from collector_control import (
     format_sync_report,
     read_active_cameras,
     run_command,
+    wait_for_status,
+    wait_for_active_cameras,
     wait_for_ready_file,
 )
 
 
 class CollectorControlTest(unittest.TestCase):
+    def test_old_metadata_does_not_mark_current_recorder_ready(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'meta').mkdir()
+            (root / 'meta' / 'info.json').write_text(json.dumps({'features': {'observation.images.hand_left': {}}}))
+            with patch('collector_control.process_is_running', return_value=False):
+                with self.assertRaisesRegex(RuntimeError, 'before camera initialization'):
+                    wait_for_active_cameras(root, root / 'new.log', 1, 12345)
+
+    def test_current_log_marks_camera_startup_ready(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / '1.recorder.log'
+            log.write_text('active cameras: hand_left, hand_right\n')
+            self.assertEqual(wait_for_active_cameras(root, log, 1, os.getpid()), ['hand_left', 'hand_right'])
+
+    def test_command_lock_rejects_second_client_without_erasing_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            paths = SessionPaths(root)
+            paths.pidfile.write_text(f"recorder {os.getpid()} recorder.log\n")
+            paths.status_file.write_text('{"request_id": "first"}')
+            with (root / '.official_control.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with self.assertRaisesRegex(RuntimeError, 'Another collector command'):
+                    run_command(root, 'save', wait=True, timeout_sec=.1)
+            self.assertEqual(json.loads(paths.status_file.read_text())['request_id'], 'first')
+
+    def test_wait_can_be_cancelled_for_prompt_helper_shutdown(self):
+        cancel = threading.Event()
+        cancel.set()
+        with self.assertRaisesRegex(RuntimeError, 'cancelled'):
+            wait_for_status(Path('/unused'), 'id', os.getpid(), 300, cancel)
+
+    def test_command_round_trip_matches_request_id(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            paths = SessionPaths(root)
+            paths.pidfile.write_text(f"recorder {os.getpid()} recorder.log\n")
+            def respond(fifo, command, request_id):
+                paths.status_file.write_text(json.dumps(dict(request_id=request_id, event=command, success=True)))
+            with patch('collector_control.send_fifo_command', side_effect=respond):
+                status = run_command(root, 'start', wait=True, timeout_sec=1)
+            self.assertEqual(status['event'], 'start')
+            self.assertTrue(status['success'])
+
     def test_save_status_includes_per_task_and_session_counts(self) -> None:
         output = format_status(
             {
