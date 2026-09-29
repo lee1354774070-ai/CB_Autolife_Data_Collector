@@ -5,7 +5,7 @@ One terminal starts the session and controls episodes.
 
 ## Start
 
-```bash
+```bash 
 cd /home/ubuntu/lerobot_data_collector
 TASK_TEXT="pick up the water bottle" \
 bash start_lerobot_official_collect.sh pick_up_water_bottle
