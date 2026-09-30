@@ -75,6 +75,49 @@ class RecorderControlsTest(unittest.TestCase):
             node._store_image.assert_not_called()
             metadata.assert_not_called()
 
+    def test_copy_all_cameras_before_decode_preserves_depth_generation(self):
+        from camera_config import CAMERA_SPECS
+        cameras = ['hand_left', 'hand_right', 'rgbd_head_depth']
+        node = Mock()
+        node.args = SimpleNamespace(cameras=cameras, depth_cameras=['rgbd_head_depth'])
+        node.dataset = None
+        node.last_shm_timestamps = {}
+        decoded = []
+        def read(spec, metadata):
+            # A JPEG decode lets the producer overwrite the depth snapshot.
+            if spec == CAMERA_SPECS['rgbd_head_depth'] and decoded:
+                return None
+            return SimpleNamespace(timestamp_ns=1, width=1, height=1)
+        def decode(*args, **kwargs):
+            decoded.append(True)
+            return object()
+        with patch.dict(namespace, CAMERA_SPECS=CAMERA_SPECS,
+                        read_shm_metadata=lambda spec: (1,), read_shm_frame=read,
+                        frame_to_hwc=decode, shm_timestamp_sec=lambda a, b: b):
+            namespace['_poll_shm_images'](node)
+        self.assertEqual([c.kwargs['camera_name'] for c in node._store_image.call_args_list],
+                         cameras)
+
+    def test_copy_race_retry_is_bounded_and_keeps_new_source_timestamp(self):
+        from camera_config import CAMERA_SPECS
+        for succeeds in (False, True):
+            node = Mock()
+            node.args = SimpleNamespace(cameras=['rgbd_head_depth'], depth_cameras=['rgbd_head_depth'])
+            node.dataset = None
+            node.last_shm_timestamps = {}
+            frame = SimpleNamespace(timestamp_ns=2, width=1, height=1)
+            read = Mock(side_effect=[None, frame if succeeds else None])
+            with patch.dict(namespace, CAMERA_SPECS=CAMERA_SPECS,
+                            read_shm_metadata=Mock(side_effect=[(1,), (2,)]),
+                            read_shm_frame=read, frame_to_hwc=lambda *a, **k: object(),
+                            shm_timestamp_sec=lambda stamp, now: stamp):
+                namespace['_poll_shm_images'](node)
+            self.assertEqual(read.call_count, 2)
+            if succeeds:
+                self.assertEqual(node._store_image.call_args.kwargs['stamp_sec'], 2)
+            else:
+                node._store_image.assert_not_called()
+
     def recorder(self):
         node = Mock()
         node.dagger = None

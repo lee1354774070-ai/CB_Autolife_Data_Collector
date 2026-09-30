@@ -29,7 +29,7 @@
       if (seen.size > 128) seen.delete(seen.values().next().value);
       if (labels[event.event]) showVrNotice(labels[event.event], 2000,
         event.event === 'error' ? '#FF6B6B' : '#7DFFCF');
-      if (state.xrSession) void pulse(event);
+      if (state.xrSession && event.event === 'takeover') void pulse(event);
     } catch (_) { /* Optional feedback must not interrupt teleoperation. */ }
   };
   window.addEventListener('pagehide', () => { ++generation; events.close(); });

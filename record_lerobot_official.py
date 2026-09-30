@@ -523,19 +523,28 @@ class OfficialLeRobotRecorder(Node):
                 continue
             metadata_by_camera[camera_name] = (spec, metadata)
 
-        # Copy images only after all metadata snapshots have been collected.
-        # This keeps metadata acquisition from being delayed by a large RGB or
-        # depth buffer read from an earlier camera.
+        # Copy every camera before decoding any JPEG. Decoding one hand can
+        # let the depth producer replace the generation captured above.
+        copied_frames = []
         for camera_name, (spec, metadata) in metadata_by_camera.items():
             frame = read_shm_frame(spec, metadata)
+            if frame is None:
+                # One bounded retry on a fresh generation, still before decode.
+                # read_shm_frame validates the metadata pair on both attempts.
+                metadata = read_shm_metadata(spec)
+                if (metadata is None or metadata[0] <= 0
+                        or self.last_shm_timestamps.get(spec.meta_path) == metadata[0]):
+                    continue
+                frame = read_shm_frame(spec, metadata)
             if frame is None or frame.timestamp_ns != metadata[0]:
                 continue
+            copied_frames.append((camera_name, spec, frame, time.time()))
+        for camera_name, spec, frame, received_sec in copied_frames:
             try:
                 image = frame_to_hwc(frame, camera_name in self.args.depth_cameras, rgb=True)
             except ValueError as exc:
                 self.get_logger().warn(f"drop {camera_name}: {exc}")
                 continue
-            received_sec = time.time()
             self._store_image(
                 camera_name=camera_name,
                 image=image,
