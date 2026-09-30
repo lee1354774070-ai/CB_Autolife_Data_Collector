@@ -136,31 +136,3 @@ class MapperHandoffTest(unittest.TestCase):
             publisher.publisher.publish.assert_not_called()
         self.node._control_tick()
         self.assertEqual(self.node.ticks, 0)
-
-
-class LateInferenceTest(unittest.TestCase):
-    def test_completed_old_chunk_is_discarded_without_publishing(self):
-        path = ROOT / 'thor_bridge.py'
-        tree = ast.parse(path.read_text())
-        names = {'_on_control_state', '_valid', '_submit'}
-        methods = [method for cls in tree.body if isinstance(cls, ast.ClassDef)
-                   for method in cls.body if isinstance(method, ast.FunctionDef) and method.name in names]
-        cls = ast.ClassDef(name='Bridge', bases=[], keywords=[], body=methods, decorator_list=[])
-        ns = dict(json=json, time=time, np=np, ProtocolError=ValueError,
-                  array_digest=lambda _: 'digest', String=lambda **kw: SimpleNamespace(**kw))
-        exec(compile(ast.fix_missing_locations(ast.Module(body=[cls], type_ignores=[])), str(path), 'exec'), ns)
-        node = ns['Bridge']()
-        node._condition = threading.Condition()
-        node._stopped = False
-        node._identity = ('trial', 1, 'POLICY_ACTIVE')
-        node._generation = 1
-        node._state_received = time.monotonic()
-        node._action_pub = Mock()
-        node.get_parameter = lambda name: SimpleNamespace(value=30.)
-        node._on_control_state(SimpleNamespace(data=json.dumps(
-            dict(session_id='trial', authority_epoch=2, mode='EXPERT_ACTIVE'))))
-        proposal = dict(executable_actions=np.zeros((3, 21)).tolist(), executable_chunk_digest='digest')
-        contract = SimpleNamespace(action_dim=21, chunk_size=3, n_action_steps=3)
-        prefix = node._submit(proposal, contract, 1, np.zeros(21), time.time_ns())
-        self.assertEqual(prefix, [])
-        node._action_pub.publish.assert_not_called()

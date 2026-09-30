@@ -76,7 +76,7 @@ class GuardedReset:
 
     def _reset_once(self):
         from std_srvs.srv import SetBool, Trigger
-        # The B chord requires GL+GR. Wait for release before allowing reset;
+        # The X chord requires GL+GR. Wait for release before allowing reset;
         # stale/disconnected VR is not interpreted as a deliberate release.
         deadline = time.monotonic() + 10
         while not self.released():

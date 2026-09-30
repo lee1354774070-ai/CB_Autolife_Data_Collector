@@ -16,6 +16,7 @@ def apply_authority(controller, payload, mode):
     old_session = controller._collector_session_id
     if session == old_session and epoch < old_epoch:
         return False
+    controller._collector_reset_pending = bool(payload.get('quick_reset', {}).get('pending'))
     old_mode = controller._follow_authority_mode
     entering_expert = (mode in ("EXPERT_READY", "EXPERT_ACTIVE")
                        and old_mode in ("POLICY_ACTIVE", "POLICY_WARMUP"))

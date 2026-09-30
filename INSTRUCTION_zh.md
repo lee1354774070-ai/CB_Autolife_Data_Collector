@@ -178,14 +178,15 @@ V4 运行中的命令仲裁、心跳和安全限制继续生效。
 当前范围：300 机器人、ROS domain 0、21 维手臂+夹爪+头+上腰、三路 RGB，
 GR00T 的 `policy_only_baseline` / `policy_only_frame`。depth 可以录制，但不作为
 这个 RGB 模型的输入。尚未接入 PI0.5 或 EDVA/SOMA 的因果 Outcome 历史。
-`thor_bridge.py` 复用**我们自己的** `GrootRemoteClient`、持久 HTTP 连接、模型 contract、
-q23 映射和 SHM 读取；不导入或启动同事的 Thor 客户端。单独部署 Collector 时，
-`DAGGER_TOOLS_ROOT` 必须指向完整 VLA 工具目录。
+`dagger/mzj_base/` 固定保存 MZJ 已跑通的 supervisor、GR00T bridge、FIFO 和状态机。
+`SOURCE.json` 记录原始哈希与本次适配。外层复用这些实现，只增加集合版按键/回执、
+来源标签、过期 epoch 拦截、状态缓存和唯一控制器接管。GR00T 图像采集、21维映射和
+逐步转发沿用 MZJ；客户端不修改 Thor 返回动作，夹爪契约统一为10°到360°。
 
 我们的 Thor server 新增 `/controller_ack`，仅供 baseline/frame：核对已提交给控制器的
 目标前缀和摘要，再关闭该 chunk；这**不是**硬件已发布或已到位的回执，也不能推进
 verifier 历史。Thor server 需一并更新，启动预检会检查能力声明。原 `/ack` 和训练逻辑不变。
-HTTP 回包丢失不自动重试；控制器提交回执不明确时锁定失败，不伪造已执行步数。
+HTTP 结果不明时保留原 proposal/session；恢复时先核对/关闭旧会话，不能带着未处理 proposal 新开会话，也不伪造已执行步数。
 慢 HTTP 尚未返回时，人工接管仍可独立撤销本地模型输出。
 
 A 先等待 recorder 的关联 start 回执，再放行模型控制。硬件使能需要时间，recorder
@@ -202,7 +203,7 @@ Y 仅丢弃，不触发接管。人工接管后不会自动交还模型。
 supervisor 两层被拒绝。只有 V4 controller 发布硬件指令，其原有配置/关节限制、
 轨迹限制、watchdog 和碰撞检查继续生效。supervisor 不再额外按 8/10 度的目标与实测
 差值中止 episode，因为跟随误差不是相邻 action 的跳变。仍检查 action/state 为
-21 维有限数值、控制权有效、夹爪目标在 [10,330] 度内；这不代表取消 V4 的指令超前量
+21 维有限数值、控制权有效、夹爪目标在 [10,360] 度内；这不代表取消 V4 的指令超前量
 或机械关节限位。软件停止不能替代物理急停。退出时，V4 副本先在有效的
 ROS 上下文中发送其拥有的保持/释放指令，再关闭 ROS；未使能的控制器不会因退出发布新目标。
 

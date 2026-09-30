@@ -1,94 +1,47 @@
-# VR Controls And Feedback / VR 按键与反馈
+# VR 按键与反馈 / Controls and feedback
 
-## Controls / 按键
-
-| Button | VR | Subtask | DAgger |
+| 按键 | 单人遥操 / VR | 分段采集 / Subtask | DAgger |
 | --- | --- | --- | --- |
-| Y | Start / 开始 | Start / 开始 | Inference + recording / 推理并录制 |
-| A | Save / 保存 | Short: mark; long: save early / 短按标注，长按提前保存 | Save / 保存 |
-| X | Discard / 丢弃 | Discard / 丢弃 | Discard / 丢弃 |
-| B | Discard then reset / 丢弃后复位 | Discard then reset / 丢弃后复位 | Discard then reset / 丢弃后复位 |
+| A | 倒计时开始 / Start | 倒计时开始 / Start | 开始推理和录制，无倒计时 |
+| B | 保存 / Save | 短按标记，最后片段保存；长按提前保存 | 保存整条 / Save |
+| X | 仅全身复位 / Reset only | 仅全身复位 | 仅全身复位并打开夹爪 |
+| Y | 仅丢弃 / Discard only | 仅丢弃 | 仅丢弃 |
 
-VR/subtask requires GL+GR held and a face-button release. DAgger keeps its
-Grip takeover logic; release both Grips before Y. No double-Y exit.
-普通模式保持 GL+GR 并松开面板键触发；DAgger 用 Grip 接管，开始前松开 Grip。
-Y 不再兼任退出。终端退出方式保留。
+B/Y 不复位。X 不保存也不丢弃；有录制中、待保存或结果未确认的数据时拒绝 X。
+所有模式都需显式 A 开始下一条。Y 不退出；退出使用启动器或终端 Q。
 
-## Reset Contract / 复位约束
+单人/分段：保持 GL+GR 后点按并松开面键。分段 B 的长按阈值沿用配置名
+`VR_A_LONG_PRESS_SEC`，名称仅为兼容旧配置。
+DAgger 面键不依赖握持键；任意 GL/GR 接管后继续握持增量遥操，松开保持，再握继续。
+DAgger 浏览器/启动器 Shift+A/B/X/Y 与面键同义。
+DAgger 终端保留 C 开始、A 保存、X/D 丢弃、R 复位、Q 退出；attach 模式 Q 仅断开终端。
 
-`vr_reset.py` targets the inspected V4 controller, not arbitrary factory SDKs.
-It waits for a recorder discard receipt, obtains the recorder motion lock,
-waits for live VR input with both Grips released, disables V4 output, then calls
-`<VR_RESET_PREFIX>/full_body_reset`. A service ACK is NOT completion: the helper
-must observe fresh `hardware_enable_pending` followed by `hardware_ready`.
-It disables the controller again on completion. Re-enable in the VR page.
+## 复位约束 / Reset
 
-复位只对接已检查的 V4 接口。必须先丢弃确认、取得运动锁、松开双 Grip，再关闭遥操输出并复位。
-等待控制器实际完成后才播报“复位完成”；复位结束后保持停用，需重新使能遥操作。
-丢弃不确定时不复位；复位不确定时锁定且不自动重试。不会删除已经保存的 episode。
-忙碌时不排队执行 B，请等待当前操作结束。
+X 使用已检查的 V4 全身复位服务。单人数采复位先取得录制运动锁并等待双 Grip 松开；
+DAgger 启动器复位不依赖头显在线。服务接受不等于完成，必须等新鲜反馈确认复位和夹爪张开。
+失败或超时显示错误，不自动重试、不清电机故障、不重启 ARM 服务。
 
-**Disable the teleoperation mapper's old reset gesture first.** On the inspected
-V4 mapper this is `quick_reset_enabled=false`. Do not run an additional UDP
-input node with its own B/home reset handler. Otherwise it could reset before
-the recorder acknowledges discard. Keep one controller and one reset owner.
+关闭遥操 mapper 的旧复位快捷键：`quick_reset_enabled=false`。
+只有一套控制器和一个复位入口；不存在直接发布原厂 reset topic 的备用路径。
 
-**必须关闭遥操作端原有复位快捷键**：检查过的 V4 mapper 参数为 `quick_reset_enabled=false`。
-不能同时运行带 B/home 复位的额外 UDP 输入节点。不修改同事原件，在副本配置中设置该参数。
-原厂 VR 服务若没有同等受保护接口，则 B 报错，不猜测或直接发布原厂 reset topic。
+## 反馈 / Feedback
 
-## Feedback / 反馈
+**仅人工接管触发手柄振动**：300 ms、70 ms，两次之间间隔 90 ms。
+开始、倒计时、保存、丢弃、复位、错误均显示文字，不振动。
+成功文字必须来自 recorder/控制器的确认回执，按下按钮不等于执行成功。
+头显上方显示固定按键说明，下方半透明框显示当前状态、保存结果及错误。
+实际振动依赖活动中的 WebXR 会话和手柄硬件，软件测试不能代替头显验收。
 
-ROS events use `/collector/feedback`; speech uses the robot TTS topic. The web
-extension reuses the colleague's `pulseVrControllers()` WebXR actuator path.
-One SSE connection pushes events independently of pose transport, with a bounded
-32-event queue per client (maximum four clients). Events older than two seconds
-are dropped; reconnecting never replays old notices. Idle connections send only
-a keepalive every 15 seconds, not ten HTTP requests per second.
-反馈改为 SSE 推送，每客户端最多缓存 32 条，最多四个客户端；过期事件和重连前的事件不重放。
-空闲时仅每 15 秒保活一次，不再每秒发送十次 HTTP 请求。
+ROS `/collector/feedback` 经 `/collector_events` SSE 推送；每客户端最多32条、最多4客户端，
+过期2秒事件和重连前事件不重放，空闲15秒保活。反馈不阻塞动作传输、ROS 或 IK。
+兼容事件仍携带原 pulses_ms 字段；网页只响应 takeover 的振动，其他事件仅文字。
 
-| Event / 事件 | Pulse duration (ms), 90 ms gaps / 振动时长，间隔 90 ms |
-| --- | --- |
-| Countdown / 倒计时 | 35 |
-| Started / 开始 | 80, 80 |
-| Mark confirmed / 标注确认 | 50, 50, 50 |
-| Saving / 保存中 | 45, 140 |
-| Saved / 保存成功 | 220 |
-| Discarding / 丢弃中 | 140, 45 |
-| Discarded / 已丢弃 | 160, 160 |
-| Resetting / 复位中 | 90, 90, 250 |
-| Reset confirmed / 复位完成 | 250, 90 |
-| Takeover request / 接管请求 | 300, 70 |
-| Cancelled / 取消 | 70, 180, 70 |
-| Error / 异常 | 240, 240, 240 |
+## 网页接入 / Web integration
 
-Success cues come from receipts, not button presses. Speech is nonblocking TTS;
-headset haptics require an active immersive WebXR session and compatible hardware.
-成功提示基于回执，不基于按钮按下。语音异步播放；振动必须进入 VR 会话且手柄支持。
-
-## Web Integration / 网页接入
-
-Our DAgger web wrapper includes the extension automatically after restart.
-For ordinary V4 teleoperation, use the same wrapper with `COLLECTOR_WEB_MODE=vr`
-or `subtask`, WITHOUT the DAgger supervisor/Thor process. Keep the existing single
-controller/mapper; stop only its old web component before replacing it. The
-wrapper reads the reviewed dependency copy and never modifies colleague files.
-
-DAgger 重启我们的启动器即可加载反馈。普通 V4 模式只替换网页组件，不启动 DAgger
-supervisor 或 Thor，不额外启动第二个控制器。旧的原厂网页不会自动具备新反馈。
-
-Example on robot300 with the existing reviewed dependency copy (source ROS first):
-
-```bash
-export DAGGER_DEPENDENCY_ROOT=/home/ubuntu/collector_validation/20260928_modes_dryrun_01/dependencies
-export COLLECTOR_WEB_MODE=vr  # or subtask
-/home/ubuntu/ros2_ws/venvs/hg_dagger_web/bin/python \
-  /home/ubuntu/collector_validation/20260928_modes_dryrun_01/tools/lerobot_data_collector/dagger/runtime.py web \
-  --ros-args -p https_port:=8447
-```
-
-Collector uses the matching V4 input topic:
+DAgger 重启集合版启动器并刷新网页即可加载。普通 V4 遥操可仅替换网页组件，设置
+`COLLECTOR_WEB_MODE=vr` 或 `subtask`，不额外启动 DAgger/Thor/控制器。
+原厂旧网页不会自动获得新说明。V4 输入可设置：
 
 ```bash
 VR_INPUT_TOPIC=/openarmx_teleop_vr_306_v4/vr_input \
@@ -96,6 +49,4 @@ COLLECTOR_MODE=vr TASK_TEXT="pick up the water bottle" \
 bash start_lerobot_official_collect.sh pick_up_water_bottle
 ```
 
-`VR_RESET_PREFIX` defaults to `/openarmx_teleop_vr_306_v4`. Match ROS domain and
-robot ID to the running controller. Do not copy robot300 paths blindly to other robots.
-使用前确保副本的原复位快捷键已关闭、ROS domain/robot ID 一致。不要直接将 300 的路径用于其他机器人。
+完整300验收见 [ROBOT300_TESTING_zh.md](ROBOT300_TESTING_zh.md)。

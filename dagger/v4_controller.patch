@@ -28,7 +28,7 @@
          self.get_logger().info(
              f'independent arm controller ready: suffix={self._suffix}, '
              f'dry_run={self._dry_run}, mode={self._output_control_mode}, '
-@@ -1432,6 +1452,10 @@
+@@ -1432,6 +1446,10 @@
                  self._reason = f'target rejected: {exc}'
              return
          with self._lock:
@@ -39,7 +39,7 @@
              if self._state == 'FAULT' and not self._hardware_enabled:
                  return
              if self._reset_active:
-@@ -1729,6 +1743,8 @@
+@@ -1729,6 +1747,8 @@
                  return
              if not self._follow_authority_allowed(for_arm=True):
                  return  # EXPERT_READY must accept the first arm IK to complete takeover.
@@ -48,7 +48,7 @@
              if self._reset_active or self._enable_pending or self._estop_latched:
                  self._reason = 'stale IK result discarded after a controller state change'
                  return
-@@ -1784,6 +1800,7 @@
+@@ -1784,6 +1804,7 @@
                          self._target_velocity_estimator.velocity.copy()
                      )
                  self._target_groups = accepted_groups
@@ -56,7 +56,7 @@
                  self._velocity_active_sides = set(targets)
                  self._target_time = received_at
                  self._target_source = 'cartesian_ik'
-@@ -1819,6 +1836,16 @@
+@@ -1819,6 +1840,16 @@
  
          now = time.monotonic()
          with self._lock:
@@ -73,7 +73,7 @@
              if self._feedback is None or self._limiter is None:
                  self._reason = 'release hold rejected: joint feedback is unavailable'
                  return
-@@ -1941,6 +1962,9 @@
+@@ -1941,6 +1972,9 @@
              if not allowed:
                  raise ValueError('no gripper target')
              with self._lock:
@@ -83,7 +83,7 @@
                  for side in ('left', 'right'):
                      key = f'{side}_gripper_target_joints_position'
                      if key in allowed:
-@@ -1982,6 +2006,9 @@
+@@ -1982,6 +2016,9 @@
              payload = json.loads(message.data)
              if not isinstance(payload, dict):
                  raise ValueError('joint target must be a JSON object')
@@ -93,7 +93,7 @@
              base = feedback.as_dict() if base_groups is None else base_groups
              groups = {
                  key: np.asarray(value, dtype=float).copy()
-@@ -2008,7 +2035,13 @@
+@@ -2008,7 +2045,13 @@
              self._reason = f'joint target rejected: {exc}'
              return
          with self._lock:
@@ -107,13 +107,17 @@
              self._target_velocity_estimate = self._target_velocity_estimator.reset(
                  self._group_vector(clamped), now
              )
-@@ -2430,6 +2463,15 @@
+@@ -2430,6 +2473,19 @@
          return (self._follow_authority_mode in modes
                  and 0 <= time.monotonic() - self._follow_authority_time <= 0.5)
  
 +    def _collector_target_allowed(self, payload, *, policy_only):
 +        if not self._follow_authority_required:
 +            return True
++        if (not policy_only and self._follow_authority_mode == 'DISARMED'
++                and getattr(self, '_collector_reset_pending', False)
++                and payload.get('source') == 'hg_dagger_full_reset'):
++            return 0 <= time.monotonic() - self._follow_authority_time <= 0.5
 +        modes = ('POLICY_ACTIVE',) if policy_only else ('POLICY_ACTIVE', 'EXPERT_ACTIVE', 'EXPERT_READY')
 +        return (self._follow_authority_mode in modes
 +                and 0 <= time.monotonic() - self._follow_authority_time <= 0.5
@@ -123,7 +127,7 @@
      def _head_follow_active(self):
          return self._head_follow_enabled and self._follow_authority_allowed()
  
-@@ -2444,6 +2486,9 @@
+@@ -2444,6 +2500,9 @@
              return
          with self._lock:
              was_active = self._follow_authority_allowed()
@@ -133,7 +137,7 @@
              self._follow_authority_mode = mode
              self._follow_authority_time = time.monotonic()
              active = self._follow_authority_allowed()
-@@ -2569,6 +2613,17 @@
+@@ -2569,6 +2628,17 @@
                  del entries[:-512]
          try:
              publisher.publish(String(data=payload))
@@ -151,7 +155,7 @@
          except Exception:
              with self._lock:
                  entries = self._recent_owned_commands.get(topic, [])
-@@ -3975,7 +4030,23 @@
+@@ -3975,7 +4045,23 @@
              self._joint_clear_error_pub is not None,
          )
  
@@ -175,7 +179,7 @@
          active_publisher = (
              self._velocity_pub
              if self._output_control_mode == 'velocity'
-@@ -4993,6 +5064,10 @@
+@@ -4993,6 +5079,10 @@
          self._status_pub.publish(String(data=json.dumps(payload, separators=(',', ':'))))
  
      def destroy_node(self):
@@ -186,7 +190,7 @@
          mailbox = getattr(self, '_latest_target_mailbox', None)
          if mailbox is not None:
              mailbox.close()
-@@ -5002,6 +5077,12 @@
+@@ -5002,6 +5092,12 @@
          # SPEED mode must never outlive this process's watchdog.  Publish a
          # short burst so DDS teardown cannot leave the last non-zero sample in
          # the vendor motor worker.
@@ -199,7 +203,9 @@
          if getattr(self, '_output_control_mode', 'position') == 'velocity':
              try:
                  with self._lock:
-@@ -5040,21 +5121,27 @@
+@@ -5038,22 +5134,28 @@
+ 
+ 
  def main(args=None):
 -    rclpy.init(args=args)
 -    node = IndependentArmController()
@@ -215,16 +221,17 @@
 -        rclpy.spin(node)
 -    except KeyboardInterrupt:
 -        pass
--    finally:
 +        node = IndependentArmController()
-         try:
++        try:
 +            while rclpy.ok() and not stopping.is_set():
 +                rclpy.spin_once(node, timeout_sec=0.05)
 +        finally:
-             node.destroy_node()
++            node.destroy_node()
+     finally:
+-        try:
+-            node.destroy_node()
 -        except KeyboardInterrupt:
 -            pass
-+    finally:
          try:
              if rclpy.ok():
                  rclpy.shutdown()
@@ -236,4 +243,3 @@
  
  
  if __name__ == '__main__':
-     main()

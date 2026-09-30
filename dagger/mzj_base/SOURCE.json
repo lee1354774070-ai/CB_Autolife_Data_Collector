@@ -1,0 +1,21 @@
+{
+  "source": "/home/ubuntu/ros2_ws/src/autolife_hg_dagger_MZJ_300/autolife_hg_dagger_mzj_300",
+  "sha256_before_integration": {
+    "__init__.py": "a31f298c893c6ce29f061442bbe7887fb07c1868da903d47af73912ce95c7db3",
+    "core.py": "948c8dd205f091fa3045aa89074b63c42e636c72c65b74f86bf452d32e84325a",
+    "recorder.py": "df4c53de9b388c54068ad4fed0b2b93d2f0f60faee4e7a10d8e35648f8ae384d",
+    "supervisor_node.py": "6987faee7efe058b208a8eb48947a0d4bbefc1a6450e9a9d83f8e93427f96e4d",
+    "groot_bridge_core.py": "b840719c1fb74550f512a8a6ed1d4d04da8bff78884e2224ab230e466fd83053",
+    "groot_policy_bridge.py": "24894b7219c69b385e7c4ef730659025165b1923e2241ffdb72e25e385afc3ea"
+  },
+  "changes": {
+    "supervisor_node.py": [
+      "Align gripper commands to Thor 10..360 degrees and feedback tolerance to <=365 degrees",
+      "Save explicitly requested policy-only episodes; expert mask remains unchanged",
+      "Use unified A start / B save / X reset only / Y discard only in status hints"
+    ],
+    "core.py": [
+      "Add explicit expert-authority selection for the collection atomic V4 handoff; no HOLD ACK claim"
+    ]
+  }
+}

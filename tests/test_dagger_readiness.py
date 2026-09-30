@@ -66,27 +66,63 @@ class ReadinessTest(unittest.TestCase):
         self.node._cancel_start = True
         self.assertIn('cancelled', self.wait()[1])
 
-    def test_failed_readiness_disables_hardware_without_policy_enable(self):
+    def start(self, enabled):
+        # Run the pinned MZJ start body: recording must precede policy authority.
+        from dagger.mzj_base.core import Mode
+        import time as real_time
+        native = SOURCE.parent / 'mzj_base/supervisor_node.py'
+        body = next(n for c in ast.parse(native.read_text()).body if isinstance(c, ast.ClassDef)
+                    for n in c.body if isinstance(n, ast.FunctionDef) and n.name == '_on_set_session_enabled')
+        body.returns = None
+        for arg in body.args.args:
+            arg.annotation = None
+        namespace = dict(Mode=Mode, uuid=uuid, time=real_time)
+        exec(compile(ast.Module(body=[body], type_ignores=[]), str(native), 'exec'), namespace)
         node = self.node
+        node._collection_exited = node._session_start_pending = False
+        node._intervention_id = ''
+        node._machine.mode = Mode.DISARMED
         node._prepare_intervention_locked.return_value = ('trial', True)
-        node._collector.command_and_wait.return_value = SimpleNamespace(acknowledged=True, success=True)
-        node._forward_enable.return_value = (True, 'enable accepted, still pending')
-        node._wait_for_controller_ready.return_value = (False, 'timeout')
-        self.namespace['_start_trial'](node)
-        self.assertEqual([call.args for call in node._forward_enable.call_args_list], [(True,), (False,)])
-        node._machine.enable.assert_not_called()
-        self.assertFalse(node._session_start_pending)
+        node._start_collector_for_trial.return_value = (True, 'recorder ready')
+        def enable(value):
+            node._start_collector_for_trial.assert_called_once()
+            node._machine.enable.assert_not_called()
+            return enabled, 'ready' if enabled else 'readiness timeout'
+        node._forward_enable.side_effect = enable
+        response = SimpleNamespace()
+        namespace['_on_set_session_enabled'](node, SimpleNamespace(data=True), response)
+        return response
+
+    def test_failed_readiness_disables_hardware_without_policy_enable(self):
+        self.assertFalse(self.start(False).success)
+        self.assertEqual([c.args for c in self.node._forward_enable.call_args_list], [(True,), (False,)])
+        self.node._machine.enable.assert_not_called()
+        self.assertFalse(self.node._session_start_pending)
 
     def test_policy_enable_follows_physical_readiness(self):
-        node = self.node
-        node._prepare_intervention_locked.return_value = ('trial', True)
-        node._collector.command_and_wait.return_value = SimpleNamespace(acknowledged=True, success=True)
-        node._forward_enable.return_value = (True, 'pending')
-        node._wait_for_controller_ready.side_effect = lambda since: (
-            node._machine.enable.assert_not_called() or (True, 'ready'))
-        self.namespace['_start_trial'](node)
-        node._wait_for_controller_ready.assert_called_once()
-        node._machine.enable.assert_called_once()
+        self.assertTrue(self.start(True).success)
+        self.node._machine.enable.assert_called_once()
+
+
+class ForwardEnableTest(unittest.TestCase):
+    def test_pending_enable_is_not_readiness(self):
+        class Base:
+            def _forward_enable(self, enabled):
+                self.calls.append(enabled)
+                return True, 'accepted'
+        method = next(n for c in tree.body if isinstance(c, ast.ClassDef)
+                      for n in c.body if isinstance(n, ast.FunctionDef) and n.name == '_forward_enable')
+        cls = ast.ClassDef(name='Adapter', bases=[ast.Name(id='Base', ctx=ast.Load())],
+                           keywords=[], body=[method], decorator_list=[])
+        ns = dict(Base=Base, time=SimpleNamespace(monotonic_ns=lambda: 123))
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[cls], type_ignores=[])), str(SOURCE), 'exec'), ns)
+        node = ns['Adapter']()
+        node.calls = []
+        node._closing = node._cancel_start = False
+        node._wait_for_controller_ready = Mock(return_value=(False, 'timeout'))
+        self.assertEqual(node._forward_enable(True), (False, 'timeout'))
+        self.assertEqual(node.calls, [True, False])
+        node._wait_for_controller_ready.assert_called_once_with(123)
 
 
 class PolicyBoundaryTest(unittest.TestCase):
@@ -131,6 +167,13 @@ class PolicyBoundaryTest(unittest.TestCase):
         self.node._begin_failure_hold.assert_not_called()
         self.node._reject_policy.assert_not_called()
 
+    def test_thor_closed_360_is_forwarded_unchanged(self):
+        self.payload['action'][14:16] = [360., 360.]
+        self.node._on_policy_action('original-message')
+        self.assertEqual(self.node.forwarded, ['original-message'])
+        self.assertEqual(self.payload['action'][14:16], [360., 360.])
+        self.node._reject_policy.assert_not_called()
+
     def test_invalid_vectors_are_not_forwarded(self):
         for key in ('action', 'measured_policy_state'):
             valid = self.payload[key]
@@ -143,7 +186,7 @@ class PolicyBoundaryTest(unittest.TestCase):
             self.payload[key] = valid
 
     def test_out_of_range_grippers_still_hold(self):
-        for index, value in ((14, 9.), (15, 331.)):
+        for index, value in ((14, 9.), (15, 361.)):
             valid = self.payload['action'][index]
             self.payload['action'][index] = value
             self.node._on_policy_action('message')

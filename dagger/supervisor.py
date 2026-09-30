@@ -1,35 +1,22 @@
-"""Adapt the inspected V4 authority stack, without patching its live installation.
+"""MZJ motion/session implementation with collection-only operator adapters.
 
-Only this supervisor may feed the V4 controller. Policy/VR inputs stay upstream
-of that controller's hold, re-anchor, stale-input and joint-limit protections.
-The colleague's private package remains an explicit, version-checked runtime
-dependency; the ordinary collector never imports it.
+Motion selection, clutch/gripper handling, full-body reset and policy forwarding
+come from the pinned MZJ source in mzj_base. This module adds collection receipts,
+operator attachment, explicit A/B/X/Y semantics and status/haptic presentation.
 """
-
-from __future__ import annotations
-
-import threading
-import time
-import uuid
 import json
 import os
-
-from std_msgs.msg import String
+import threading
+import time
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-from autolife_hg_dagger_mzj_300.supervisor_node import HgDaggerSupervisor
-from autolife_hg_dagger_mzj_300.core import AuthorityStateMachine, Mode, finite_vector
-from .trace import AsyncTrace
-from .status_cache import CachedCollector
-from vr_feedback import feedback_packet
+from std_msgs.msg import String
+from std_srvs.srv import SetBool, Trigger
+from .mzj_base.core import Mode, finite_vector
+from .mzj_base.supervisor_node import HgDaggerSupervisor
 from .compat import CommandGate, CompatibilityPublisher, FEATURES, SERVICE, VERSION
-
-
-class ImmediateAuthority(AuthorityStateMachine):
-    def take_over(self, reason):
-        if self.mode not in (Mode.POLICY_ACTIVE, Mode.POLICY_WARMUP):
-            raise ValueError(f"takeover is invalid in {self.mode.value}")
-        return self._move(Mode.EXPERT_ACTIVE, reason)
-
+from .status_cache import CachedCollector
+from .trace import AsyncTrace
+from vr_feedback import feedback_packet
 
 class ProvenancePublisher:
     """Attach controller-publication origins; never restamp an old held target."""
@@ -45,16 +32,11 @@ class ProvenancePublisher:
         packet["origin_authority_epoch"] = origin[1]
         self.publisher.publish(String(data=json.dumps(packet, separators=(",", ":"))))
 
-
 class CollectorDaggerSupervisor(HgDaggerSupervisor):
     def __init__(self):
         self._cancel_start = False
         self._closing = False
-        self._pending_reset = False
-        self._recording_start_sent = False
-        self._work_thread = None
         super().__init__()
-        self._machine = ImmediateAuthority()
         self._feedback_pub = self.create_publisher(String, "/collector/feedback", 10)
         self._speech_pub = self.create_publisher(String, "/topic_tts_0_300", 10)
         self._command_origins = {False: None, True: None}
@@ -75,65 +57,12 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             with_depth=os.environ.get('WITH_DEPTH', '0') == '1',
             task_text=os.environ.get('TASK_TEXT', '')))
         self.create_service(SetParametersAtomically, SERVICE, self._on_attached_command)
-        self.get_logger().info("Collector DAgger: A=start, GL/GR=takeover, B=save, Y=discard, X=reset")
+        self.get_logger().info("MZJ-based DAgger: A=start, GL/GR=takeover, B=save, Y=discard, X=reset")
 
     def _feedback(self, event, text):
         if hasattr(self, "_feedback_pub"):
             self._feedback_pub.publish(String(data=json.dumps(feedback_packet(event))))
             self._speech_pub.publish(String(data=json.dumps({"status": "play", "text": text}, ensure_ascii=False)))
-
-    def _set_notice_locked(self, text, level="info"):
-        super()._set_notice_locked(text, level)
-        if level == "error":
-            self._feedback("error", "操作异常，请检查终端")
-        elif text == "Inference and recording started":
-            self._feedback("start", "开始推理和录制")
-        elif text == "Saving":
-            self._feedback("saving", "正在保存")
-        elif text == "Discarding episode":
-            self._feedback("discarding", "正在丢弃")
-        elif text.startswith("Episode saved:"):
-            self._feedback("save", "已保存")
-        elif text == "Episode discarded":
-            self._feedback("discard", "已丢弃")
-        elif text.startswith("Reset confirmed;"):
-            self._feedback("reset", "复位完成")
-
-    def _begin_failure_hold(self, reason, **kwargs):
-        if not kwargs.get("hold_to_intervene"):
-            return super()._begin_failure_hold(reason, **kwargs)
-        # Called under the authority lock by the existing Grip edge handler.
-        # Publish the new epoch immediately: neither HTTP, recorder ACK nor a
-        # controller HOLDING status is a prerequisite for expert input.
-        now = time.monotonic_ns()
-        transition = self._machine.take_over(reason)
-        self._takeover_requested_ns = now
-        self._hold_confirmed_ns = 0
-        self._hold_to_intervene = True
-        self._grip_release_started_ns = 0
-        self._release_gate_started_ns = 0
-        self._handback_started_ns = 0
-        self._policy_resume_pending = False
-        self._expert_command_pending = False
-        self._last_expert_monotonic_ns = now
-        self._last_failure_reason = str(reason)
-        self._takeover_seen = True
-        self._timing_ms = {}
-        self._warmup_diagnostics = {}
-        self._save_notice = {}
-        measured_fresh = (self._measured_grippers is not None
-                          and now - self._gripper_measurement_ns < 1_000_000_000)
-        pickup = self._measured_grippers if measured_fresh else self._vendor_grippers
-        held = [min(330., max(10., float(value))) for value in pickup]
-        self._expert_gripper_hold = list(held)
-        self._expert_gripper_desired = list(held)
-        self._expert_gripper_command = list(held)
-        self._expert_gripper_pickup_pending = [True, True]
-        self._expert_gripper_input_ns = self._expert_gripper_tick_ns = 0
-        self._publish_state()
-        self._timing_ms["grip_to_authority_publish"] = (time.monotonic_ns() - now) / 1e6
-        self._event("transition", reason, old=transition.old.value, new=transition.new.value)
-        self._feedback("takeover", "人工接管")
 
     def _on_vendor_joint_command(self, message):
         pass  # Untagged DDS echoes do not prove which authority produced them.
@@ -200,142 +129,6 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             return
         super()._update_face_button_locked(button, pressed, now_ns)
 
-    def _hold_locked(self, reason):
-        self._publish_release_hold(reason)
-        transition = self._machine.disable()
-        self._expert_command_pending = False
-        self._event("transition", reason, old=transition.old.value, new=transition.new.value)
-        self._publish_state()
-
-    def _on_face_button_click_locked(self, button, now_ns):
-        if self._closing:
-            return
-        mode = self._machine.mode.value
-        if button == "X":
-            if (self._intervention_id or self._recorder_active
-                    or self._pending_collector_result is not None
-                    or self._button_worker_active or self._session_start_pending
-                    or self._reset_pending):
-                self._set_notice_locked("请先按 B 保存或 Y 丢弃，等待结果确认后再按 X 复位；当前数据保留", "warning")
-                return
-            self._cancel_start = True
-            self._pending_reset = True
-            self._hold_locked("X reset requested; no episode is open")
-            self._run_worker("reset", lambda: self._finish_trial(save=False, reset=True))
-            return
-        if self._button_worker_active or self._reset_pending or self._session_start_pending:
-            self._set_notice_locked("Operation in progress; wait for confirmation", "warning")
-            return
-        if button == "A":
-            if mode != "DISARMED" or self._intervention_id or any(self._grips):
-                self._set_notice_locked("Release both Grips and finish the previous episode before A", "warning")
-                return
-            self._cancel_start = False
-            self._run_worker("start", self._start_trial)
-        elif button in ("B", "Y") and self._intervention_id:
-            save = button == "B"
-            self._hold_locked("B save requested" if save else "Y discard requested; no reset")
-            self._run_worker("save" if save else "discard", lambda: self._finish_trial(save=save))
-
-    def _run_worker(self, name, operation):
-        if self._button_worker_active:
-            return
-        self._button_worker_active = True
-        self._button_worker_name = name
-
-        def run():
-            try:
-                operation()
-            except Exception as exc:
-                with self._lock:
-                    self._hold_locked(f"DAgger {name} failed")
-                    self._set_notice_locked(f"{name} failed: {exc}; inspect logs before retry", "error")
-                self._forward_enable(False)
-            finally:
-                with self._lock:
-                    self._button_worker_active = False
-                    self._button_worker_name = ""
-                    self._publish_state()
-
-        self._work_thread = threading.Thread(target=run, name=f"collector-dagger-{name}", daemon=True)
-        self._work_thread.start()
-
-    def _start_trial(self):
-        # All trace/FIFO/RPC waits are in this worker, outside the authority
-        # lock. Never inherit the legacy enable-failure path's locked discard.
-        try:
-            with self._lock:
-                self._session_start_pending = True
-                self._session_id = f"session-{uuid.uuid4().hex}"
-                self._command_origins = {False: None, True: None}
-                self._recording_start_sent = False
-                self._trace.prepare_root()
-                trial, depth = self._prepare_intervention_locked()
-                self._collector.select(depth, trial, self._collector_started_wall_ns)
-            self._trace.barrier()
-            if self._cancel_start or self._closing:
-                return
-            self._recording_start_sent = True
-            result = self._collector.command_and_wait(depth, "start", float(
-                self.get_parameter("collector_command_timeout_sec").value))
-            with self._lock:
-                if not result.acknowledged or not result.success:
-                    self._pending_collector_result = result
-                    raise RuntimeError(f"recorder start unresolved: {result.message}")
-                self._recorder_active = True
-            requested_ns = time.monotonic_ns()
-            enabled, reason = self._forward_enable(True)
-            if enabled:
-                enabled, reason = self._wait_for_controller_ready(requested_ns)
-            if not enabled:
-                self._forward_enable(False)
-            with self._lock:
-                if not enabled or self._cancel_start or self._closing:
-                    self._hold_locked(f"start not enabled: {reason}; B/Y closes the episode")
-                    return
-                transition = self._machine.enable()
-                self._last_policy_monotonic_ns = time.monotonic_ns()
-                self._event("transition", transition.reason, old=transition.old.value, new=transition.new.value)
-                self._set_notice_locked("Inference and recording started", "success")
-                self._publish_state()
-        finally:
-            with self._lock:
-                self._session_start_pending = False
-
-    def _wait_for_controller_ready(self, requested_ns):
-        """A SetBool ACK only starts enabling; wait for fresh physical readiness.
-
-        This runs on the start worker, never a ROS callback. Y/X/exit remain
-        responsive, and policy authority stays DISARMED until SYNC is settled.
-        """
-        deadline = time.monotonic() + float(self.get_parameter("controller_ready_timeout_sec").value)
-        while time.monotonic() < deadline:
-            with self._lock:
-                if self._cancel_start or self._closing:
-                    return False, "start cancelled while waiting for controller readiness"
-                status = dict(self._controller_status)
-                received_ns = self._controller_status_received_ns
-            age_ns = time.monotonic_ns() - received_ns
-            if received_ns > requested_ns and 0 <= age_ns < 500_000_000:
-                if status.get("emergency_stop_latched") or status.get("state") in ("FAULT", "E_STOP", "ESTOP"):
-                    return False, str(status.get("reason", "controller fault"))
-                if (status.get("hardware_enabled") is True and status.get("hardware_ready") is True
-                        and status.get("state") == "ARMED" and not status.get("hardware_enable_pending")):
-                    return True, "controller SYNC settled and hardware ready"
-            time.sleep(.02)
-        return False, "controller readiness timeout; policy not started"
-
-    def _forward_enable(self, enabled):
-        if enabled and (self._cancel_start or self._closing):
-            return False, "start cancelled before enabling hardware"
-        result = super()._forward_enable(enabled)
-        # A reset/exit arriving while the enable RPC is in flight must not
-        # revive policy ownership after the request completes.
-        if enabled and (self._cancel_start or self._closing):
-            super()._forward_enable(False)
-            return False, "start cancelled while enabling hardware"
-        return result
-
     def _on_policy_action(self, message):
         try:
             payload = self._parse(message)
@@ -356,8 +149,8 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             # Tracking lag is not an adjacent-action jump. The downstream V4
             # controller owns joint bounds, trajectory limiting and collisions;
             # do not stop an episode merely for an 8/10-degree tracking error.
-            if any(not 10 <= value <= 330 for value in action[14:16]):
-                detail = f"policy gripper range: expected [10, 330], got {action[14:16]}"
+            if any(not 10 <= value <= 360 for value in action[14:16]):
+                detail = f"policy gripper range: expected [10, 360], got {action[14:16]}"
                 if self._machine.mode.value == "POLICY_ACTIVE":
                     self._begin_failure_hold(detail)
                     self._publish_state()
@@ -430,103 +223,64 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
                                 new=transition.new.value)
                     self._set_notice_locked(f"Recording unavailable: {invalid.get('reason')}; output stopped", "error")
                     if not self._button_worker_active:
-                        self._run_worker("invalid-hold", lambda: self._forward_enable(False))
+                        self._spawn_button_worker_locked("invalid-hold", lambda: self._forward_enable(False))
             super()._publish_state()
 
-    def _finish_trial(self, *, save, reset=False):
-        """Stop action authority, close the episode with ACK, then optionally reset.
+    def _begin_failure_hold(self, reason, *, hold_to_intervene=False):
+        # MZJ initializes the current-pose/gripper pickup and revokes policy.
+        super()._begin_failure_hold(reason, hold_to_intervene=hold_to_intervene)
+        if hold_to_intervene:
+            # The controller's atomic epoch handoff checks physical freshness.
+            # HTTP cancellation and recorder I/O are never takeover barriers.
+            transition = self._machine.select_expert_authority()
+            self._last_expert_monotonic_ns = time.monotonic_ns()
+            self._takeover_seen = True
+            self._event("transition", transition.reason, old=transition.old.value, new=transition.new.value)
+            self._publish_state()
+            self._timing_ms["grip_to_authority_publish"] = self._elapsed_ms(
+                self._takeover_requested_ns, time.monotonic_ns())
 
-        Save/encode and service waits are outside the authority lock. A failed
-        or ambiguous save stays latched: B/Y reconcile the original request ID,
-        never replay save or discard an uncertain partially committed episode.
-        """
-        with self._lock:
-            if reset and (self._intervention_id or self._recorder_active
-                          or self._pending_collector_result is not None):
-                self._pending_reset = False
-                self._set_notice_locked("请先按 B 保存或 Y 丢弃，再按 X 复位；当前数据保留", "warning")
-                return
-            self._hold_locked("ending episode")
-            trial, depth = self._intervention_id, self._active_depth
-            pending = self._pending_collector_result
-            self._set_notice_locked("Saving" if save else "Discarding episode", "info")
-            if trial and not self._recording_start_sent:
-                # Trace setup may fail/cancel before sending any recorder
-                # command. There is no episode to reconcile in this case.
-                try:
-                    self._trace.finish("cancelled_before_recording", 0, "start cancelled")
-                except RuntimeError as exc:
-                    self._trace.error = str(exc)
-                self._intervention_id = self._session_id = ""
-                self._recorder_active = False
-                trial = ""
-        saved = False
-        if trial:
-            if pending is not None:
-                result = self._collector.wait_for_result(depth, pending.event, pending.request_id, 1.0)
-            else:
-                command = "save" if save else "discard"
-                result = self._collector.command_and_wait(
-                    depth, command, float(self.get_parameter(
-                        "collector_save_timeout_sec" if save else "collector_command_timeout_sec").value))
-            if not result.acknowledged or not result.success:
-                with self._lock:
-                    self._pending_collector_result = result
-                    self._set_notice_locked("Episode result unresolved; B/Y checks the same request; no reset", "error")
-                self._forward_enable(False)
-                return
-            saved = result.event == "save"
-            if result.event == "start":
-                # A late start ACK is not a discard ACK. Close the now-known
-                # recording before clearing trial IDs or permitting reset.
-                with self._lock:
-                    self._pending_collector_result = None
-                return self._finish_trial(save=save, reset=reset)
-            try:
-                self._trace.finish("saved" if saved else "discarded", result.frames,
-                                   "operator save" if saved else "operator discard", result.as_dict())
-            except RuntimeError as exc:
-                # Dataset ACK is authoritative. Diagnostic queue failure must
-                # not make a later button replay an already committed save.
-                self._trace.error = str(exc)
+    def _start_collector_for_trial(self, intervention_id, depth):
+        # The recorder reads trace metadata to obtain this trial's identity.
+        try:
+            self._trace.barrier()
+        except Exception as exc:
             with self._lock:
-                self._pending_collector_result = None
+                # No recorder command has been sent at this point.
                 self._intervention_id = ""
-                self._session_id = ""
                 self._recorder_active = False
-                self._takeover_seen = False
-                self._set_notice_locked(
-                    f"Episode saved: {result.frames} frames, {result.expert_frames} expert frames"
-                    if saved else "Episode discarded", "success")
-                self._publish_state()
-        disabled, detail = self._forward_enable(False)
-        if not disabled:
-            with self._lock:
-                self._pending_reset = False
-                self._set_notice_locked(f"Controller disable not confirmed: {detail}; no reset", "error")
-            return
-        if reset and not self._closing:
-            # Reset can move ALL body joints and grippers. It runs only after
-            # recorder ACK, never while a training episode is still open.
-            with self._lock:
-                self._pending_reset = False
-                self._feedback("resetting", "正在复位，请松开握持键")
-            super()._mechanical_reset_worker("X")
-            with self._lock:
-                if self._save_notice.get("level") == "success":
-                    self._set_notice_locked("Reset confirmed; release Grips, then A for a new episode", "success")
+            return False, f"trace startup failed before recording: {exc}"
+        return super()._start_collector_for_trial(intervention_id, depth)
 
-    def _on_launcher_action(self, action, response):
-        # The optional desktop launcher must use the same workflow, not the
-        # colleague's legacy save-and-reset mapping.
-        mapping = {"start": "A", "finish": "B", "discard": "Y", "reset": "X"}
-        with self._lock:
-            if action not in mapping or self._closing:
-                response.success, response.message = False, "Use collector terminal Q to exit"
-            else:
-                self._on_face_button_click_locked(mapping[action], time.monotonic_ns())
-                response.success, response.message = True, "Request received; inspect control_state for outcome"
-        return response
+    def _hold_locked(self, reason):
+        self._publish_release_hold(reason)
+        transition = self._machine.disable()
+        self._expert_command_pending = False
+        self._event("transition", reason, old=transition.old.value, new=transition.new.value)
+        self._publish_state()
+
+    def _wait_for_controller_ready(self, requested_ns):
+        """A SetBool ACK only starts enabling; wait for fresh physical readiness.
+
+        This runs on the start worker, never a ROS callback. Y/X/exit remain
+        responsive, and policy authority stays DISARMED until SYNC is settled.
+        """
+        deadline = time.monotonic() + float(self.get_parameter("controller_ready_timeout_sec").value)
+        while time.monotonic() < deadline:
+            with self._lock:
+                if self._cancel_start or self._closing:
+                    return False, "start cancelled while waiting for controller readiness"
+                status = dict(self._controller_status)
+                received_ns = self._controller_status_received_ns
+            age_ns = time.monotonic_ns() - received_ns
+            if received_ns > requested_ns and 0 <= age_ns < 500_000_000:
+                if status.get("emergency_stop_latched") or status.get("state") in ("FAULT", "E_STOP", "ESTOP"):
+                    return False, str(status.get("reason", "controller fault"))
+                if (status.get("hardware_enabled") is True and status.get("hardware_ready") is True
+                        and status.get("state") == "ARMED" and not status.get("hardware_enable_pending")):
+                    return True, "controller SYNC settled and hardware ready"
+            time.sleep(.02)
+        return False, "controller readiness timeout; policy not started"
 
     def _on_attached_command(self, request, response):
         from rcl_interfaces.msg import ParameterType, SetParametersResult
@@ -541,7 +295,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
                 return False, 'Host closing'
             if action != 'reset' and (self._button_worker_active or self._session_start_pending or self._reset_pending):
                 return False, 'Host busy; inspect state'
-            if action == 'start' and (self._machine.mode != Mode.DISARMED or self._intervention_id or any(self._grips)):
+            if action == 'start' and (self._machine.mode != Mode.DISARMED or self._intervention_id):
                 return False, 'Finish current episode and release Grips first'
             if action in ('finish', 'discard') and not self._intervention_id:
                 return False, 'No episode to finish'
@@ -552,33 +306,100 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
         response.result = SetParametersResult(successful=success, reason=reason)
         return response
 
-    def _on_finish_episode(self, request, response):
-        # Keep the legacy ROS endpoint, not its blocking save-under-lock path.
-        return self._on_launcher_action("finish", response)
+    def _event(self, kind, reason, **extra):
+        super()._event(kind, reason, **extra)
+        if kind == "transition" and extra.get("new") == "EXPERT_ACTIVE" and extra.get("old") != "EXPERT_ACTIVE":
+            self._feedback("takeover", "人工接管")
 
-    def _on_set_session_enabled(self, request, response):
-        # A browser hardware-toggle must not bypass episode bookkeeping.
+    def _prepare_intervention_locked(self):
+        result = super()._prepare_intervention_locked()
+        self._command_origins = {False: None, True: None}
+        self._collector.select(result[1], result[0], self._collector_started_wall_ns)
+        return result
+
+    def _forward_enable(self, enabled):
+        if enabled and (self._closing or self._cancel_start):
+            return False, "start cancelled"
+        started = time.monotonic_ns()
+        ok, detail = super()._forward_enable(enabled)
+        if enabled and ok:
+            ok, detail = self._wait_for_controller_ready(started)
+            if self._closing or self._cancel_start:
+                ok, detail = False, "start cancelled while enabling"
+            if not ok:
+                super()._forward_enable(False)
+        return ok, detail
+
+    def _on_face_button_click_locked(self, button, now_ns):
+        if self._launcher_control_active or self._launcher_wait_for_release:
+            return
+        action = {"A": "start", "B": "finish", "X": "reset", "Y": "discard"}.get(button)
+        if action:
+            self._dispatch_operator(action, Trigger.Response(), launcher=False)
+
+    def _on_launcher_action(self, action, response):
         with self._lock:
-            if request.data:
-                self._on_face_button_click_locked("A", time.monotonic_ns())
-                response.success, response.message = True, "Start requested; inspect control_state"
-            else:
-                self._cancel_start = True
-                self._hold_locked("browser disabled session")
-                if not self._button_worker_active:
-                    self._run_worker("stop", lambda: self._finish_trial(save=False))
-                response.success, response.message = True, "Policy revoked; stopping session without reset"
+            return self._dispatch_operator(action, response, launcher=True)
+
+    def _dispatch_operator(self, action, response, *, launcher):
+        if action not in ("start", "finish", "discard", "reset") or self._closing:
+            response.success, response.message = False, "操作无效；退出请用终端 Q"
+            return response
+        if self._button_worker_active or self._session_start_pending or self._reset_pending:
+            response.success, response.message = False, "操作正在处理，请等待结果；没有排队"
+        elif action == "reset" and (self._intervention_id or self._pending_collector_result is not None):
+            response.success, response.message = False, "请先 B 保存或 Y 丢弃，确认后 X 仅复位；数据保留"
+        elif action == "start" and (self._machine.mode != Mode.DISARMED or self._intervention_id or (not launcher and any(self._grips))):
+            response.success, response.message = False, "请先结束当前条并松开握持键"
+        elif action in ("finish", "discard") and not self._intervention_id:
+            response.success, response.message = False, "没有待处理数据"
+        else:
+            if launcher:
+                self._claim_launcher_locked()
+            if action != "start":
+                self._hold_locked("operator " + action)
+            self._cancel_start = False
+            target = {"start": self._start_session_worker,
+                      "finish": lambda: self._finish_collection_trial(True),
+                      "discard": lambda: self._finish_collection_trial(False),
+                      "reset": lambda: self._mechanical_reset_worker("X")}[action]
+            self._spawn_button_worker_locked(action, target)
+            response.success, response.message = True, "已受理，请等待状态确认"
+        if not response.success:
+            self._set_notice_locked(response.message, "warning")
+            self._publish_state()
         return response
+
+    def _finish_collection_trial(self, save):
+        # Close motion authority before storage waits, using the MZJ FIFO and
+        # reconciliation logic. No implicit mechanical reset on either branch.
+        disabled, detail = self._forward_enable(False)
+        with self._lock:
+            self._set_notice_locked("正在保存" if save else "正在丢弃", "info")
+            self._publish_state()
+        # The one lifecycle worker owns the trial; authority is already
+        # DISARMED. Do not hold the VR/control lock while encoding or waiting.
+        saved = self._finish_intervention_locked(save, "B save" if save else "Y discard")
+        self._trace.barrier()
+        with self._lock:
+            if not self._intervention_id:
+                self._session_id = ""
+            message = "本条保存成功" if saved else ("本条未保存，请检查录制错误" if save else "本条已丢弃")
+            if not disabled:
+                message += "；硬件停用未确认：" + detail
+            self._set_notice_locked(message, "success" if disabled and (saved or not save) else "error")
+            self._publish_state()
+
+    def _on_finish_episode(self, request, response):
+        return self._on_launcher_action("finish", response)
 
     def shutdown_session(self):
         with self._lock:
-            self._closing = True
-            self._cancel_start = True
-            self._pending_reset = False
+            self._closing = self._cancel_start = True
             self._hold_locked("collector exiting")
         self._forward_enable(False)
-        thread = self._work_thread
-        if thread is not None:
-            thread.join(timeout=5.0)
+        deadline = time.monotonic() + 5
+        while self._button_worker_active and time.monotonic() < deadline:
+            time.sleep(.05)
         self._trace.close()
         self._collector.close()

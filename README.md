@@ -24,7 +24,7 @@ the need for `VR_CONTROL` and rejects conflicting legacy settings.
 
 ## DAgger Correction Collection
 
-Uses **our** `deploy/groot_n1_7` Thor client, not the colleague's Thor client.
+Uses the robot-tested MZJ control/inference snapshot in `dagger/mzj_base/`, with collection workflow, provenance, attachment and unified button adapters. Source hashes and integration changes are recorded in `SOURCE.json`.
 Update our Thor server too: `/health` must advertise `controller_submission_receipts: true`.
 For a standalone Collector, set `DAGGER_TOOLS_ROOT` to the full `Autolife_VLA_Tools` repo.
 The launcher creates a checked teleop runtime copy under `.runtime/`; original sources stay unchanged.
@@ -48,14 +48,14 @@ recording. `DAGGER_PUBLISH=0` is a no-hardware-output check, not a live recordin
 acceptance test. Set it to `1` only with a supervised, clear robot workspace.
 Startup itself never begins inference.
 
-Open `https://ROBOT_IP:8447`. VR: Y starts inference+recording; press either GL/GR
-and keep holding for immediate expert authority, without waiting for inference or a controller hold acknowledgement.
-A saves and X discards, both without reset; B discards the unsaved trial and resets the full
-body, including grippers, only after recorder acknowledgement. No automatic
-policy handback. A/X act once on press, with no long-press behavior. Terminal: C start, X discard,
-A save, D discard, R reset; Q or Ctrl+C exits and
-discards unconfirmed frames. A/B only reconcile the original request after an
-uncertain save; they never replay it or reset before confirmation.
+VR page: `https://ROBOT_IP:8447`. A starts inference + recording; either Grip
+selects incremental human control. B saves and Y discards without reset. X only
+resets the full body and opens both grippers, after pending data is resolved.
+No automatic start on entry/reconnect or after B/Y/X, and no automatic handback.
+Only takeover vibrates; status/errors stay visible in the headset.
+Terminal keys stay C=start, A=save, X/D=discard, R=reset, Q/Ctrl+C=exit.
+Unknown save results retain their original request ID; do not reset/replay them.
+Robot-300 testing: [ROBOT300_TESTING_zh.md](ROBOT300_TESTING_zh.md).
 
 Append `--check` for read-only preflight. Run `bash start_lerobot_official_collect.sh DAGGER_PUBLISH --help`
 for parameters. See [INSTRUCTION.md](INSTRUCTION.md#dagger-integration) for labels and validation boundaries.
@@ -133,15 +133,14 @@ grips held. First release any face buttons already held at startup.
 
 | VR button | Result |
 | --- | --- |
-| `Y` | Three-second countdown, then start a new episode. Never double-tap to exit. |
-| `A` | Save and pause; announce success only after the recorder confirms. |
-| `X` | Discard and pause. |
-| `B` | Discard uncommitted data with acknowledgement, then request guarded full-body reset. Release both Grips afterwards. |
+| `A` | Three-second countdown, then start. |
+| `B` | Save and pause; wait for the recorder receipt. |
+| `X` | Reset only. Open/pending data blocks reset without changing data. |
+| `Y` | Discard and pause, without reset or exit. |
 
-`A/X` cancels a countdown; B cancels it and requests reset. Loss of VR messages also cancels the
-countdown. Wait for the save/discard result before starting another episode.
-An invalid episode is discarded even if you press `A`; it is never announced
-as saved. After a command timeout, check logs instead of repeatedly pressing buttons.
+B/Y cancel a countdown. X cancels countdown then resets only when no data is open.
+VR input loss cancels countdown. Invalid episodes are discarded even on B;
+unknown results are never reported as successful saves.
 
 `COLLECTOR_MODE=keyboard` keeps keyboard-only operation. Legacy `VR_CONTROL=0/1`
 still works when the mode is unset. Keyboard controls remain
@@ -149,9 +148,9 @@ available in VR mode. Optional settings: `VR_START_DELAY_SEC=3` (0 through 30),
 `VR_SPEECH=0` to disable Chinese voice announcements. Speech uses the existing
 robot TTS service and current system volume. The factory VR input service must
 already be running. For V4 input set `VR_INPUT_TOPIC=/openarmx_teleop_vr_306_v4/vr_input`.
-B causes real motion through the guarded V4 services at
+X causes real motion through the guarded V4 services at
 `VR_RESET_PREFIX=/openarmx_teleop_vr_306_v4`; unavailable services block reset.
-Disable legacy B/reset chords in the teleoperation mapper so collector owns B exclusively.
+Disable legacy B/reset chords in the teleoperation mapper so collector owns X exclusively.
 No vendor reset-topic fallback exists. Pending/uncertain storage blocks reset;
 saved data is retained. Reset leaves the controller disabled; re-enable in the VR page.
 Exit in the terminal with Q. See [VR feedback integration](VR_FEEDBACK.md).
@@ -170,17 +169,17 @@ SUBTASKS_JSON='["pick up the towel with the right hand","transfer the towel betw
 bash start_lerobot_official_collect.sh towel_to_basket_annotated
 ```
 
-Keep **GL+GR held**; short and long A actions both fire **on release**:
+Keep **GL+GR held**; short and long B actions both fire **on release**:
 
 | Operation | Result |
 | --- | --- |
-| `Y` while idle | Countdown, then start one complete episode. |
-| Short `A` while recording | Confirm the current subtask span and advance; recording continues. |
-| Short `A` on the final subtask | Confirm the final span and save the entire episode. |
-| Hold `A` for at least 1 second, then release | Save early, even with incomplete/missing annotations. |
+| `A` while idle | Countdown, then start one complete episode. |
+| Short `B` while recording | Confirm the current subtask span and advance; recording continues. |
+| Short `B` on the final subtask | Confirm the final span and save the entire episode. |
+| Hold `B` for at least 1 second, then release | Save early, even with incomplete/missing annotations. |
 | Keyboard `N` / `S` | Mark current subtask / save early. |
 
-`X` discards; `B` discards then resets; terminal Q exits. Empty spans are rejected.
+`Y` discards; `X` only resets after the open episode is saved/discarded; terminal Q exits. Empty spans are rejected.
 Discard resets the plan for the next episode. Intermediate marks do not encode video
 or pause recording; receipt file writes run in a background thread. Brief Chinese
 speech says "start", "next step", or "saved" only after recorder confirmation.

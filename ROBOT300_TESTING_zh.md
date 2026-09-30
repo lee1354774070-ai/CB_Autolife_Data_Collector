@@ -1,5 +1,44 @@
 # Robot 300 集合版测试（2026-09-30）
 
+## 当前保存点：2026-09-30 MZJ 融合进行中
+
+用户要求下班前先保存，当前停止开发，**尚未完成最终验收，不作为真机发布版**。
+本地分支 `mzj/robot300-thor-compat`；本轮融合暂不推送。上一轮已推送版本仍为 `6f7300e`。
+
+已实现：以 `dagger/mzj_base/` 固定快照作为 supervisor/GR00T/FIFO/状态机基础，
+集合版外层保留统一 A 开始、B 保存、X 仅复位、Y 仅丢弃，来源标记、epoch 拦截、
+附加客户端、异步 trace/状态缓存。控制器/mapper/人工夹爪范围统一10..360°，
+实测反馈容差上限改为365°，保留模型动作与 proposal digest 一致。
+原 MZJ/V4 目录未修改；原待保存测试条已按用户授权丢弃并退出。
+
+已完成的本轮验证（均无真机动作）：
+- 185项 Python 单元测试通过。
+- 隔离 domain211：MZJ supervisor + FIFO、多轮 B/Y/X、迟到动作、保存阻塞、
+  单人采集、分段采集和附加终端检查通过。
+- 原生 V4 gripper 回调：360°可达、不裁剪，361°拒绝；复位张开仅在新鲜复位状态允许。
+- 完整 DAGGER_PUBLISH=0 + WITH_DEPTH=1 启动通过：DISARMED、DRY_RUN、idle，
+  硬件发布端点0、观测电机指令0、网页可访问；测试子进程已正常退出。
+- 实际 MZJ bridge 读取300相机/关节，Thor baseline 两轮40x21只读推理通过，
+  耗时876.4/603.8ms，首帧双夹爪360°，digest/discard/close通过，无policy动作发布。
+
+待继续：
+1. 复测最后两处小补丁：反馈上限365°、保留OpenCV单线程；验证 trace 初始化失败能解锁启动状态。
+2. 完成真实RGB-D保存/续采/丢弃/LeRobot读取（关节和动作使用合成信号，domain211，不能训练）。
+   脚本 `tests/remote/mzj_rgbd_recording_smoke.py` 已保存，但首次在 import 阶段被
+   Conda OpenSSL 动态库路径挡住，**尚未进入录制**；应使用与启动器一致的
+   `interpreter_environment`，不要把它误判为录制器故障，也不要混入真实数据目录。
+3. 补测完整快速扳机 -> mapper -> MZJ pickup，最终审阅README/界面说明一致性。
+4. 完成回归和代码审查后，使用 MkicksX 身份推送，再通知用户进行有人在场的真机验收。
+
+日志（300本机）：`/tmp/mzj_merge_unit.log`、`/tmp/mzj_merge_ros.log`、
+`/tmp/mzj_merge_vr.log`、`/tmp/mzj_merge_subtasks.log`、`/tmp/mzj_merge_attach.log`、
+`/tmp/mzj_merge_stack_test.log`、`/tmp/mzj_merge_stack_child.log`、
+`/tmp/mzj_pinned_readonly.log`、`/tmp/mzj_rgbd_test.log`。
+全身复位/夹爪实体动作、头显实际振动、带真机控制的持续CPU负载尚需现场验收。
+ARM服务保持active，未清错或重启。dashboard/action_player在本轮前已经退出，本轮没有更改其状态。
+
+以下为此前版本的操作说明和历史验证记录；以本节状态为准。
+
 ## 版本与测试范围
 
 目录：/home/ubuntu/collector_validation/20260930_github_dryrun/collector

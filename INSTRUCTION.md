@@ -121,7 +121,7 @@ implementation of DAgger using the new incremental teleoperation**.
 `/control_topic_<domain>_<robot>` (`std_msgs/String` JSON); `l/r.b[1].p` are grips,
 indices 4/5 are X/Y on the left and A/B on the right. It publishes speech
 requests to `/topic_tts_<domain>_<robot>` and structured events to `/collector/feedback`.
-B uses the guarded V4 reset services via `vr_reset.py`, never raw joint targets.
+X uses the guarded V4 reset services via `vr_reset.py`, never raw joint targets.
 It does not infer ASYNC/HOME/SYNC or alter the factory teleoperation mode.
 
 Gestures require neutral, a single face press, and release with both grips held.
@@ -131,7 +131,7 @@ gesture. Start has a configurable countdown and requires recent VR input
 
 One worker waits for command receipts while ROS callbacks continue processing
 button releases. Extra commands during a pending operation are ignored, except
-terminal quit, which waits until that operation returns. Y only starts. Keyboard and VR
+terminal quit, which waits until that operation returns. A only starts. Keyboard and VR
 clients share `.official_control.lock` (flock held through the acknowledgement)
 to prevent overwriting each other's single status file. Busy clients fail fast.
 The empty lock file remains on disk to preserve its inode; it is not a running
@@ -209,10 +209,11 @@ and collision checks remain from the inspected version, not replaced with guesse
 Current scope: robot 300/domain 0, 21-D arms+grippers+head+upper waist, three RGB
 inputs and GR00T `policy_only_baseline`/`policy_only_frame`. Depth can be recorded,
 but is not fed to this RGB-only model contract. PI0.5 and causal EDVA/SOMA Outcome
-history are not integrated here. `thor_bridge.py` uses OUR `GrootRemoteClient`,
-persistent HTTP transport, checkpoint contract, q23 mapping and SHM reader.
-The colleague's Thor bridge is neither imported nor launched. Standalone copies
-need `DAGGER_TOOLS_ROOT` pointing to the complete VLA tools repository.
+history are not integrated here. The pinned `dagger/mzj_base/` snapshot supplies
+the MZJ supervisor, incremental gripper/pickup, full-body reset, FIFO and GR00T
+capture/21-D mapping/chunk execution. `SOURCE.json` records provenance and changes.
+Thin adapters add collection controls, provenance, session/epoch fencing and
+controller-submission receipts. Received actions are never clipped or rewritten.
 
 Our Thor server gains `/controller_ack`, limited to policy-only baseline/frame.
 It retires the exact digest-bound **submitted target prefix**, not a claim that
@@ -222,7 +223,7 @@ Ordinary execution `/ack` and training behavior are unchanged. Lost HTTP replies
 are never replayed; uncertain controller receipts latch failure rather than invent
 executed actions. Takeover revokes local output while a slow HTTP request finishes.
 
-Y first waits for the recorder's correlated start receipt, then enables policy
+A first waits for the recorder's correlated start receipt, then enables policy
 authority. Hardware startup may take time: the recorder waits up to 30 s for
 fresh action provenance before accepting its first frame. This visible initial
 barrier is not a skipped frame inside an episode. After it, ordinary FIFO,
@@ -234,7 +235,7 @@ invalidates in-flight IK; the existing mapper re-anchors the held Grip against
 current pose and tags expert inputs with that epoch. Late policy/expert packets
 from an older epoch are rejected, not relabelled. Fault/reset barriers remain.
 Actual hardware latency still includes DDS delivery, mapper ticks and IK.
-A held button does not repeatedly request takeover. X only discards the episode.
+A held button does not repeatedly request takeover. Y only discards the episode.
 Human control does not automatically return to policy.
 
 Policy messages must match the active session and authority epoch. HTTP results
@@ -243,18 +244,18 @@ the supervisor. The V4 controller remains the sole hardware publisher and retain
 its joint/configuration, trajectory, watchdog and collision guards. The supervisor
 does not impose an additional 8/10-degree target-to-measurement cutoff: tracking
 lag is not an adjacent-action jump. Finite 21-D action/state validation, authority
-checks and rejection of gripper targets outside [10,330] degrees remain enabled.
+checks and rejection of gripper targets outside [10,360] degrees remain enabled.
 This does not bypass the V4 controller's command-lead caps or mechanical limits.
 Software stopping cannot replace a physical E-stop.
 On exit, the controller keeps ROS alive until its owned hold/lease release is
 sent. A disabled controller sends no new motor targets just to shut down.
 
-A revokes output, saves the entire accepted trajectory, and disables the session,
-without resetting. X discards without reset; it does not request takeover.
-Both trigger once on press, regardless of hold duration.
-B revokes output, discards unsaved frames, waits for the ACK,
-then requests the official full-body reset including grippers. An uncertain save
-is reconciled using its existing request ID; no blind retry/discard/reset occurs.
+B revokes output and saves the entire accepted trajectory without reset.
+Y discards without reset. X only resets the full body and opens grippers; open
+or unresolved data blocks it without changing data. All require a new A to start.
+B/Y trigger once per press. Unknown receipts retain the original request ID;
+reconcile before reset, never blindly repeat save/discard.
+
 Q/Ctrl+C closes only this launcher's children and discards unconfirmed data.
 Recorder invalidation revokes control on the next state update; process death
 closes the stack. The default `DAGGER_PUBLISH=0` does not authorize hardware motion.

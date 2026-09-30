@@ -1,299 +1,119 @@
-"""Our Thor protocol + SHM reader, upstream of the sole V4 motion controller.
+"""MZJ GR00T client, retaining its capture, chunk execution and cancellation.
 
-HTTP, JPEG and camera waits never run in ROS callbacks. One worker owns the
-remote session; there is no request backlog or automatic POST replay. The
-supervisor fences every target by local session and authority epoch, so X/B
-revoke output even while Thor is still computing an obsolete chunk.
+The sole protocol addition reports a controller-submission receipt, never
+claims physical completion from a ROS forward acknowledgement.
 """
-
-from __future__ import annotations
-
 import json
-import os
-import threading
-import time
-
 import cv2
-import numpy as np
-from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
+import time
 from std_msgs.msg import String
-
-from deploy.common.robot_io import DirectShmCameraSet, image_to_policy_chw
-from deploy.groot_n1_7.auth import read_token
-from deploy.groot_n1_7.robot_client import GrootRemoteClient
-from deploy.groot_n1_7.robot_mapping import policy_state_from_q23
-from deploy.groot_n1_7.protocol import ProtocolError, array_digest
-from robot_schema import parse_whole_body_state
+from .mzj_base.groot_policy_bridge import GrootPolicyBridge
+from .mzj_base.groot_bridge_core import array_digest_float32
 
 
-class Revoked(RuntimeError):
-    """Local authority changed; never publish the old worker's result."""
-
-
-class CollectorThorBridge(Node):
-    def __init__(self, *, start_worker=True):
-        super().__init__("collector_thor_bridge")
-        defaults = dict(server_url="", token_file="", task="", request_timeout_sec=10.0,
-                        action_rate_hz=30.0, receipt_timeout_sec=.15,
-                        camera_wait_sec=1.0, max_image_age_sec=.25, max_image_delta_sec=.04,
-                        max_state_age_sec=.35, max_proposal_age_sec=2.0,
-                        joint_state_topic="/topic_arm_whole_body_and_gripper_current_joints_status_0_300")
-        for key, value in defaults.items():
-            self.declare_parameter(key, value)
-        for key in defaults:
-            if isinstance(defaults[key], float):
-                value = self.get_parameter(key).value
-                if not np.isfinite(value) or value <= 0:
-                    raise ValueError(f"{key} must be finite and positive")
-        self._condition = threading.Condition()
-        self._stopped = False
-        self._generation = 0
-        self._identity = ("", -1, "DISARMED")
-        self._state_received = 0.
-        self._q23 = None
-        self._joints_received = 0.
-        self._waiting_receipt = None
-        self._receipt = False
-        self._receipt_accepted = False
-        self._phase = "idle"
-        self._detail = ""
-        self._phase_session = ""
-        self._timings = {}
-        self._sequence = 0
-        reliable = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
-        latest = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
-        self._action_pub = self.create_publisher(String, "/hg_dagger/policy_action", reliable)
-        self._status_pub = self.create_publisher(String, "/hg_dagger/policy_status", reliable)
-        self.create_subscription(String, "/hg_dagger/control_state", self._on_control_state, reliable)
-        self.create_subscription(String, "/hg_dagger/policy_forward_ack", self._on_receipt, reliable)
-        self.create_subscription(String, self.get_parameter("joint_state_topic").value, self._on_joints, latest)
-        self.create_timer(.1, self._publish_status)
-        cv2.setNumThreads(1)  # JPEG/resize workers must not consume all robot cores.
-        self._worker = threading.Thread(target=self._run, name="collector-thor-http", daemon=True)
-        if start_worker:
-            self._worker.start()
+class CollectorThorBridge(GrootPolicyBridge):
+    def __init__(self):
+        cv2.setNumThreads(1)  # Preserve the collection CPU limit for JPEG/resize.
+        self._collector_session_id = ""
+        self._control_received = 0.0
+        self._proposal_authority = (-1, "", -1)
+        super().__init__()
 
     def _on_control_state(self, message):
         try:
-            data = json.loads(message.data)
-            identity = (data["session_id"], int(data["authority_epoch"]), data["mode"])
-        except (ValueError, TypeError, KeyError):
+            packet = json.loads(message.data)
+            session, epoch = packet["session_id"], packet["authority_epoch"]
+            if not isinstance(session, str) or type(epoch) is not int or epoch < 0:
+                return
+        except (KeyError, TypeError, ValueError):
             return
         with self._condition:
-            if identity != self._identity:
+            if session == self._collector_session_id and epoch < self._authority_epoch:
+                return
+            identity_changed = (session, epoch) != (self._collector_session_id, self._authority_epoch)
+            generation = self._generation
+            super()._on_control_state(message)
+            if identity_changed and generation == self._generation:
                 self._generation += 1
-            self._identity = identity
-            self._state_received = time.monotonic()
+            self._collector_session_id = session
+            self._control_received = time.monotonic()
             self._condition.notify_all()
 
-    def _on_joints(self, message):
+    def _generation_valid(self, generation, required_mode=None):
+        with self._condition:
+            return (0 <= time.monotonic() - self._control_received <= .5
+                    and bool(self._collector_session_id)
+                    and super()._generation_valid(generation, required_mode))
+
+    def _run_generation(self, generation):
+        with self._condition:
+            if not self._generation_valid(generation, "POLICY_ACTIVE"):
+                return
+            self._proposal_authority = (generation, self._collector_session_id, self._authority_epoch)
+        # Retry an unresolved cleanup before creating another remote proposal.
+        if self._proposal is not None:
+            self._resolve_proposal(cancel=True)
+        if self._session_id:
+            self._close_session()
+            if self._session_id:
+                raise RuntimeError("previous Thor session has not closed")
+        super()._run_generation(generation)
+
+    def _policy_payload(self, action, proposal, step, generation, observation_wall_ns,
+                        observation_state, *, shadow_only):
+        payload = super()._policy_payload(action, proposal, step, generation,
+            observation_wall_ns, observation_state, shadow_only=shadow_only)
+        owner_generation, session, epoch = self._proposal_authority
+        if generation != owner_generation:
+            raise RuntimeError("proposal authority changed")
+        payload.update(collector_session_id=session, authority_epoch=epoch)
+        return payload  # Action values and digest remain byte-for-byte compatible.
+
+    def _on_forward_ack(self, message):
         try:
-            packet = json.loads(message.data)
-            q23 = parse_whole_body_state(packet) if isinstance(packet, dict) else None
-        except (ValueError, TypeError, KeyError):
+            if json.loads(message.data).get("accepted") is False:
+                return
+        except (TypeError, ValueError):
             return
-        if q23 is not None and np.isfinite(q23).all():
-            with self._condition:
-                self._q23, self._joints_received = q23, time.monotonic()
+        super()._on_forward_ack(message)
 
-    def _on_receipt(self, message):
-        try:
-            data = json.loads(message.data)
-            key = (data["proposal_id"], data["chunk_step"], data["bridge_generation"], data["authority_epoch"])
-        except (ValueError, TypeError, KeyError):
-            return
-        with self._condition:
-            if key == self._waiting_receipt:
-                self._receipt = True
-                self._receipt_accepted = data.get("accepted", True) is True
-                self._condition.notify_all()
-
-    def _valid(self, generation):
-        return (not self._stopped and generation == self._generation
-                and bool(self._identity[0]) and self._identity[2] == "POLICY_ACTIVE"
-                and time.monotonic() - self._state_received < .6)
-
-    def _check(self, generation):
-        with self._condition:
-            if not self._valid(generation):
-                raise Revoked("local authority revoked or heartbeat stale")
-
-    def _fresh_q23(self):
-        with self._condition:
-            if (self._q23 is None or time.monotonic() - self._joints_received
-                    > self.get_parameter("max_state_age_sec").value):
-                raise RuntimeError("fresh complete q23 telemetry required")
-            return self._q23.copy()
-
-    def _set_phase(self, phase, detail=""):
-        with self._condition:
-            self._phase, self._detail = phase, detail
+    def _connect(self):
+        super()._connect()
+        if not self._health.get("controller_submission_receipts"):
+            raise RuntimeError("Thor controller_submission receipts are required")
 
     def _publish_status(self):
-        with self._condition:
-            value = dict(phase=self._phase, detail=self._detail,
-                         collector_session_id=self._phase_session, timing_ms=dict(self._timings),
-                         receipt_scope="controller_submission")
-        self._status_pub.publish(String(data=json.dumps(value, separators=(",", ":"))))
+        # Tag the producer generation, not whichever new trial is active while
+        # an old HTTP request is finishing. Stale errors cannot stop a new trial.
+        generation, session, epoch = self._proposal_authority
+        self._status_pub.publish(String(data=json.dumps({
+            "phase": self._phase, "detail": self._detail,
+            "collector_session_id": session, "authority_epoch": epoch,
+            "bridge_generation": generation, "hg_mode": self._mode,
+            "server_url": str(self.get_parameter("server_url").value),
+            "server_mode": self._health.get("mode"), "session_id": self._session_id,
+            "proposal_id": None if self._proposal is None else self._proposal.get("proposal_id"),
+            "timestamp_ns": time.time_ns(),
+        }, separators=(",", ":"))))
 
-    def _capture(self, client, contract, cameras, generation):
-        self._set_phase("capturing")
-        deadline = time.monotonic() + self.get_parameter("camera_wait_sec").value
-        while time.monotonic() < deadline:
-            self._check(generation)
-            cameras.refresh()
-            frames = cameras.synchronized_latest("hand_left", self.get_parameter("max_image_delta_sec").value,
-                                                 self.get_parameter("max_image_age_sec").value)
-            if frames is not None:
-                q23 = self._fresh_q23()
-                state = policy_state_from_q23(q23)
-                observation_ns = time.time_ns()
-                images = {key: image_to_policy_chw(frames[key.rsplit(".", 1)[-1]].image_hwc, shape)
-                          for key, shape in contract.image_shapes.items()}
-                self._sequence += 1
-                encoded = client.observation_payload(self._sequence, state, images, contract)
-                self._check(generation)
-                return encoded, state, observation_ns
-            with self._condition:
-                self._condition.wait(.005)
-        raise TimeoutError("three fresh synchronized RGB cameras unavailable")
-
-    def _submit(self, proposal, contract, generation, state, observation_ns):
-        actions = np.asarray(proposal["executable_actions"], dtype=np.float32)
-        if (actions.ndim != 2 or actions.shape[1] != contract.action_dim
-                or not 0 < len(actions) <= contract.chunk_size
-                or not np.isfinite(actions).all()
-                or array_digest(actions) != proposal["executable_chunk_digest"]):
-            raise ProtocolError("invalid/digest-mismatched Thor action chunk")
-        prefix = []
-        period = 1.0 / self.get_parameter("action_rate_hz").value
-        deadline = time.monotonic()
-        for step, action in enumerate(actions[:contract.n_action_steps]):
-            with self._condition:
-                while self._valid(generation) and time.monotonic() < deadline:
-                    self._condition.wait(deadline - time.monotonic())
-                if not self._valid(generation):
-                    break
-                session, epoch, _ = self._identity
-            if (time.time_ns() - observation_ns) / 1e9 > self.get_parameter("max_proposal_age_sec").value:
-                break
-            q23 = self._fresh_q23()
-            payload = dict(action=action.astype(float).tolist(), units="degrees", shadow_only=False,
-                           measured_leg_waist=q23[:4].astype(float).tolist(),
-                           measured_policy_state=policy_state_from_q23(q23).astype(float).tolist(),
-                           proposal_observation_state=state.astype(float).tolist(),
-                           proposal_observation_timestamp_ns=observation_ns,
-                           proposal_id=proposal["proposal_id"], chunk_step=step,
-                           source_timestamp_ns=time.time_ns(), bridge_generation=generation,
-                           collector_session_id=session, authority_epoch=epoch)
-            with self._condition:
-                if not self._valid(generation):
-                    break
-                self._waiting_receipt = (proposal["proposal_id"], step, generation, epoch)
-                self._receipt = False
-                self._action_pub.publish(String(data=json.dumps(payload, separators=(",", ":"))))
-                receipt_deadline = time.monotonic() + self.get_parameter("receipt_timeout_sec").value
-                # After send, even X cannot tell us whether the last target was
-                # forwarded. Reconcile its receipt; no physical output waits on
-                # this thread. Missing receipt latches an ambiguous session.
-                while not self._receipt and time.monotonic() < receipt_deadline:
-                    self._condition.wait(receipt_deadline - time.monotonic())
-                if not self._receipt:
-                    raise RuntimeError("controller submission receipt missing; no automatic replay or remote close")
-                self._waiting_receipt = None
-                if not self._receipt_accepted:
-                    break
-            prefix.append(action)
-            deadline += period
-            # Do not burst a backlog of commands after scheduler stalls.
-            if deadline < time.monotonic():
-                deadline = time.monotonic() + period
-        return prefix
-
-    def _session(self, client, generation):
-        self._set_phase("connecting")
-        health, contract = client.health()
-        if (health.get("mode") not in ("policy_only_baseline", "policy_only_frame") or health.get("outcome_history_offsets")
-                or not health.get("controller_submission_receipts")):
-            raise ProtocolError("Update our Thor baseline/frame server; controller_submission receipts required")
-        cameras = DirectShmCameraSet(tuple(key.rsplit(".", 1)[-1] for key in contract.image_shapes), set())
-        remote_session = None
-        while True:
-            try:
-                self._check(generation)
-                payload, state, observation_ns = self._capture(client, contract, cameras, generation)
-            except Revoked:
-                break
-            except Exception:
-                # At a capture boundary no proposal is outstanding. Closing is
-                # safe here; unlike an ambiguous /infer or receipt timeout it
-                # does not discard an unknown execution prefix.
-                if remote_session:
-                    client._request("/close", {"session_id": remote_session})
-                raise
-            self._set_phase("inference")
-            started = time.monotonic()
-            response = (client.start(self.get_parameter("task").value, payload) if remote_session is None
-                        else client.infer(remote_session, payload))
-            remote_session = response["session_id"]
-            with self._condition:
-                self._timings["inference_round_trip"] = (time.monotonic() - started) * 1000
-            proposal = response.get("proposal")
-            if response.get("decision") != "execute" or not isinstance(proposal, dict):
-                raise ProtocolError("Expected policy-only execute proposal")
-            self._set_phase("executing")
-            prefix = self._submit(proposal, contract, generation, state, observation_ns)
-            self._set_phase("holding")
-            if prefix:
-                client.finish_controller_submission(remote_session, proposal, np.stack(prefix))
-            else:
-                client.discard_unexecuted(remote_session, proposal)
-            if not prefix:
-                with self._condition:
-                    if not self._valid(generation):
-                        break
-                client._request("/close", {"session_id": remote_session})
-                raise RuntimeError("proposal expired before any target could be submitted")
-        if remote_session:
-            # Do not use close(), which intentionally suppresses ProtocolError
-            # for legacy callers. DAgger must expose uncertain lifecycle I/O.
-            client._request("/close", {"session_id": remote_session})
-
-    def _run(self):
-        failed_session = None
-        while True:
-            with self._condition:
-                self._condition.wait_for(lambda: self._stopped or (
-                    self._valid(self._generation) and self._identity[0] != failed_session))
-                if self._stopped:
-                    return
-                generation, local_session = self._generation, self._identity[0]
-                self._phase_session = local_session
-            client = None
-            try:
-                client = GrootRemoteClient(self.get_parameter("server_url").value,
-                                           read_token(os.environ.get("GROOT_REMOTE_TOKEN"),
-                                                      self.get_parameter("token_file").value),
-                                           timeout_sec=self.get_parameter("request_timeout_sec").value)
-                self._session(client, generation)
-                self._set_phase("idle")
-            except Revoked:
-                # A response/receipt already reconciled; do not restart this
-                # same local session if its heartbeat simply reappears.
-                failed_session = local_session
-                self._set_phase("idle", "authority revoked")
-            except Exception as exc:
-                failed_session = local_session
-                self._set_phase("failed", str(exc))
-            finally:
-                if client is not None:
-                    client.close_connections()
-
-    def destroy_node(self):
-        with self._condition:
-            self._stopped = True
-            self._condition.notify_all()
-        if self._worker.is_alive():
-            self._worker.join(timeout=self.get_parameter("request_timeout_sec").value + 1)
-        return super().destroy_node()
+    def _resolve_proposal(self, *, cancel):
+        proposal, session_id = self._proposal, self._session_id
+        if proposal is None or not session_id:
+            return
+        if self._executed:
+            self._post("/controller_ack", {
+                "session_id": session_id,
+                "receipt_scope": "controller_submission",
+                "proposal_id": str(proposal["proposal_id"]),
+                "context_digest": str(proposal["context_digest"]),
+                "executable_chunk_digest": str(proposal["executable_chunk_digest"]),
+                "submitted_prefix": self._executed,
+                "submitted_prefix_digest": array_digest_float32(self._executed),
+            })
+        else:
+            self._post("/discard", {
+                "session_id": session_id, "proposal_id": str(proposal["proposal_id"])
+            })
+        # Preserve unresolved proposal on error; do not claim it was retired.
+        self._proposal = None
+        self._executed = []

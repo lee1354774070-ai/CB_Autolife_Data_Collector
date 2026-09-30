@@ -8,6 +8,7 @@ domain is mandatory. This tests software sequencing, not robot task execution.
 
 import ast
 import json
+import numpy as np
 import os
 from pathlib import Path
 import sys
@@ -26,12 +27,12 @@ def check_controller_copy(root):
         source = runtime / 'openarmx_teleop_vr_306_v4/controller_node.py'
         tree = ast.parse(source.read_text())
         names = {'_on_target', '_on_release_hold', '_on_follow_authority',
-                 '_collector_target_allowed', '_follow_authority_allowed'}
+                 '_collector_target_allowed', '_follow_authority_allowed', '_on_gripper'}
         methods = [method for cls in tree.body if isinstance(cls, ast.ClassDef)
                    for method in cls.body if isinstance(method, ast.FunctionDef) and method.name in names]
         cls = ast.ClassDef(name='ControllerHooks', bases=[], keywords=[], body=methods, decorator_list=[])
         module = ast.fix_missing_locations(ast.Module(body=[cls], type_ignores=[]))
-        scope = dict(json=json, time=time)
+        scope = dict(json=json, time=time, np=np)
         exec(compile(module, str(source), 'exec'), scope)
         node = scope['ControllerHooks']()
         node.__dict__.update(
@@ -60,7 +61,35 @@ def check_controller_copy(root):
         node._hold_sides_locked.assert_not_called()
         node._on_release_hold(message({'authority_epoch': 2, 'sides': ['left']}))
         node._hold_sides_locked.assert_called_once()
-        print('PATCHED_CONTROLLER_HANDOFF_PASS hardware_backend_imported=false')
+        # Exercise the real native gripper callback with deployed 10..360
+        # limits. A fast trigger/phase-aware 360 must not be silently clipped.
+        node._state, node._hardware_enabled = 'ARMED', True
+        node._gripper_targets = {'left': 10., 'right': 10.}
+        node._gripper_dirty = {'left': False, 'right': False}
+        node.get_parameter = lambda key: SimpleNamespace(value={
+            'gripper_min_position': 10., 'gripper_max_position': 360.,
+            'gripper_max_step_per_input': 0., 'feedback_timeout_sec': .5}[key])
+        target = dict(authority_epoch=2, left_gripper_target_joints_position=[360.],
+                      right_gripper_target_joints_position=[360.])
+        node._on_gripper(message(target))
+        assert node._gripper_targets == {'left': 360., 'right': 360.}
+        node._on_gripper(message({**target, 'left_gripper_target_joints_position': [361.]}))
+        assert 'outside [10.0, 360.0]' in node._reason
+        assert node._gripper_targets == {'left': 360., 'right': 360.}
+        node._feedback_time = time.monotonic()
+        reset = dict(session_id='trial', authority_epoch=3, mode='DISARMED', quick_reset={'pending': True})
+        node._on_follow_authority(message(reset))
+        opening = dict(source='hg_dagger_full_reset', left_gripper_target_joints_position=[10.],
+                       right_gripper_target_joints_position=[10.])
+        node._on_gripper(message(opening))
+        assert node._gripper_targets == {'left': 10., 'right': 10.}
+        assert not node._collector_target_allowed(opening, policy_only=True)
+        node._on_follow_authority(message({**reset, 'quick_reset': {'pending': False}}))
+        assert not node._collector_target_allowed(opening, policy_only=False)
+        node._collector_reset_pending = True
+        node._follow_authority_time -= 1
+        assert not node._collector_target_allowed(opening, policy_only=False)
+        print('PATCHED_CONTROLLER_HANDOFF_AND_GRIPPER_PASS range=10..360 reset_gate=true hardware_backend_imported=false')
 
 
 def main():
@@ -192,7 +221,7 @@ def main():
             takeover_ms = (time.monotonic() - started) * 1000
             assert node._machine.mode.value == "EXPERT_ACTIVE"
             assert takeover_ms < 50, takeover_ms
-            node._selected_release_pub.publish.assert_not_called()
+            node._selected_release_pub.publish.assert_called_once()
             assert node._hold_to_intervene
             node._on_policy_action(String(data=json.dumps(good)))
             node._selected_joint_pub.publish.assert_not_called()

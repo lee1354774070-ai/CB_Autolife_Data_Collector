@@ -196,10 +196,10 @@ def main():
         wait_recorder(recorder, base, started, stop)
         stack = subprocess.Popen(ros_command(env, "ros2", "launch", str(ROOT / "dagger/stack.launch.py")),
                                  env=env, stdin=subprocess.DEVNULL, start_new_session=True)
-        print("DAgger running. VR: Y start, GL/GR held takeover, A save, X discard, B discard+reset. "
+        print("DAgger running. VR: A start, GL/GR held takeover, B save, Y discard, X reset only. "
               "Terminal: C start, A save, X/D discard, R reset, Q exit.", flush=True)
         print(f"Hardware publishing: {env['DAGGER_PUBLISH']} (1=enabled). "
-              "B/R resets all body joints and grippers; keep workspace clear.", flush=True)
+              "VR X / terminal R resets all body joints and grippers after B/Y receipt; keep workspace clear.", flush=True)
         if not args.serve and sys.stdin.isatty():
             terminal = termios.tcgetattr(sys.stdin)
             tty.setcbreak(sys.stdin.fileno())

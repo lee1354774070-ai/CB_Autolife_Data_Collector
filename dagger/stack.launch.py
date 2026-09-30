@@ -54,6 +54,7 @@ def generate_launch_description():
     controller = process([vr_python, "-m", "openarmx_teleop_vr_306_v4.controller_node"],
                          config=vr / "config/controller.yaml", params={
         "topic_suffix": "0_300", "dry_run": dry,
+        "gripper_max_position": "360.0",
         "sync_hold_only_enable": "true", "hardware_session_mode": "sync",
         "require_sync_session_service": "true", "require_teleop_heartbeat": "true",
         "reset_before_hardware_enable": "false", "quick_reset_after_hardware_enable": "false",
@@ -74,7 +75,7 @@ def generate_launch_description():
     mapper = process([python, runtime, "mapper"],
                      config=vr / "config/teleop.yaml", params={
         "topic_suffix": "0_300", "dry_run": dry, "quick_reset_enabled": "false",
-        "gripper_filter_alpha": "1.0", "gripper_max_step_per_cycle": "320.0",
+        "gripper_filter_alpha": "1.0", "gripper_max_step_per_cycle": "350.0", "gripper_closed_position": "360.0",
     }, remaps={**{f"{prefix}/{key}": f"/hg_dagger/expert/{key}"
                   for key in ("eef_target", "gripper_target", "release_hold")},
                f"{prefix}/head_target": "/hg_dagger/disabled/head_target",
@@ -82,6 +83,7 @@ def generate_launch_description():
     bridge = process([python, runtime, "bridge"], params={
         "server_url": os.environ["DAGGER_SERVER_URL"], "token_file": os.environ["DAGGER_TOKEN_FILE"],
         "task": json.dumps(os.environ["TASK_TEXT"]),
+        "collector_root": "/home/ubuntu/lerobot_data_collector",
         "joint_state_topic": "/topic_arm_whole_body_and_gripper_current_joints_status_0_300",
     })
     web = process([web_python, runtime, "web"], params={
