@@ -145,7 +145,7 @@ def main():
                 "rightController": right if right is not None else {"gripActive": False}})))
 
         try:
-            click("Y")
+            click("A")
             wait_idle()
             assert commands == ["start"], commands
             assert enable_calls[0] == (True, ["start"]), enable_calls
@@ -209,9 +209,9 @@ def main():
             node._selected_eef_pub.publish.assert_called_once()
             vr(gripActive=True)
             assert node._machine.authority_epoch == epoch, "Held Grip retriggered takeover"
-            vr(gripActive=False, xButton=False)
+            vr(gripActive=False, yButton=False)
             assert node._machine.mode.value == "EXPERT_ACTIVE"
-            click("A")
+            click("B")
             time.sleep(.03)
             started = time.monotonic()
             vr(gripActive=False)
@@ -219,67 +219,80 @@ def main():
             assert callback_ms < 50, callback_ms
             wait_idle()
             assert commands == ["start", "save"], commands
-            assert not reset_calls, "A unexpectedly moved reset"
-            click("Y")
+            assert not reset_calls, "B unexpectedly moved reset"
+            click("A")
             wait_idle()
             vr(gripActive=False, right={"gripActive": True})
             assert node._machine.mode.value == "EXPERT_ACTIVE", "Right Grip did not immediately take over"
             node._on_controller_status(String(data=json.dumps({"state": "HOLDING", "hardware_ready": True})))
             assert node._machine.mode.value == "EXPERT_ACTIVE"
             vr(gripActive=False)
-            click("B")
+            before = list(commands)
+            click("X")
             wait_idle()
-            assert commands == ["start", "save", "start", "discard"], commands
-            assert reset_calls == [("B", commands)], reset_calls
-            assert node._machine.mode.value == "DISARMED"
-            # An uncertain save is not replayed and B cannot discard or reset
-            # it. Only a receipt for the original request releases the latch.
+            assert commands == before, "X discarded a live episode"
+            assert not reset_calls, "X reset during recording"
             click("Y")
             wait_idle()
-            fail_save.set()
+            assert not reset_calls, "Y unexpectedly reset"
+            click("X")
+            wait_idle()
+            assert commands == ["start", "save", "start", "discard"], commands
+            assert reset_calls == [("X", commands)], reset_calls
+            assert node._machine.mode.value == "DISARMED"
+            # An uncertain save is not replayed and X cannot discard or reset
+            # it. Only a receipt for the original request releases the latch.
             click("A")
+            wait_idle()
+            fail_save.set()
+            click("B")
             wait_idle()
             pending = node._pending_collector_result
             assert pending is not None
             sent = list(commands)
             count = len(reset_calls)
-            click("A")
-            wait_idle()
             click("B")
+            wait_idle()
+            click("X")
             wait_idle()
             assert commands == sent, "uncertain command replayed"
             assert len(reset_calls) == count, "reset happened before save confirmation"
             receipt = base / ".official_recording_status.json"
             receipt.write_text(json.dumps({"request_id": pending.request_id, "event": "save",
                                            "success": True, "frames": 60, "expert_frames": 25}))
+            click("X")
+            wait_idle()
+            assert len(reset_calls) == count, "X reconciled storage implicitly"
             click("B")
+            wait_idle()
+            click("X")
             wait_idle()
             assert commands == sent
             assert len(reset_calls) == count + 1
-            # A saves on press, regardless of duration; hold/release cannot
+            # B saves on press, regardless of duration; hold/release cannot
             # send another command or turn a save into a discard.
             fail_save.clear()
-            click("Y")
+            click("A")
             wait_idle()
             sent, count = list(commands), len(reset_calls)
             now = time.monotonic_ns()
             with node._lock:
-                node._update_face_button_locked("A", True, now)
-                node._update_face_button_locked("A", True, now + 1_200_000_000)
+                node._update_face_button_locked("B", True, now)
+                node._update_face_button_locked("B", True, now + 1_200_000_000)
             wait_idle()
             assert commands == sent + ["save"]
             with node._lock:
-                node._update_face_button_locked("A", False, now + 1_200_000_001)
+                node._update_face_button_locked("B", False, now + 1_200_000_001)
             wait_idle()
             assert commands == sent + ["save"]
             assert len(reset_calls) == count
-            click("Y")
+            click("A")
             wait_idle()
             sent = list(commands)
-            vr(gripActive=False, xButton=True)
+            vr(gripActive=False, yButton=True)
             wait_idle()
-            vr(gripActive=False, xButton=True)
-            vr(gripActive=False, xButton=False)
+            vr(gripActive=False, yButton=True)
+            vr(gripActive=False, yButton=False)
             wait_idle()
             assert commands == sent + ["discard"]
             assert node._machine.mode.value == "DISARMED"

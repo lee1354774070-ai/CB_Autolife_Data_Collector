@@ -18,14 +18,14 @@ REVIEWED = {
 }
 
 LABELS = {
-    '云蝶DAgger启动器': 'Collector compatible DAgger host',
-    '丢弃 / 全身复位': 'Discard (no reset)',
-    '保存并退出': 'Stop host',
-    '丢弃本条并机械复位？': 'Discard this episode without resetting?',
-    'A 开始   ·   B 保存后复位   ·   X 丢弃后复位   ·   双 Y 退出': 'Y: start | Grip: immediate takeover | A: save | X: discard | B: reset',
-    '本窗口 Shift+A 开始 / B 保存 / X 丢弃 / Y 五秒内按两次退出': 'Shift+Y: start | Shift+A: save | Shift+X: discard | Shift+B: reset',
-    '接管：手柄 Grip   /   键盘：控制页面 Shift + A / B / X / Y': 'Grip: takeover | Y: start | A: save | X: discard | B: reset',
-    '未接管，结束时丢弃': 'No takeover; A still saves the episode',
+    '云蝶DAgger启动器': '云蝶集合版 DAgger 启动器',
+    '丢弃 / 全身复位': '丢弃本条（不复位）',
+    '保存并退出': '退出采集',
+    '丢弃本条并机械复位？': '丢弃当前条？本操作不复位。',
+    'A 开始   ·   B 保存后复位   ·   X 丢弃后复位   ·   双 Y 退出': 'A 开始 · 握持接管 · B 保存 · Y 丢弃 · X 仅复位',
+    '本窗口 Shift+A 开始 / B 保存 / X 丢弃 / Y 五秒内按两次退出': 'Shift+A 开始 / Shift+B 保存 / Shift+Y 丢弃 / Shift+X 仅复位',
+    '接管：手柄 Grip   /   键盘：控制页面 Shift + A / B / X / Y': '短按面键操作 · B/Y 不复位 · 退出用退出按钮',
+    '未接管，结束时丢弃': '无接管也可按 B 保存整条',
     '数据位置  /home/ubuntu/nas/dagger': 'Data location: OUTPUT_BASE_DIR (default /home/ubuntu/nas14)',
 }
 
@@ -66,7 +66,7 @@ def render(source, tools_root):
 if key not in self.shortcut_held:
     return
 self.shortcut_held.pop(key)
-action = {'y':'start', 'a':'finish', 'x':'discard', 'b':'reset'}[key]
+action = {'a':'start', 'b':'finish', 'y':'discard', 'x':'reset'}[key]
 button = self.control_buttons[action]
 if str(button['state']) != 'disabled':
     button.invoke()

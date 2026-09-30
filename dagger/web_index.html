@@ -1,47 +1,47 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="utf-8">
     <title>CB Collector | DAgger 300</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <script src="vendor/aframe.min.js"></script>
-    <script src="vr_app.js?v=cb-collector-dagger-grip-20260929" defer></script>
+    <script src="vr_app.js?v=cb-collector-dagger-release-20260930" defer></script>
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
     <main id="launchPanel" class="launch-panel">
       <div class="brand-logo">AUTOLIFE</div>
       <div class="title">CB Collector | DAgger 300</div>
-      <div id="serverUrl" class="server-url">Connecting...</div>
+      <div id="serverUrl" class="server-url">正在连接…</div>
       <section id="hardwareControl" class="hardware-control" aria-live="polite">
         <div class="hardware-status-row">
           <span id="hardwareStatusDot" class="hardware-status-dot"></span>
-          <span id="hardwareStatusLabel" class="hardware-status-label">Waiting for controller</span>
+          <span id="hardwareStatusLabel" class="hardware-status-label">等待控制器</span>
         </div>
-        <div id="hardwareStatusDetail" class="hardware-status-detail">Connecting...</div>
+        <div id="hardwareStatusDetail" class="hardware-status-detail">正在连接…</div>
         <div class="follow-options" hidden>
           <label for="waistFollowToggle"><input id="waistFollowToggle" type="checkbox" disabled>Waist follow</label>
           <label for="headFollowToggle"><input id="headFollowToggle" type="checkbox" disabled>Head follow</label>
         </div>
         <button id="hardwareToggleButton" class="hardware-toggle-button" type="button" disabled>
-          Hold to start inference + recording
+          长按进入 VR（待命；A 开始）
         </button>
-        <div class="hardware-safety-hint">B discards the current unsaved episode and resets the robot. Saved episodes are kept.</div>
+        <div class="hardware-safety-hint">B 保存、Y 丢弃均不复位。X 仅全身复位（先保存或丢弃当前条）；已保存数据保留。</div>
       </section>
-      <section class="dagger-guide" aria-label="Collector DAgger controls">
-        <strong>DAgger controls</strong>
+      <section class="dagger-guide" aria-label="集合版 DAgger 操作说明">
+        <strong>集合版 DAgger · 统一按键</strong>
         <div class="dagger-guide-grid">
-          <span><kbd>Y</kbd> Start inference + recording</span>
-          <span><kbd>GL / GR</kbd> Hold to take over</span>
-          <span><kbd>X</kbd> Discard episode</span>
-          <span><kbd>A</kbd> Save episode</span>
-          <span><kbd>B</kbd> Discard unsaved episode + reset</span>
+          <span><kbd>A</kbd> 开始推理和录制</span>
+          <span><kbd>GL / GR</kbd> 按住任一握持键接管</span>
+          <span><kbd>Y</kbd> 丢弃本条，不复位</span>
+          <span><kbd>B</kbd> 保存本条，不复位</span>
+          <span><kbd>X</kbd> 仅全身复位（先保存或丢弃）</span>
         </div>
-        <p>Press either Grip and keep holding. After the robot holds, move the held controller to correct. A/X trigger once on press, with no long-press action. Browser keyboard: Shift + the same letter.</p>
+        <p>短按面键操作，长按不重复。DAgger 无需双握持键组合，也不倒计时。握持键立即接管，松开保持，再握继续；不自动交回模型。浏览器键盘：Shift + 同字母。Y 不负责退出，退出用启动器或终端 Q。</p>
       </section>
-      <button id="startVrButton" class="start-button" type="button">Enter VR</button>
-      <button id="cameraModeButton" class="camera-mode-button" type="button">Camera: passthrough</button>
-      <div id="statusText" class="status-text">Preparing...</div>
+      <button id="startVrButton" class="start-button" type="button">进入 VR</button>
+      <button id="cameraModeButton" class="camera-mode-button" type="button">画面：透视</button>
+      <div id="statusText" class="status-text">正在准备…</div>
     </main>
     <a-scene vr-mode-ui="enabled: false"
       webxr="referenceSpaceType: local-floor; optionalFeatures: local-floor, bounded-floor"

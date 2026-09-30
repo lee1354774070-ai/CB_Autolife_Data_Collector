@@ -24,7 +24,7 @@ show_help() {
                 echo "COLLECTOR_MODE"
                 echo "Usage: COLLECTOR_MODE=keyboard|vr|subtask|dagger bash start_lerobot_official_collect.sh task_name"
                 echo "keyboard: original terminal controls. vr: single-operator VR buttons. subtask: VR with ordered SUBTASKS_JSON."
-                echo "dagger: robot-300 incremental V4 + our Thor GR00T; Y=start, GL/GR=takeover, A=save, X=discard, B=reset."
+                echo "dagger: robot-300 incremental V4 + our Thor GR00T; A=start, GL/GR=takeover, B=save, Y=discard, X=reset."
                 echo "Requires DAGGER_SERVER_URL and inspected V4/HG sources. Default DAGGER_PUBLISH=0; set 1 for button-authorized motion."
                 echo "Unset: preserve legacy VR_CONTROL/SUBTASKS_JSON selection; default keyboard."
                 echo "An explicit mode rejects conflicting legacy flags before creating data or starting processes."
@@ -34,7 +34,7 @@ show_help() {
                 case "${parameter}" in
                     DAGGER_BACKEND) echo "owned (default): start one exclusive host. attach: connect to an already-compatible host; never starts or stops its controller/recorder/model/web. Q only detaches; host keeps running. Match OUTPUT_BASE_DIR and task_name. Legacy hosts require a one-time compatible-copy migration." ;;
                     DAGGER_SERVER_URL) echo "Required Thor GR00T URL, e.g. http://THOR_IP:8777. No default; baseline/frame protocol only." ;;
-                    DAGGER_PUBLISH) echo "0=no hardware publishing (default); 1=Y/C and B/R may move the robot. No automatic start." ;;
+                    DAGGER_PUBLISH) echo "0=no hardware publishing (default); 1=A/C and X/R may move the robot. No automatic start." ;;
                     DAGGER_TOKEN_FILE) echo "Token file; default /home/ubuntu/.config/autolife_hg_dagger/groot_server.token. Never put tokens in URLs." ;;
                     DAGGER_DEPENDENCY_ROOT) echo "Inspected V4/HG package parent; default /home/ubuntu/ros2_ws/src. Key sources/configs are hash-checked." ;;
                     DAGGER_TOOLS_ROOT) echo "Our full Autolife_VLA_Tools root for deploy imports; defaults to this repo, or /home/ubuntu/Autolife_VLA_Tools for standalone Collector." ;;
@@ -51,21 +51,21 @@ show_help() {
                 echo "SUBTASKS_JSON"
                 echo "Usage: SUBTASKS_JSON='[\"pick\", \"handover\", \"place\"]' VR_CONTROL=1 bash start_lerobot_official_collect.sh task_name"
                 echo "Ordered subtask texts. Default: [] (disabled). TASK_TEXT remains the overall episode task."
-                echo "Hold GL+GR: Y starts; recording short A confirms the current span; last mark saves."
-                echo "Hold A for VR_A_LONG_PRESS_SEC then release to save early. Unconfirmed frames have subtask_index=-1."
+                echo "Hold GL+GR: A starts; recording short B confirms the current span; last mark saves."
+                echo "Hold B for VR_A_LONG_PRESS_SEC then release to save early. Unconfirmed frames have subtask_index=-1."
                 echo "Keyboard: N marks, S saves. Use a NEW dataset root when enabling/disabling annotation."
                 ;;
             VR_INPUT_TOPIC|VR_RESET_PREFIX)
                 echo "${parameter}"
                 echo "VR_INPUT_TOPIC: defaults to /control_topic_<domain>_<robot>; V4 uses /openarmx_teleop_vr_306_v4/vr_input."
                 echo "VR_RESET_PREFIX: defaults to /openarmx_teleop_vr_306_v4; requires guarded reset/status services, not raw vendor reset."
-                echo "Disable old reset chords in the teleoperation copy. B discards with ACK, then resets after both Grips are released."
+                echo "Disable old reset chords in the teleoperation copy. X resets only while idle, after both Grips are released; finish with B or Y first."
                 exit 0
                 ;;
             VR_A_LONG_PRESS_SEC)
                 echo "VR_A_LONG_PRESS_SEC"
                 echo "Usage: VR_A_LONG_PRESS_SEC=1.2 VR_CONTROL=1 SUBTASKS_JSON='[\"pick\",\"place\"]' bash start_lerobot_official_collect.sh task_name"
-                echo "A hold threshold in subtask mode, seconds. Default: 1.0; finite range [0.2, 10]."
+                echo "B hold threshold in subtask mode (legacy variable name), seconds. Default: 1.0; finite range [0.2, 10]."
                 echo "Action occurs once on release with GL+GR still held; no simultaneous short-press mark."
                 ;;
             OUTPUT_BASE_DIR)
@@ -102,8 +102,8 @@ show_help() {
                 echo "VR_CONTROL"
                 echo "Usage: VR_CONTROL=1 bash start_lerobot_official_collect.sh task_name"
                 echo "Enable single-operator VR episode control after recorder startup. Default: 0 (keyboard only)."
-                echo "Hold GL+GR and tap/release: Y=start, A=save, X=discard, B=discard+guarded reset. Exit in terminal."
-                echo "With SUBTASKS_JSON: recording short A=mark subtask, long A=save early; final mark saves automatically."
+                echo "Hold GL+GR and tap/release: A=start, B=save, Y=discard, X=guarded reset only. Exit in terminal."
+                echo "With SUBTASKS_JSON: recording short B=mark subtask, long B=save early; final mark saves automatically."
                 echo "Keyboard controls remain available. Requires factory /control_topic_<domain>_<robot> String messages."
                 ;;
             VR_START_DELAY_SEC|VR_SPEECH)
@@ -255,7 +255,7 @@ Common parameters:
   VR_CONTROL                 Enable VR episode buttons alongside keyboard controls. Default: 0
   VR_START_DELAY_SEC         VR start countdown, 0 through 30 seconds. Default: 3
   VR_SPEECH                  Use existing robot TTS service; does not change volume. Default: 1
-  VR_A_LONG_PRESS_SEC        A hold time for early save in subtask mode. Default: 1.0 seconds
+  VR_A_LONG_PRESS_SEC        B hold time for early save (legacy variable name) in subtask mode. Default: 1.0 seconds
   IMAGE_SOURCE               shm or ros. Default: shm
   IMAGE_POLL_FPS             SHM metadata polling rate. Default: 120
   SYNC_REFERENCE_CAMERA      Timestamp anchor camera. Default: hand_left
@@ -679,9 +679,9 @@ if [ "${VR_CONTROL}" = "1" ]; then
         "${ROBOT_PY}" -u "${VR_ARGS[@]}" > >(tee "${LOG_PREFIX}.vr_control.log") 2>&1 &
     VR_PID=$!
     echo "vr_control ${VR_PID} ${LOG_PREFIX}.vr_control.log" >> "${PIDFILE}"
-    echo "  VR controls       : hold GL+GR; Y=start, A=save, X=discard, B=discard+reset; terminal Q=exit"
+    echo "  VR controls       : hold GL+GR; A=start, B=save, Y=discard, X=reset only; terminal Q=exit"
     if [ "${SUBTASK_COUNT}" -gt 0 ]; then
-        echo "  VR annotation     : short A=mark subtask, last mark saves; hold A >= ${VR_A_LONG_PRESS_SEC:-1.0}s then release=save early"
+        echo "  VR annotation     : short B=mark subtask, last mark saves; hold B >= ${VR_A_LONG_PRESS_SEC:-1.0}s then release=save early"
     fi
 fi
 

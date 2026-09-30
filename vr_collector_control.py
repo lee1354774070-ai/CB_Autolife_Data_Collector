@@ -22,7 +22,7 @@ from collector_control import SessionPaths, format_status, process_is_running, r
 from vr_feedback import feedback_packet
 
 
-FACE_BUTTONS = {("r", 4): "save", ("r", 5): "reset", ("l", 4): "discard", ("l", 5): "start"}
+FACE_BUTTONS = {("r", 4): "start", ("r", 5): "save", ("l", 4): "reset", ("l", 5): "discard"}
 
 
 def decode_controls(payload: str) -> tuple[bool, set[tuple[str, int]]]:
@@ -122,7 +122,6 @@ class VrSession:
         self.status_key = None
         self.status_time = 0.0
         self.event_key = None
-        self.reset_after_discard = False
         self.grips_released = False
 
     def on_payload(self, payload, now):
@@ -145,12 +144,12 @@ class VrSession:
     def command(self, command, now):
         if command == "a_short":
             if self.state != "recording":
-                self.speak("请按Y开始录制")
+                self.speak("请按A开始录制")
                 return
             command = "mark_subtask"
         elif command == "a_long":
             if self.state == "idle" and self.start_at is None:
-                self.speak("请按Y开始录制")
+                self.speak("请按A开始录制")
                 return
             command = "save"
         if self.pending is not None:
@@ -183,10 +182,12 @@ class VrSession:
             self.feedback("error")
             return
         if command == "reset":
-            # Never race a reset against saving/encoding. A failed or unknown
-            # discard leaves this latch closed and sends no motion request.
-            self.reset_after_discard = True
-            self._send("discard")
+            # Reset never closes or discards an episode.
+            if self.state != "idle":
+                self.speak("请先按B保存或Y丢弃，再按X复位")
+                self.feedback("error")
+                return
+            self._send("reset")
             return
         self._send(command)
 
@@ -229,21 +230,8 @@ class VrSession:
                     self.feedback("reset")
                 else:
                     self.log(f"[VR] Recorder acknowledgement latency: {(time.monotonic() - self.pending_started_at) * 1000:.1f} ms ({command})")
-                    empty_for_reset = (self.reset_after_discard
-                                       and status.get("event") == "discard"
-                                       and status.get("recording") is False
-                                       and status.get("message") == "no pending episode to discard")
-                    if empty_for_reset:
-                        self.state = "idle"
-                    else:
-                        self.accept_status(status)
-                    if self.reset_after_discard:
-                        self.reset_after_discard = False
-                        if ((status.get("success") or empty_for_reset) and status.get("event") == "discard"
-                                and self.state == "idle"):
-                            self._send("reset")
+                    self.accept_status(status)
             except (OSError, RuntimeError, TimeoutError) as exc:
-                self.reset_after_discard = False
                 self.state = "unknown"
                 self.log(f"[VR] Command result unknown: {exc}. Do not retry automatically.")
                 self.speak("操作结果未知，请检查采集终端")
@@ -400,11 +388,11 @@ def parse_args():
     parser.add_argument("--start-delay", type=float, default=3, help="Countdown seconds before sending start; 0 disables countdown.")
     parser.add_argument("--command-timeout", type=float, default=300, help="Maximum seconds waiting for a real recorder acknowledgement.")
     parser.add_argument("--no-speech", action="store_true", help="Do not publish TTS messages; keep terminal status output.")
-    parser.add_argument("--subtask-mode", action="store_true", help="Y starts; while recording short A marks a subtask, long A saves.")
+    parser.add_argument("--subtask-mode", action="store_true", help="A starts; while recording short B marks a subtask, long B saves.")
     parser.add_argument("--reset-prefix", default="/openarmx_teleop_vr_306_v4", help="Inspected V4 controller namespace for guarded reset and status. No direct vendor-reset fallback.")
     parser.add_argument("--feedback-topic", default="/collector/feedback", help="Feedback events consumed by the collector VR web extension.")
-    parser.add_argument("--motion-lock-file", type=Path, help="Recorder's shared motion lock, required for B reset.")
-    parser.add_argument("--a-long-press-sec", type=float, default=1.0, help="Minimum A hold time for early save in subtask mode; fires only on release.")
+    parser.add_argument("--motion-lock-file", type=Path, help="Recorder's shared motion lock, required for X reset.")
+    parser.add_argument("--a-long-press-sec", type=float, default=1.0, help="Minimum B hold time (legacy option name) for early save in subtask mode; fires only on release.")
     parser.add_argument("--check-config", action="store_true", help="Validate arguments without importing ROS or starting any process.")
     show_requested_parameter_help(parser)
     args = parser.parse_args()
@@ -500,11 +488,11 @@ def main():
     node.create_timer(0.02, lambda: session.tick(time.monotonic()))
     node.create_timer(0.1, monitor)
     print(f"[VR] Listening: {args.topic}; speech: {args.tts_topic if publisher else 'off'}", flush=True)
-    print("[VR] Hold GL+GR; tap/release Y=start, A=save, X=discard, B=discard+reset. Exit in terminal.", flush=True)
-    print("[VR] B requires the guarded V4 reset service. Release both Grips after B; unavailable service blocks reset.", flush=True)
+    print("[VR] Hold GL+GR; tap/release A=start, B=save, X=reset only, Y=discard only. Exit in terminal.", flush=True)
+    print("[VR] X requires the guarded V4 reset service. Release both Grips after X; unavailable service blocks reset.", flush=True)
     if args.subtask_mode:
-        print(f"[VR] While recording: short A=mark next subtask (last mark saves); "
-              f"hold A >= {args.a_long_press_sec:g}s then release=save early", flush=True)
+        print(f"[VR] While recording: short B=mark next subtask (last mark saves); "
+              f"hold B >= {args.a_long_press_sec:g}s then release=save early", flush=True)
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):

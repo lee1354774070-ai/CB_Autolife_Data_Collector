@@ -24,11 +24,15 @@ HASHES = {
     "openarmx_teleop_vr_306_v4/openarmx_teleop_vr_306_v4/vr_web_bridge.py": "6fffdf186ae9c774b2ecb46e9c361a6a6388fa72052cf823eb75ecabad586f53",
 }
 
-# Reviewed robot-300 UI-only revision: clearer invalid/gripper notices. Keep
-# accepting the original UI; controller/config identities remain exact pins.
+# Reviewed MZJ revisions: explicit VR start, detailed notices, and verified
+# reset gripper opening. Keep original identities; never accept arbitrary edits.
 REVIEWED_ALTERNATES = {
+    "autolife_hg_dagger_MZJ_300/autolife_hg_dagger_mzj_300/supervisor_node.py": {
+        "6987faee7efe058b208a8eb48947a0d4bbefc1a6450e9a9d83f8e93427f96e4d",
+    },
     "autolife_hg_dagger_MZJ_300/web/vr_app.js": {
         "a1721c6b7931bfaeba860ebc000d974a1d833657b3b2ebd5cb0db13ee592214d",
+        "39fc7edabd94866d451c7adf24a2cb9b64e8e48eb3128d941d89e9d9f98c3656",
     },
 }
 

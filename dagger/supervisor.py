@@ -75,7 +75,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             with_depth=os.environ.get('WITH_DEPTH', '0') == '1',
             task_text=os.environ.get('TASK_TEXT', '')))
         self.create_service(SetParametersAtomically, SERVICE, self._on_attached_command)
-        self.get_logger().info("Collector DAgger: Y=start, GL/GR=takeover, A=save, X=discard, B=reset")
+        self.get_logger().info("Collector DAgger: A=start, GL/GR=takeover, B=save, Y=discard, X=reset")
 
     def _feedback(self, event, text):
         if hasattr(self, "_feedback_pub"):
@@ -192,7 +192,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
     def _update_face_button_locked(self, button, pressed, now_ns):
         # One command per press, independent of hold duration. Storage/RPC
         # waits run in the worker, never in this control callback.
-        if button in ("A", "X", "B"):
+        if button in ("B", "Y", "X"):
             previous = self._face_buttons.get(button, False)
             self._face_buttons[button] = bool(pressed)
             if pressed and not previous:
@@ -211,25 +211,30 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
         if self._closing:
             return
         mode = self._machine.mode.value
-        if button == "B":
+        if button == "X":
+            if (self._intervention_id or self._recorder_active
+                    or self._pending_collector_result is not None
+                    or self._button_worker_active or self._session_start_pending
+                    or self._reset_pending):
+                self._set_notice_locked("请先按 B 保存或 Y 丢弃，等待结果确认后再按 X 复位；当前数据保留", "warning")
+                return
             self._cancel_start = True
             self._pending_reset = True
-            self._hold_locked("B reset requested; policy output revoked")
-            if not self._button_worker_active:
-                self._run_worker("reset", lambda: self._finish_trial(save=False, reset=True))
+            self._hold_locked("X reset requested; no episode is open")
+            self._run_worker("reset", lambda: self._finish_trial(save=False, reset=True))
             return
         if self._button_worker_active or self._reset_pending or self._session_start_pending:
-            self._set_notice_locked("Operation in progress; B requests reset", "warning")
+            self._set_notice_locked("Operation in progress; wait for confirmation", "warning")
             return
-        if button == "Y":
+        if button == "A":
             if mode != "DISARMED" or self._intervention_id or any(self._grips):
-                self._set_notice_locked("Release both Grips and finish the previous episode before Y", "warning")
+                self._set_notice_locked("Release both Grips and finish the previous episode before A", "warning")
                 return
             self._cancel_start = False
             self._run_worker("start", self._start_trial)
-        elif button in ("A", "X") and self._intervention_id:
-            save = button == "A"
-            self._hold_locked("A save requested" if save else "X discard requested; no reset")
+        elif button in ("B", "Y") and self._intervention_id:
+            save = button == "B"
+            self._hold_locked("B save requested" if save else "Y discard requested; no reset")
             self._run_worker("save" if save else "discard", lambda: self._finish_trial(save=save))
 
     def _run_worker(self, name, operation):
@@ -250,11 +255,6 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
                 with self._lock:
                     self._button_worker_active = False
                     self._button_worker_name = ""
-                    # Never queue a second destructive command after an
-                    # uncertain save. B may only reconcile that same request.
-                    if (self._pending_reset and name != "reset" and not self._closing
-                            and self._pending_collector_result is None):
-                        self._run_worker("reset", lambda: self._finish_trial(save=False, reset=True))
                     self._publish_state()
 
         self._work_thread = threading.Thread(target=run, name=f"collector-dagger-{name}", daemon=True)
@@ -291,7 +291,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
                 self._forward_enable(False)
             with self._lock:
                 if not enabled or self._cancel_start or self._closing:
-                    self._hold_locked(f"start not enabled: {reason}; A/B closes the episode")
+                    self._hold_locked(f"start not enabled: {reason}; B/Y closes the episode")
                     return
                 transition = self._machine.enable()
                 self._last_policy_monotonic_ns = time.monotonic_ns()
@@ -305,7 +305,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
     def _wait_for_controller_ready(self, requested_ns):
         """A SetBool ACK only starts enabling; wait for fresh physical readiness.
 
-        This runs on the start worker, never a ROS callback. X/B/exit remain
+        This runs on the start worker, never a ROS callback. Y/X/exit remain
         responsive, and policy authority stays DISARMED until SYNC is settled.
         """
         deadline = time.monotonic() + float(self.get_parameter("controller_ready_timeout_sec").value)
@@ -407,7 +407,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
                     return
                 transition = self._machine.estop(str(status.get("reason", "controller fault")))
                 self._event("transition", transition.reason, old=transition.old.value, new=transition.new.value)
-                self._set_notice_locked("Controller fault; output stopped; episode retained for A/B", "error")
+                self._set_notice_locked("Controller fault; output stopped; episode retained for B/Y", "error")
                 self._publish_state()
             return  # Do not block a control callback on video encoding/FIFO.
         super()._on_controller_status(message)
@@ -437,10 +437,15 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
         """Stop action authority, close the episode with ACK, then optionally reset.
 
         Save/encode and service waits are outside the authority lock. A failed
-        or ambiguous save stays latched: A/B reconcile the original request ID,
+        or ambiguous save stays latched: B/Y reconcile the original request ID,
         never replay save or discard an uncertain partially committed episode.
         """
         with self._lock:
+            if reset and (self._intervention_id or self._recorder_active
+                          or self._pending_collector_result is not None):
+                self._pending_reset = False
+                self._set_notice_locked("请先按 B 保存或 Y 丢弃，再按 X 复位；当前数据保留", "warning")
+                return
             self._hold_locked("ending episode")
             trial, depth = self._intervention_id, self._active_depth
             pending = self._pending_collector_result
@@ -467,7 +472,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             if not result.acknowledged or not result.success:
                 with self._lock:
                     self._pending_collector_result = result
-                    self._set_notice_locked("Episode result unresolved; A/B checks the same request; no reset", "error")
+                    self._set_notice_locked("Episode result unresolved; B/Y checks the same request; no reset", "error")
                 self._forward_enable(False)
                 return
             saved = result.event == "save"
@@ -506,15 +511,15 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             with self._lock:
                 self._pending_reset = False
                 self._feedback("resetting", "正在复位，请松开握持键")
-            super()._mechanical_reset_worker("B")
+            super()._mechanical_reset_worker("X")
             with self._lock:
                 if self._save_notice.get("level") == "success":
-                    self._set_notice_locked("Reset confirmed; release Grips, then Y for a new episode", "success")
+                    self._set_notice_locked("Reset confirmed; release Grips, then A for a new episode", "success")
 
     def _on_launcher_action(self, action, response):
         # The optional desktop launcher must use the same workflow, not the
         # colleague's legacy save-and-reset mapping.
-        mapping = {"start": "Y", "finish": "A", "discard": "X", "reset": "B"}
+        mapping = {"start": "A", "finish": "B", "discard": "Y", "reset": "X"}
         with self._lock:
             if action not in mapping or self._closing:
                 response.success, response.message = False, "Use collector terminal Q to exit"
@@ -555,7 +560,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
         # A browser hardware-toggle must not bypass episode bookkeeping.
         with self._lock:
             if request.data:
-                self._on_face_button_click_locked("Y", time.monotonic_ns())
+                self._on_face_button_click_locked("A", time.monotonic_ns())
                 response.success, response.message = True, "Start requested; inspect control_state"
             else:
                 self._cancel_start = True

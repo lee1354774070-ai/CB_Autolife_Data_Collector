@@ -1,12 +1,12 @@
 // Loaded after the pinned V4 app. No WebXR transport or pose math is replaced.
 Object.assign(HG_DAGGER_MODE_LABELS, {
-  DISARMED: 'Ready: Y starts inference and recording',
-  POLICY_ACTIVE: 'Policy control: GL/GR takes over; A saves; X discards',
-  FAILURE_HOLD: 'Stopping policy; waiting for robot hold',
-  EXPERT_RELEASE_REQUIRED: 'Release both Grips, then re-grip to re-anchor',
-  EXPERT_READY: 'Grip moves; A saves; X discards; B resets',
-  EXPERT_ACTIVE: 'Human: A saves; X discards; B resets',
-  ESTOP: 'Output stopped: inspect controller before restarting'
+  DISARMED: '待命：A 开始推理和录制',
+  POLICY_ACTIVE: '模型控制：握持键接管；B 保存；Y 丢弃',
+  FAILURE_HOLD: '模型已停止，等待控制器保持',
+  EXPERT_RELEASE_REQUIRED: '松开握持键，再握重新锚定',
+  EXPERT_READY: '握持移动；B 保存；Y 丢弃；X 复位',
+  EXPERT_ACTIVE: '人工纠错：B 保存；Y 丢弃；X 复位',
+  ESTOP: '输出已停止，请先检查错误'
 });
 
 ensureHgControlsHud = function () {
@@ -16,8 +16,8 @@ ensureHgControlsHud = function () {
   drawHgPanelBackground(hud, 0.48);
   hud.context.fillStyle = '#F0F4F8';
   hud.context.font = '500 30px sans-serif';
-  hud.context.fillText('Y: Start   GL/GR: Take over   A: Save   X: Discard', 32, 47);
-  hud.context.fillText('Keep Grip held to move after hold. B: Discard + reset', 32, 99);
+  hud.context.fillText('A 开始 · 握持接管 · B 保存 · Y 丢弃', 32, 47);
+  hud.context.fillText('X 仅复位（先保存或丢弃） · B/Y 不复位', 32, 99);
   hud.texture.needsUpdate = true;
   state.hgControlsHud = hud;
   return hud;
@@ -29,7 +29,7 @@ hgDaggerVisualState = function (status) {
   const mode = String(status?.mode || 'DISARMED');
   return {
     key: String(invalid || notice?.token || mode),
-    label: invalid ? `Episode INVALID: ${invalid}. B discards and resets.`
+    label: invalid ? `本条失效：${invalid}；Y 丢弃，X 仅全身复位（先保存或丢弃当前条）。`
       : notice?.text || HG_DAGGER_MODE_LABELS[mode] || mode,
     color: invalid || notice?.level === 'error' ? '#FF6B6B' : '#7DFFCF',
     notice: Boolean(invalid || notice?.text)
@@ -54,13 +54,28 @@ if (document.title !== 'CB Collector | DAgger 300') {
   const title = document.querySelector('.title');
   if (title) title.textContent = document.title;
   if (collectorGuide) collectorGuide.textContent =
-    'Y: start inference + recording. GL/GR: human takeover. A: save. '
-    + 'X: discard. B: discard unsaved episode + reset. '
-    + 'Keep Grip held through the hold transition. No A long-press action.';
+    'A 开始推理和录制；握持接管；B 保存；'
+    + 'Y 丢弃；X 仅全身复位（先保存或丢弃当前条）；'
+    + '短按面键操作，长按不重复。Y 不负责退出，退出用启动器或终端 Q。';
 }
 const collectorHint = document.querySelector('.hardware-safety-hint');
-if (collectorHint) collectorHint.textContent = 'B resets all body joints and grippers. Keep the robot workspace clear.';
+if (collectorHint) collectorHint.textContent = 'B/Y 不复位；X 仅全身复位（先保存或丢弃当前条）。';
 setHardwareButtonText = function (button) {
   if (button) button.textContent = hardwareControlIsOnOrBusy()
-    ? 'Stop session (discard unsaved episode)' : 'Hold to start inference + recording';
+    ? '停止会话（丢弃未保存本条）' : '长按进入 VR（待命；A 开始）';
+};
+
+/* Entering/reconnecting VR never starts a trial, including older reviewed UIs. */
+maybeEnableAfterFreshVr = async function () {
+  cancelDeferredHardwareEnable('VR 待命，按 A 或启动器开始按钮。');
+};
+finishHardwareEnableHold = function (event) {
+  const confirmed = state.teleop.holdTriggered;
+  state.teleop.holdTriggered = false;
+  cancelHardwareEnableHold();
+  if (!confirmed) return;
+  if (event) event.preventDefault();
+  cancelDeferredHardwareEnable('VR 待命，按 A 开始推理和录制。');
+  setStatus('进入 VR 后保持待命；按 A 开始。');
+  void enterVr();
 };

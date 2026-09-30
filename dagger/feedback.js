@@ -36,9 +36,9 @@
   if (collectorWebMode !== 'dagger') {
     document.title = `CB Collector | ${collectorWebMode}`;
     const guide = document.querySelector('.dagger-guide');
-    const text = 'Hold GL+GR: Y starts; A saves; X discards; B discards then resets. '
-      + 'Release both Grips after B. Exit in the terminal. '
-      + (collectorWebMode === 'subtask' ? 'Short A marks; final mark saves; long A saves early.' : 'No A long-press action.');
+    const text = '按住 GL+GR：A 开始，B 保存，X 仅复位，Y 仅丢弃。'
+      + '先保存或丢弃，再按 X 并松开双握持键复位；终端退出。'
+      + (collectorWebMode === 'subtask' ? 'B 短按标记，最后一次标记自动保存；B 长按提前保存。' : 'B 无长按功能。');
     if (guide) guide.textContent = text;
     const title = document.querySelector('.title');
     if (title) title.textContent = document.title;

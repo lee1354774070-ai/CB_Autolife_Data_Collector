@@ -24,7 +24,7 @@ def payload(*faces, grips=True):
 
 class GestureTest(unittest.TestCase):
     def test_all_bindings_fire_only_on_release(self):
-        for button, expected in [(('r', 4), 'save'), (('r', 5), 'reset'), (('l', 4), 'discard'), (('l', 5), 'start')]:
+        for button, expected in [(('r', 5), 'save'), (('l', 4), 'reset'), (('l', 5), 'discard'), (('r', 4), 'start')]:
             with self.subTest(button=button):
                 gestures = ButtonGestures()
                 self.assertIsNone(gestures.update(True, set(), 1))
@@ -35,30 +35,30 @@ class GestureTest(unittest.TestCase):
 
     def test_held_button_at_startup_cannot_fire(self):
         gestures = ButtonGestures()
-        gestures.update(True, {('r', 4)}, 1)
+        gestures.update(True, {('r', 5)}, 1)
         self.assertIsNone(gestures.update(True, set(), 2))
 
     def test_grip_loss_and_multiple_faces_cancel(self):
-        for grips, faces in [(False, set()), (True, {('r', 4), ('l', 5)})]:
+        for grips, faces in [(False, set()), (True, {('r', 5), ('r', 4)})]:
             gestures = ButtonGestures()
             gestures.update(True, set(), 1)
-            gestures.update(True, {('r', 4)}, 2)
+            gestures.update(True, {('r', 5)}, 2)
             gestures.update(grips, faces, 3)
             self.assertIsNone(gestures.update(True, set(), 4))
 
     def test_switching_face_without_neutral_cancels(self):
         gestures = ButtonGestures()
         gestures.update(True, set(), 1)
-        gestures.update(True, {('r', 4)}, 2)
-        gestures.update(True, {('r', 5)}, 3)
+        gestures.update(True, {('r', 5)}, 2)
+        gestures.update(True, {('l', 4)}, 3)
         self.assertIsNone(gestures.update(True, set(), 4))
 
     def test_double_y_never_quits(self):
-        for release_grips, second_time, expected in [(False, 4, 'start'), (False, 10, 'start'), (True, 4, 'start')]:
+        for release_grips, second_time, expected in [(False, 4, 'discard'), (False, 10, 'discard'), (True, 4, 'discard')]:
             gestures = ButtonGestures()
             gestures.update(True, set(), 1)
             gestures.update(True, {('l', 5)}, 2)
-            self.assertEqual(gestures.update(True, set(), 2.1), 'start')
+            self.assertEqual(gestures.update(True, set(), 2.1), 'discard')
             if release_grips:
                 gestures.update(False, set(), 3)
                 gestures.update(True, set(), 3.1)
@@ -71,13 +71,13 @@ class GestureTest(unittest.TestCase):
         for text in ['null', '{}', '[1]', '{', json.dumps(invalid)]:
             with self.assertRaises((ValueError, TypeError, KeyError)):
                 decode_controls(text)
-        self.assertEqual(decode_controls(payload(('r', 4))), (True, {('r', 4)}))
+        self.assertEqual(decode_controls(payload(('r', 5))), (True, {('r', 5)}))
 
     def test_y_packet_bounce_does_not_quit(self):
         gestures = ButtonGestures()
         gestures.update(True, set(), 1)
         gestures.update(True, {('l', 5)}, 1.1)
-        self.assertEqual(gestures.update(True, set(), 1.2), 'start')
+        self.assertEqual(gestures.update(True, set(), 1.2), 'discard')
         gestures.update(True, {('l', 5)}, 1.21)
         self.assertIsNone(gestures.update(True, set(), 1.22))
 
@@ -150,7 +150,7 @@ class SessionTest(unittest.TestCase):
                     frames=30, total_saved_episodes=4, session_saved_episodes=2, **kwargs)
 
     def test_countdown_does_not_claim_recording_before_ack(self):
-        self.tap(('l', 5), 1)
+        self.tap(('r', 4), 1)
         for now in [2, 3, 4, 4.3]:
             self.session.on_payload(payload(), now)
             self.session.tick(now)
@@ -161,26 +161,26 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(self.session.state, 'recording')
         self.assertIn('开始录制', self.speech)
 
-    def test_repeated_y_does_not_extend_countdown(self):
-        self.tap(('l', 5), 1)
+    def test_repeated_a_does_not_extend_countdown(self):
+        self.tap(('r', 4), 1)
         deadline = self.session.start_at
-        self.tap(('l', 5), 1.4)
+        self.tap(('r', 4), 1.4)
         self.assertEqual(self.session.start_at, deadline)
 
     def test_stale_input_cancels_countdown(self):
-        self.tap(('l', 5), 1)
+        self.tap(('r', 4), 1)
         self.session.tick(5)
         self.assertIsNone(self.session.start_at)
         self.assertFalse(self.sent)
 
     def test_malformed_packet_cannot_complete_gesture(self):
         self.session.on_payload(payload(), 1)
-        self.session.on_payload(payload(('r', 4)), 1.1)
+        self.session.on_payload(payload(('r', 5)), 1.1)
         self.session.on_payload('{}', 1.2)
         self.session.on_payload(payload(), 1.3)
         self.assertIsNone(self.session.start_at)
 
-    def test_b_or_x_cancels_countdown_without_sending(self):
+    def test_b_or_y_cancels_countdown_without_sending(self):
         for command in ('save', 'discard'):
             self.session.last_input = 1
             self.session.command('start', 1)
@@ -191,7 +191,7 @@ class SessionTest(unittest.TestCase):
     def test_save_wait_keeps_buttons_responsive_and_never_queues_start(self):
         self.session.state = 'recording'
         self.session.command('save', 1)
-        self.tap(('r', 4), 2)
+        self.tap(('r', 5), 2)
         self.assertEqual([c for c, _ in self.sent], ['save'])
         self.sent[0][1].set_result(self.receipt('save'))
         self.session.tick(3)
@@ -246,39 +246,34 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(self.session.state, 'unknown')
         self.assertFalse(self.sent)
 
-    def test_reset_waits_for_discard_ack_and_does_not_touch_saved_data(self):
+    def test_idle_reset_sends_no_recorder_command(self):
         self.session.command('reset', 1)
-        self.assertEqual([c for c, _ in self.sent], ['discard'])
-        self.sent[0][1].set_result(self.receipt('discard'))
-        self.session.tick(2)
-        self.assertEqual([c for c, _ in self.sent], ['discard', 'reset'])
+        self.assertEqual([c for c, _ in self.sent], ['reset'])
         self.assertEqual(self.session.state, 'resetting')
-        self.sent[1][1].set_result({'success': True})
-        self.session.tick(3)
-        self.assertEqual(self.session.state, 'idle')
-        self.assertEqual(self.speech[-1], '复位完成')
-
-    def test_unknown_discard_never_resets(self):
-        self.session.command('reset', 1)
-        self.sent[0][1].set_exception(TimeoutError('unknown'))
+        self.sent[0][1].set_result({'success': True})
         self.session.tick(2)
-        self.session.command('reset', 3)
-        self.assertEqual([c for c, _ in self.sent], ['discard'])
-        self.assertEqual(self.session.state, 'unknown')
+        self.assertEqual(self.session.state, 'idle')
 
-    def test_pending_save_blocks_b_and_no_reset_is_queued(self):
+    def test_reset_preserves_open_invalid_and_unknown_episode(self):
+        for state in ('recording', 'invalid', 'unknown'):
+            self.session.state = state
+            self.session.command('reset', 1)
+            self.assertFalse(self.sent)
+            self.assertEqual(self.session.state, state)
+
+    def test_pending_save_blocks_x_and_no_reset_is_queued(self):
         self.session.command('save', 1)
         self.session.command('reset', 2)
         self.sent[0][1].set_result(self.receipt('save'))
         self.session.tick(3)
         self.assertEqual([c for c, _ in self.sent], ['save'])
 
-    def test_reset_during_countdown_closes_then_resets(self):
+    def test_reset_during_countdown_cancels_then_resets(self):
         self.session.last_input = 1
         self.session.command('start', 1)
         self.session.command('reset', 2)
         self.assertIsNone(self.session.start_at)
-        self.assertEqual([c for c, _ in self.sent], ['discard'])
+        self.assertEqual([c for c, _ in self.sent], ['reset'])
 
     def test_distinct_feedback_after_ack_only(self):
         from vr_feedback import PATTERNS
@@ -328,24 +323,24 @@ class SubtaskVrTest(unittest.TestCase):
         self.session = VrSession(submit, self.speech.append, start_delay=0,
                                  subtask_mode=True, a_long_press_sec=1, log=self.logs.append)
 
-    def hold_a(self, start=1):
+    def hold_b(self, start=1):
         self.session.on_payload(payload(), start)
         for i in range(7):
-            self.session.on_payload(payload(('r', 4)), start + .1 + i * .2)
-        self.assertFalse(self.sent, 'A must not fire until release')
+            self.session.on_payload(payload(('r', 5)), start + .1 + i * .2)
+        self.assertFalse(self.sent, 'B must not fire until release')
         self.session.on_payload(payload(), start + 1.4)
 
-    def test_only_y_starts_in_subtask_mode(self):
-        self.hold_a()
+    def test_only_a_starts_in_subtask_mode(self):
+        self.hold_b()
         self.assertFalse(self.sent)
-        self.tap(('r', 4), 4)
+        self.tap(('r', 5), 4)
         self.assertFalse(self.sent)
-        self.tap(('l', 5), 5)
+        self.tap(('r', 4), 5)
         self.assertEqual([c for c, _ in self.sent], ['start'])
 
-    def test_recording_short_a_marks_and_waits_for_real_confirmation(self):
+    def test_recording_short_b_marks_and_waits_for_real_confirmation(self):
         self.session.state = 'recording'
-        self.tap(('r', 4), 1)
+        self.tap(('r', 5), 1)
         self.assertEqual([c for c, _ in self.sent], ['mark_subtask'])
         self.assertFalse(self.speech)
         self.sent[0][1].set_result(self.receipt('mark_subtask', subtasks={
@@ -354,9 +349,9 @@ class SubtaskVrTest(unittest.TestCase):
         self.assertEqual(self.session.state, 'recording')
         self.assertEqual(self.speech, ['下一步'])
 
-    def test_recording_long_a_only_saves_no_short_mark(self):
+    def test_recording_long_b_only_saves_no_short_mark(self):
         self.session.state = 'recording'
-        self.hold_a()
+        self.hold_b()
         self.assertEqual([c for c, _ in self.sent], ['save'])
         self.session.on_payload(payload(), 2.5)
         self.assertEqual(len(self.sent), 1)
@@ -364,7 +359,7 @@ class SubtaskVrTest(unittest.TestCase):
     def test_final_mark_announces_saving_but_never_success_before_receipt(self):
         self.session.state = 'recording'
         self.session.subtask_progress = {'confirmed': 2, 'total': 3}
-        self.tap(('r', 4), 1)
+        self.tap(('r', 5), 1)
         self.assertEqual([c for c, _ in self.sent], ['mark_subtask'])
         self.assertEqual(self.speech, ['保存中'])
         self.assertEqual(self.session.state, 'recording')
@@ -380,7 +375,7 @@ class SubtaskVrTest(unittest.TestCase):
         self.session.state = 'recording'
         self.session.command('save', 1)
         self.session.on_payload(payload(), 1.1)
-        self.session.on_payload(payload(('r', 4)), 1.2)
+        self.session.on_payload(payload(('r', 5)), 1.2)
         self.sent[0][1].set_result(self.receipt('save'))
         self.session.tick(1.3)
         self.session.on_payload(payload(), 1.4)
@@ -390,9 +385,9 @@ class SubtaskVrTest(unittest.TestCase):
         for kind in ('gap', 'grip', 'malformed'):
             self.session.state = 'recording'
             self.session.on_payload(payload(), 1)
-            self.session.on_payload(payload(('r', 4)), 1.1)
+            self.session.on_payload(payload(('r', 5)), 1.1)
             if kind == 'grip':
-                self.session.on_payload(payload(('r', 4), grips=False), 1.2)
+                self.session.on_payload(payload(('r', 5), grips=False), 1.2)
             elif kind == 'malformed':
                 self.session.on_payload('{}', 1.2)
             self.session.on_payload(payload(), 2.4 if kind == 'gap' else 1.3)
@@ -402,8 +397,8 @@ class SubtaskVrTest(unittest.TestCase):
         for duration, expected in ((.99, 'a_short'), (1.0, 'a_long'), (2., 'a_long')):
             gesture = ButtonGestures(a_long_press_sec=1)
             gesture.update(True, set(), 0)
-            gesture.update(True, {('r', 4)}, 1)
-            gesture.update(True, {('r', 4)}, 1 + duration / 2)
+            gesture.update(True, {('r', 5)}, 1)
+            gesture.update(True, {('r', 5)}, 1 + duration / 2)
             self.assertEqual(gesture.update(True, set(), 1 + duration), expected)
 
     def test_bad_long_press_threshold_is_rejected_without_ros(self):

@@ -24,7 +24,7 @@ from std_srvs.srv import SetBool, Trigger
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--subtasks', action='store_true', help='Test short-A marks, final autosave and long-A early save.')
+    parser.add_argument('--subtasks', action='store_true', help='Test short-B marks, final autosave and long-B early save.')
     args = parser.parse_args()
     rclpy.init()
     node = rclpy.create_node('collector_vr_transport_test')
@@ -137,25 +137,25 @@ def main():
                 pump(.1)
             assert node.count_subscribers(prefix + '/input'), 'VR input subscription not discovered'
             pump(1)
-            tap('l', 5)  # start
+            tap('r', 4)  # start
             if args.subtasks:
-                tap('r', 4)
-                tap('r', 4)
-                tap('r', 4)  # final mark -> save receipt
-                tap('l', 5)  # start again
+                tap('r', 5)
+                tap('r', 5)
+                tap('r', 5)  # final mark -> save receipt
+                tap('r', 4)  # start again
                 pump(.1)
-                pump(1.2, [('r', 4)])
-                pump(.6)  # long-A early save
+                pump(1.2, [('r', 5)])
+                pump(.6)  # long-B early save
             else:
-                tap('r', 4)  # save
-            tap('l', 5)  # start
-            tap('l', 4)  # discard
+                tap('r', 5)  # save
+            tap('r', 4)  # start
+            tap('l', 5)  # discard
             expected = (['start', 'mark_subtask', 'mark_subtask', 'mark_subtask', 'start', 'save', 'start', 'discard']
                         if args.subtasks else ['start', 'save', 'start', 'discard'])
             assert received == expected, received
-            assert not reset_calls, 'A/X unexpectedly requested motion'
-            tap('r', 5)  # B must discard first and wait for Grip release.
-            assert received == expected + ['discard'], received
+            assert not reset_calls, 'B/Y unexpectedly requested motion'
+            tap('l', 4)  # X only resets; waits for Grip release without any recorder command.
+            assert received == expected, received
             assert not reset_calls, 'reset requested before Grip release'
             pump(1.5, grips=False)
             assert reset_calls == [('enable', False), ('reset', None), ('enable', False)], reset_calls
@@ -170,7 +170,7 @@ def main():
                 assert '已保存，标注未完成' in spoken, spoken
             assert any('已丢弃' in item for item in spoken), spoken
             assert '复位完成' in spoken, spoken
-            print('ROS_VR_SMOKE_PASS: Y/A/X/B; fake reset disable->reset->confirm->disable; '
+            print('ROS_VR_SMOKE_PASS: A/B/Y/X; fake reset disable->reset->confirm->disable; '
                   f'feedback={feedback}; hardware_calls=0', flush=True)
     finally:
         if helper is not None and helper.poll() is None:
