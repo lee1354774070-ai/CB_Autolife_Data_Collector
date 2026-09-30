@@ -126,7 +126,8 @@ def wait_for_status(
 ) -> dict[str, Any]:
     """Wait for the matching atomic acknowledgement from the recorder."""
 
-    deadline = time.monotonic() + timeout_sec
+    started = time.monotonic()
+    deadline = started + timeout_sec
     while time.monotonic() < deadline:
         if cancel is not None and cancel.is_set():
             raise RuntimeError("Command wait cancelled; command may already have executed")
@@ -138,7 +139,10 @@ def wait_for_status(
             pass
         if not process_is_running(recorder_pid):
             raise RuntimeError("Recorder exited before acknowledging the command")
-        time.sleep(0.1)
+        # Quick receipts (subtask marks) need prompt feedback; long video saves
+        # back off after one second. This polling runs in the control client,
+        # never on the recorder's camera/frame thread.
+        time.sleep(0.01 if time.monotonic() - started < 1.0 else 0.1)
     raise TimeoutError(f"No recorder acknowledgement within {timeout_sec:g}s; check {status_path}")
 
 
@@ -168,6 +172,8 @@ def format_status(status: dict[str, Any]) -> str:
         lines = [f"[STARTED] Episode {episode_index} | Task: {task}"]
     elif event == "save" and success:
         lines = [f"[SAVED] Episode {episode_index} | {frames} frames | Task: {task}"]
+    elif event == "mark_subtask" and success:
+        lines = [f"[SUBTASK MARKED] Episode {episode_index} | Boundary: frame {frames} (exclusive)"]
     elif event == "discard" and success:
         lines = [f"[DISCARDED] {frames} frames | Task: {task} | Saved counts unchanged"]
         message = str(status.get("message", ""))
@@ -177,6 +183,16 @@ def format_status(status: dict[str, Any]) -> str:
         action = event.upper()
         lines = [f"[{action} NOT COMPLETED] {status.get('message', 'Unknown error')} | Task: {task}"]
 
+    subtask_status = status.get("subtasks", {})
+    if subtask_status.get("enabled"):
+        lines.append(f"Subtasks confirmed: {subtask_status['confirmed']}/{subtask_status['total']}")
+        if event == "save" and success:
+            lines.append("Annotation: complete" if subtask_status.get("complete") else "Annotation: incomplete; needs manual review")
+            lines.append(f"Annotation file: {subtask_status.get('annotation_file', 'unknown')}")
+        elif subtask_status.get("next_subtask"):
+            lines.append(f"Current subtask: {subtask_status['next_subtask']}")
+    if event == "mark_subtask":
+        return "\n".join(lines)
     lines.append("Task episode counts:")
     for item in status.get("task_counts", []):
         lines.append(
@@ -368,7 +384,7 @@ def parse_args() -> argparse.Namespace:
     command_parser.add_argument("--base-dir", type=Path, required=True)
     command_parser.add_argument("--wait", action="store_true", help="Wait for save/discard completion.")
     command_parser.add_argument("--timeout", type=float, default=300.0)
-    command_parser.add_argument("command", choices=("start", "save", "discard", "quit"))
+    command_parser.add_argument("command", choices=("start", "mark_subtask", "save", "discard", "quit"))
 
     summary_parser = subparsers.add_parser("summary", help="Print dataset metadata summary.")
     summary_parser.add_argument("--dataset-root", type=Path, required=True)

@@ -2,9 +2,9 @@
 """Capture the two DICOTA hand cameras into Autolife shared memory.
 
 The robot vision service cannot reliably decode these cameras' MJPEG streams.
-This process opens the V4L2 devices with OpenCV and publishes frames using the
-same metadata and image-buffer files as the Autolife SDK.  The ROS bridge can
-therefore consume the hand cameras exactly like the robot's native cameras.
+This optional process forwards the camera's original JPEG bytes to *_jpeg SHM.
+It never publishes decoded BGR or re-encodes images. Do not run it while the
+vision service owns the same devices; the launcher checks device ownership.
 """
 
 from __future__ import annotations
@@ -19,10 +19,11 @@ import cv2
 import numpy as np
 
 from camera_config import HAND_CAMERA_SPECS, SHM_METADATA_FORMAT, HandCameraSpec
+from shm_camera import PIXEL_FORMAT_MJPEG
 
 # SDK-compatible little-endian metadata layout: timestamp_ns (int64), then
 # width, height, channels, pixel format, and image byte count (five int32s).
-# Pixel format 1 means uint8; hand-camera buffers always contain BGR pixels.
+# Pixel format 4 identifies a compressed JPEG payload, not width*height*3 bytes.
 RUNNING = True
 
 
@@ -35,13 +36,14 @@ def signal_handler(_signal_number: int, _frame: FrameType | None) -> None:
 
 
 class HandCameraProducer:
-    """Own one V4L2 camera and atomically publish its latest decoded frame."""
+    """Own one V4L2 camera and publish its latest compressed frame."""
 
     def __init__(self, name: str, config: HandCameraSpec):
         self.name = name
         self.config = config
         self.capture: cv2.VideoCapture | None = None
         self.frame_interval = 1.0 / config.fps
+        self.width, self.height = config.width, config.height
 
     def open(self) -> bool:
         """Open and validate the camera, returning false when it is unavailable."""
@@ -58,53 +60,54 @@ class HandCameraProducer:
         capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.height)
         capture.set(cv2.CAP_PROP_FPS, self.config.fps)
 
-        if self._read_one(capture) is None:
+        # Require raw capture: silently accepting decoded pixels here would
+        # either corrupt the JPEG SHM contract or require expensive re-encoding.
+        if not capture.set(cv2.CAP_PROP_CONVERT_RGB, 0):
             capture.release()
-            print(f"[{self.name}] ERROR: initial frame read failed")
+            print(f"[{self.name}] ERROR: V4L2 backend does not support raw MJPEG capture")
+            return False
+        jpeg = self._read_one(capture)
+        image = None if jpeg is None else cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            capture.release()
+            print(f"[{self.name}] ERROR: initial JPEG validation failed")
             return False
 
         self.capture = capture
-        actual_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-        actual_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        print(f"[{self.name}] Started {actual_width}x{actual_height} on {self.config.device}")
+        self.height, self.width = image.shape[:2]
+        print(f"[{self.name}] Started JPEG {self.width}x{self.height} on {self.config.device}")
         return True
 
     @staticmethod
-    def _read_one(capture: cv2.VideoCapture) -> np.ndarray | None:
-        """Read one MJPEG frame; OpenCV returns the decoded image in BGR order."""
+    def _read_one(capture: cv2.VideoCapture) -> bytes | None:
+        """Read a raw 1xN V4L2 packet without decoding or changing its bytes."""
 
         ok, frame = capture.read()
-        return frame if ok and frame is not None else None
+        if not ok or frame is None or frame.dtype != np.uint8 or frame.ndim != 2 or frame.shape[0] != 1:
+            return None
+        jpeg = frame.tobytes()
+        return jpeg if jpeg.startswith(b"\xff\xd8") else None
 
     def produce_once(self) -> bool:
         """Capture and publish one frame, returning whether publication succeeded."""
 
         if self.capture is None:
             return False
-        image = self._read_one(self.capture)
-        if image is None:
+        image_bytes = self._read_one(self.capture)
+        if image_bytes is None:
             print(f"[{self.name}] WARNING: frame read failed")
             return False
 
-        height, width, _channels = image.shape
-        if width != self.config.width or height != self.config.height:
-            print(
-                f"[{self.name}] Resizing {width}x{height} to "
-                f"{self.config.width}x{self.config.height}"
-            )
-            image = cv2.resize(image, (self.config.width, self.config.height))
-
-        image_bytes = image.tobytes()
         # Publish the image first and metadata second.  Consumers use the
         # metadata timestamp to identify a new, already complete frame.
         self._atomic_write(self.config.buffer_path, image_bytes)
         metadata = struct.pack(
             SHM_METADATA_FORMAT,
             time.time_ns(),
-            self.config.width,
-            self.config.height,
+            self.width,
+            self.height,
             3,
-            1,
+            PIXEL_FORMAT_MJPEG,
             len(image_bytes),
         )
         self._atomic_write(self.config.meta_path, metadata)

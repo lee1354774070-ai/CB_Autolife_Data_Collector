@@ -19,8 +19,8 @@ from camera_config import (
 class CameraConfigTest(unittest.TestCase):
     def test_paths_and_topics_follow_one_name(self) -> None:
         spec = CAMERA_SPECS["hand_left"]
-        self.assertEqual(spec.meta_path, "/dev/shm/camera_metadata_struct_hand_left")
-        self.assertEqual(spec.buffer_path, "/dev/shm/camera_image_buffer_hand_left")
+        self.assertEqual(spec.meta_path, "/dev/shm/camera_metadata_struct_hand_left_jpeg")
+        self.assertEqual(spec.buffer_path, "/dev/shm/camera_image_buffer_hand_left_jpeg")
         self.assertEqual(spec.topic, "/camera/hand_left/image_raw")
         self.assertEqual(spec.frame_id, "hand_left")
 
@@ -40,13 +40,17 @@ class CameraConfigTest(unittest.TestCase):
             self.assertGreater(hand_spec.fps, 0)
             self.assertTrue(hand_spec.device.startswith("/dev/video"))
 
-    def test_hand_cameras_offer_jpeg_shm_fallback(self) -> None:
-        primary, fallback = camera_shm_candidates("hand_left")
-        self.assertIs(primary, CAMERA_SPECS["hand_left"])
-        self.assertEqual(fallback.name, "hand_left")
-        self.assertTrue(fallback.meta_path.endswith("hand_left_jpeg"))
-
-        self.assertEqual(camera_shm_candidates("rgbd_head_color"), (CAMERA_SPECS["rgbd_head_color"],))
+    def test_hand_cameras_use_only_jpeg_and_keep_logical_names(self) -> None:
+        for name in HAND_CAMERA_SPECS:
+            (spec,) = camera_shm_candidates(name)
+            self.assertIs(spec, CAMERA_SPECS[name])
+            self.assertEqual(spec.name, name)
+            self.assertTrue(spec.meta_path.endswith(f"{name}_jpeg"))
+            self.assertTrue(spec.buffer_path.endswith(f"{name}_jpeg"))
+        for name in ("rgbd_head_color", "rgbd_head_depth", "head_left", "head_right"):
+            (spec,) = camera_shm_candidates(name)
+            self.assertTrue(spec.meta_path.endswith(name))
+            self.assertTrue(spec.buffer_path.endswith(name))
 
 
 if __name__ == "__main__":

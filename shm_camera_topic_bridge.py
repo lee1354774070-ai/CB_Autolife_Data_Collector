@@ -15,7 +15,7 @@ from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import Image
 
 from camera_config import CAMERA_SPECS, CameraSpec
-from shm_camera import read_shm_frame, read_shm_metadata
+from shm_camera import frame_to_hwc, read_shm_frame, read_shm_metadata
 EPOCH_NS_MIN = 946684800 * 1_000_000_000
 EPOCH_NS_MAX = 4102444800 * 1_000_000_000
 
@@ -70,17 +70,13 @@ class ShmCameraTopicBridge(Node):
             if frame is None or frame.timestamp_ns != metadata[0]:
                 continue
 
-            if frame.pixel_format == 1 and frame.channels == 3:
-                encoding = "bgr8"
-                step = frame.width * 3
-            elif frame.pixel_format == 2 and frame.channels == 1:
-                encoding = "16UC1"
-                step = frame.width * 2
-            else:
-                self.get_logger().warn(
-                    f"Unsupported SHM format for {cam.name}: "
-                    f"channels={frame.channels}, fmt={frame.pixel_format}"
-                )
+            is_depth = cam.name == "rgbd_head_depth"
+            try:
+                # Hands carry JPEG, heads native color/depth. ROS Image always
+                # carries decoded pixels; never label JPEG bytes as bgr8.
+                image = frame_to_hwc(frame, is_depth)
+            except ValueError as exc:
+                self.get_logger().warn(f"drop {cam.name}: {exc}")
                 continue
 
             msg = Image()
@@ -88,10 +84,10 @@ class ShmCameraTopicBridge(Node):
             msg.header.frame_id = cam.frame_id
             msg.height = frame.height
             msg.width = frame.width
-            msg.encoding = encoding
+            msg.encoding = "16UC1" if is_depth else "bgr8"
             msg.is_bigendian = 0
-            msg.step = step
-            msg.data = frame.data[: frame.byte_count]
+            msg.step = frame.width * (2 if is_depth else 3)
+            msg.data = image.tobytes()
             self.image_publishers[cam.name].publish(msg)
 
             self.last_source_stamp[cam.name] = frame.timestamp_ns

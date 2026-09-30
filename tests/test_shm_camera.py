@@ -125,6 +125,9 @@ class ShmCameraTest(unittest.TestCase):
             decoded = frame_to_hwc(frame, False)
             self.assertEqual(decoded.shape, source.shape)
             self.assertLess(np.abs(decoded.astype(int) - source.astype(int)).mean(), 3.0)
+            rgb = frame_to_hwc(frame, False, rgb=True)
+            np.testing.assert_array_equal(rgb, decoded[..., ::-1])
+            self.assertTrue(rgb.flags.c_contiguous)
 
 
 if __name__ == "__main__":

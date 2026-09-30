@@ -8,6 +8,7 @@ or LeRobot persistence. It is deliberately outside automatic unittest discovery.
 """
 
 import json
+import argparse
 import os
 from pathlib import Path
 import signal
@@ -18,9 +19,13 @@ import time
 
 import rclpy
 from std_msgs.msg import String
+from std_srvs.srv import SetBool, Trigger
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--subtasks', action='store_true', help='Test short-A marks, final autosave and long-A early save.')
+    args = parser.parse_args()
     rclpy.init()
     node = rclpy.create_node('collector_vr_transport_test')
     prefix = f'/collector_test_{os.getpid()}'
@@ -28,6 +33,33 @@ def main():
     speech = []
     node.create_subscription(String, prefix + '/tts', lambda msg: speech.append(json.loads(msg.data)), 10)
     received = []
+    feedback = []
+    reset_calls = []
+    reset_started = None
+    controller_enabled = False
+    controller_pub = node.create_publisher(String, prefix + '/controller/status', 10)
+    node.create_subscription(String, prefix + '/feedback',
+                             lambda msg: feedback.append(json.loads(msg.data)['event']), 10)
+
+    def enable(request, response):
+        nonlocal controller_enabled, reset_started
+        reset_calls.append(('enable', request.data))
+        controller_enabled = request.data
+        if not request.data:
+            reset_started = None
+        response.success = True
+        return response
+
+    def reset(request, response):
+        nonlocal reset_started, controller_enabled
+        reset_calls.append(('reset', None))
+        controller_enabled = True
+        reset_started = time.monotonic()
+        response.success = True
+        return response
+
+    node.create_service(SetBool, prefix + '/controller/set_hardware_enabled', enable)
+    node.create_service(Trigger, prefix + '/controller/full_body_reset', reset)
     helper = None
     fd = None
     try:
@@ -40,22 +72,33 @@ def main():
             script = Path(__file__).resolve().parents[1] / 'vr_collector_control.py'
             helper = subprocess.Popen([sys.executable, '-u', str(script), '--base-dir', str(root),
                                        '--topic', prefix + '/input', '--tts-topic', prefix + '/tts',
-                                       '--start-delay', '0.2', '--command-timeout', '5'])
+                                       '--start-delay', '0.2', '--command-timeout', '5',
+                                       '--motion-lock-file', str(root / 'motion.lock'),
+                                       '--reset-prefix', prefix + '/controller', '--feedback-topic', prefix + '/feedback']
+                                      + (['--subtask-mode', '--a-long-press-sec', '1'] if args.subtasks else []))
+            confirmed = 0
 
-            def packet(faces=()):
+            def packet(faces=(), grips=True):
                 data = {h: {'b': [{'p': False} for _ in range(6)]} for h in ('l', 'r')}
                 for hand in data:
-                    data[hand]['b'][1]['p'] = True
+                    data[hand]['b'][1]['p'] = grips
                 for hand, index in faces:
                     data[hand]['b'][index]['p'] = True
                 return String(data=json.dumps(data))
 
-            def pump(seconds, faces=()):
+            def pump(seconds, faces=(), grips=True):
+                nonlocal confirmed
                 deadline = time.monotonic() + seconds
                 while time.monotonic() < deadline:
                     if helper.poll() is not None:
                         raise RuntimeError(f'VR helper exited unexpectedly: {helper.returncode}')
-                    publisher.publish(packet(faces))
+                    publisher.publish(packet(faces, grips))
+                    pending = reset_started is not None and time.monotonic() - reset_started < .3
+                    controller_pub.publish(String(data=json.dumps({
+                        'hardware_enabled': controller_enabled,
+                        'hardware_enable_pending': pending,
+                        'hardware_ready': controller_enabled and not pending,
+                        'state': 'ARMED' if controller_enabled else 'DISARMED'})))
                     rclpy.spin_once(node, timeout_sec=.02)
                     try:
                         data = os.read(fd, 4096).decode()
@@ -67,9 +110,18 @@ def main():
                         received.append(command)
                         if command == 'quit':
                             continue
-                        status = dict(event=command, success=True, request_id=parts[1],
+                        event = command
+                        if command == 'start':
+                            confirmed = 0
+                        elif command == 'mark_subtask':
+                            confirmed += 1
+                            if confirmed == 3:
+                                event = 'save'
+                        status = dict(event=event, success=True, request_id=parts[1],
                                       wall_time=time.time(), frames=60, episode_index=0,
-                                      total_saved_episodes=int(command == 'save'), session_saved_episodes=int(command == 'save'))
+                                      total_saved_episodes=int(event == 'save'), session_saved_episodes=int(event == 'save'),
+                                      subtasks=dict(enabled=args.subtasks, confirmed=confirmed, total=3,
+                                                    complete=confirmed == 3, next_subtask='next' if confirmed < 3 else None))
                         temporary = root / 'status.tmp'
                         temporary.write_text(json.dumps(status))
                         temporary.replace(root / '.official_recording_status.json')
@@ -85,18 +137,41 @@ def main():
                 pump(.1)
             assert node.count_subscribers(prefix + '/input'), 'VR input subscription not discovered'
             pump(1)
-            tap('r', 4)  # start
-            tap('r', 5)  # save
-            tap('r', 4)  # start
+            tap('l', 5)  # start
+            if args.subtasks:
+                tap('r', 4)
+                tap('r', 4)
+                tap('r', 4)  # final mark -> save receipt
+                tap('l', 5)  # start again
+                pump(.1)
+                pump(1.2, [('r', 4)])
+                pump(.6)  # long-A early save
+            else:
+                tap('r', 4)  # save
+            tap('l', 5)  # start
             tap('l', 4)  # discard
-            tap('l', 5)  # arm quit, must not quit yet
-            assert received == ['start', 'save', 'start', 'discard'], received
-            tap('l', 5)
-            assert received == ['start', 'save', 'start', 'discard', 'quit'], received
+            expected = (['start', 'mark_subtask', 'mark_subtask', 'mark_subtask', 'start', 'save', 'start', 'discard']
+                        if args.subtasks else ['start', 'save', 'start', 'discard'])
+            assert received == expected, received
+            assert not reset_calls, 'A/X unexpectedly requested motion'
+            tap('r', 5)  # B must discard first and wait for Grip release.
+            assert received == expected + ['discard'], received
+            assert not reset_calls, 'reset requested before Grip release'
+            pump(1.5, grips=False)
+            assert reset_calls == [('enable', False), ('reset', None), ('enable', False)], reset_calls
+            assert 'resetting' in feedback and 'reset' in feedback, feedback
+            assert all(name in feedback for name in ('start', 'saving', 'save', 'discard')), feedback
+            if args.subtasks:
+                assert 'mark' in feedback, feedback
             spoken = [item.get('text', '') for item in speech]
-            assert any('保存成功' in item for item in spoken), spoken
+            assert any(('已保存' if args.subtasks else '保存成功') in item for item in spoken), spoken
+            if args.subtasks:
+                assert spoken.count('下一步') == 2, spoken
+                assert '已保存，标注未完成' in spoken, spoken
             assert any('已丢弃' in item for item in spoken), spoken
-            print('ROS_VR_SMOKE_PASS: start/save/start/discard/double-Y quit; test-topic speech received', flush=True)
+            assert '复位完成' in spoken, spoken
+            print('ROS_VR_SMOKE_PASS: Y/A/X/B; fake reset disable->reset->confirm->disable; '
+                  f'feedback={feedback}; hardware_calls=0', flush=True)
     finally:
         if helper is not None and helper.poll() is None:
             helper.send_signal(signal.SIGINT)

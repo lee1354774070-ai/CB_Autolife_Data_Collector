@@ -60,8 +60,8 @@ def _camera_fields(name: str, shm_name: str | None = None) -> dict[str, str]:
 
 
 HAND_CAMERA_SPECS = {
-    "hand_left": HandCameraSpec(**_camera_fields("hand_left"), device="/dev/video12"),
-    "hand_right": HandCameraSpec(**_camera_fields("hand_right"), device="/dev/video14"),
+    "hand_left": HandCameraSpec(**_camera_fields("hand_left", "hand_left_jpeg"), device="/dev/video12"),
+    "hand_right": HandCameraSpec(**_camera_fields("hand_right", "hand_right_jpeg"), device="/dev/video14"),
 }
 
 CAMERA_SPECS: dict[str, CameraSpec] = {
@@ -72,21 +72,16 @@ CAMERA_SPECS: dict[str, CameraSpec] = {
     "head_right": CameraSpec(**_camera_fields("head_right")),
 }
 
-# Some SDK releases receive the DICOTA hand-camera MJPEG stream but fail to
-# populate their decoded BGR output. These alternate specs let consumers fall
-# back to the healthy compressed SHM stream without changing dataset keys.
-HAND_JPEG_CAMERA_SPECS: dict[str, CameraSpec] = {
-    name: CameraSpec(**_camera_fields(name, f"{name}_jpeg"))
-    for name in HAND_CAMERA_SPECS
-}
-
 
 def camera_shm_candidates(name: str) -> tuple[CameraSpec, ...]:
-    """Return preferred then fallback SHM sources for one logical camera."""
+    """Return the single source; keep the reader API shared with deployment.
 
-    primary = CAMERA_SPECS[name]
-    fallback = HAND_JPEG_CAMERA_SPECS.get(name)
-    return (primary, fallback) if fallback is not None else (primary,)
+    Hands use JPEG exclusively: never probe the unreliable SDK decoded-BGR
+    outputs, even when JPEG is missing. Logical names and ROS topics stay fixed.
+    Head color and depth retain their native uncompressed sources.
+    """
+
+    return (CAMERA_SPECS[name],)
 
 # These are the streams selected by the main launcher.  Stereo head cameras
 # remain available to the standalone bridge, but are not recorded by default.

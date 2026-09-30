@@ -1,0 +1,239 @@
+--- a/openarmx_teleop_vr_306_v4/controller_node.py
++++ b/openarmx_teleop_vr_306_v4/controller_node.py
+@@ -250,6 +250,13 @@
+         self._follow_authority_required = bool(self.get_parameter('follow_authority_topic').value)
+         self._follow_authority_mode = ''
+         self._follow_authority_time = 0.0
++        self._collector_authority_epoch = -1
++        self._collector_revoked_epoch = -1
++        self._collector_body_origin_epoch = -1
++        self._collector_gripper_origin_epoch = -1
++        self._collector_session_id = ''
++        self._collector_output_pub = self.create_publisher(
++            String, '/collector_dagger/controller_output', reliable_latest_qos())
+         self._waist_follow_enabled = bool(
+             self.get_parameter('allow_waist_in_ik').value
+         )
+@@ -572,6 +579,13 @@
+             daemon=True,
+         )
+         self._ik_thread.start()
++        # DDS graph discovery must not run while holding the 100 Hz control
++        # lock. Expired/missing snapshots still fail closed at the same guard.
++        self._output_guard_snapshot = (0.0, 'graph check pending', 'graph check pending')
++        self._output_guard_stop = threading.Event()
++        self._output_guard_thread = threading.Thread(
++            target=self._refresh_output_guard, name='collector-dds-guard', daemon=True)
++        self._output_guard_thread.start()
+         self.get_logger().info(
+             f'independent arm controller ready: suffix={self._suffix}, '
+             f'dry_run={self._dry_run}, mode={self._output_control_mode}, '
+@@ -1432,6 +1452,10 @@
+                 self._reason = f'target rejected: {exc}'
+             return
+         with self._lock:
++            if (not self._follow_authority_allowed(for_arm=True)
++                    or not self._collector_target_allowed(envelope, policy_only=False)):
++                return  # Reject old clutch state before it mutates the controller.
++
+             if self._state == 'FAULT' and not self._hardware_enabled:
+                 return
+             if self._reset_active:
+@@ -1729,6 +1743,8 @@
+                 return
+             if not self._follow_authority_allowed(for_arm=True):
+                 return  # EXPERT_READY must accept the first arm IK to complete takeover.
++            if not self._collector_target_allowed(payload, policy_only=False):
++                return  # A solve from an older authority cannot re-arm this epoch.
+             if self._reset_active or self._enable_pending or self._estop_latched:
+                 self._reason = 'stale IK result discarded after a controller state change'
+                 return
+@@ -1784,6 +1800,7 @@
+                         self._target_velocity_estimator.velocity.copy()
+                     )
+                 self._target_groups = accepted_groups
++                self._collector_body_origin_epoch = int(payload.get('authority_epoch', -1))
+                 self._velocity_active_sides = set(targets)
+                 self._target_time = received_at
+                 self._target_source = 'cartesian_ik'
+@@ -1819,6 +1836,16 @@
+ 
+         now = time.monotonic()
+         with self._lock:
++            if self._follow_authority_required:
++                release_epoch = payload.get('authority_epoch')
++                if (type(release_epoch) is not int
++                        or release_epoch < self._collector_authority_epoch):
++                    return  # A delayed release cannot interrupt a newer clutch.
++
++            if self._follow_authority_required and self._follow_authority_mode == 'POLICY_ACTIVE':
++                # Fence queued policy targets immediately, even if the newer
++                # authority-state message is delivered after this hold.
++                self._collector_revoked_epoch = self._collector_authority_epoch
+             if self._feedback is None or self._limiter is None:
+                 self._reason = 'release hold rejected: joint feedback is unavailable'
+                 return
+@@ -1941,6 +1962,9 @@
+             if not allowed:
+                 raise ValueError('no gripper target')
+             with self._lock:
++                if not self._collector_target_allowed(payload, policy_only=False):
++                    return
++                self._collector_gripper_origin_epoch = int(payload.get('authority_epoch', -1))
+                 for side in ('left', 'right'):
+                     key = f'{side}_gripper_target_joints_position'
+                     if key in allowed:
+@@ -1982,6 +2006,9 @@
+             payload = json.loads(message.data)
+             if not isinstance(payload, dict):
+                 raise ValueError('joint target must be a JSON object')
++            with self._lock:
++                if not self._collector_target_allowed(payload, policy_only=True):
++                    return
+             base = feedback.as_dict() if base_groups is None else base_groups
+             groups = {
+                 key: np.asarray(value, dtype=float).copy()
+@@ -2008,7 +2035,13 @@
+             self._reason = f'joint target rejected: {exc}'
+             return
+         with self._lock:
++            # Expensive kinematic checks ran outside the lock. Recheck before
++            # committing so a takeover/reset cannot be undone by an old result.
++            if (not self._collector_target_allowed(payload, policy_only=True)
++                    or self._reset_active or self._enable_pending or self._estop_latched):
++                return
+             self._target_groups = clamped
++            self._collector_body_origin_epoch = int(payload.get('authority_epoch', -1))
+             self._target_velocity_estimate = self._target_velocity_estimator.reset(
+                 self._group_vector(clamped), now
+             )
+@@ -2430,6 +2463,15 @@
+         return (self._follow_authority_mode in modes
+                 and 0 <= time.monotonic() - self._follow_authority_time <= 0.5)
+ 
++    def _collector_target_allowed(self, payload, *, policy_only):
++        if not self._follow_authority_required:
++            return True
++        modes = ('POLICY_ACTIVE',) if policy_only else ('POLICY_ACTIVE', 'EXPERT_ACTIVE', 'EXPERT_READY')
++        return (self._follow_authority_mode in modes
++                and 0 <= time.monotonic() - self._follow_authority_time <= 0.5
++                and payload.get('authority_epoch') == self._collector_authority_epoch
++                and self._collector_authority_epoch > self._collector_revoked_epoch)
++
+     def _head_follow_active(self):
+         return self._head_follow_enabled and self._follow_authority_allowed()
+ 
+@@ -2444,6 +2486,9 @@
+             return
+         with self._lock:
+             was_active = self._follow_authority_allowed()
++            from dagger.controller_handoff import apply_authority
++            if not apply_authority(self, payload, mode):
++                return
+             self._follow_authority_mode = mode
+             self._follow_authority_time = time.monotonic()
+             active = self._follow_authority_allowed()
+@@ -2569,6 +2613,17 @@
+                 del entries[:-512]
+         try:
+             publisher.publish(String(data=payload))
++            # Separate audit channel; vendor command JSON remains unchanged.
++            # This is proof of publication, never proof of physical completion.
++            if topic in (self._output_topic, self._gripper_output_topic):
++                gripper = topic == self._gripper_output_topic
++                epoch = (self._collector_gripper_origin_epoch if gripper
++                         else self._collector_body_origin_epoch)
++                self._collector_output_pub.publish(String(data=json.dumps({
++                    'gripper': gripper, 'command': json.loads(payload),
++                    'timestamp_ns': time.time_ns(), 'origin_authority_epoch': epoch,
++                    'session_id': self._collector_session_id,
++                }, separators=(',', ':'))))
+         except Exception:
+             with self._lock:
+                 entries = self._recent_owned_commands.get(topic, [])
+@@ -3975,7 +4030,23 @@
+             self._joint_clear_error_pub is not None,
+         )
+ 
++    def _refresh_output_guard(self):
++        while not self._output_guard_stop.is_set():
++            try:
++                normal = self._query_hardware_output_guard_error(False)
++                prepare = self._query_hardware_output_guard_error(True)
++                self._output_guard_snapshot = (time.monotonic(), normal, prepare)
++            except Exception:
++                pass  # Preserve old timestamp: failed reads are not readiness.
++            self._output_guard_stop.wait(0.2)
++
+     def _hardware_output_guard_error(self, require_prepare=False):
++        checked, normal, prepare = getattr(self, '_output_guard_snapshot', (0., '', ''))
++        if time.monotonic() - checked > 0.6:
++            return 'DDS output-guard snapshot unavailable or stale'
++        return prepare if require_prepare else normal
++
++    def _query_hardware_output_guard_error(self, require_prepare=False):
+         active_publisher = (
+             self._velocity_pub
+             if self._output_control_mode == 'velocity'
+@@ -4993,6 +5064,10 @@
+         self._status_pub.publish(String(data=json.dumps(payload, separators=(',', ':'))))
+ 
+     def destroy_node(self):
++        graph_stop = getattr(self, '_output_guard_stop', None)
++        if graph_stop is not None:
++            graph_stop.set()
++            self._output_guard_thread.join(timeout=0.3)
+         mailbox = getattr(self, '_latest_target_mailbox', None)
+         if mailbox is not None:
+             mailbox.close()
+@@ -5002,6 +5077,12 @@
+         # SPEED mode must never outlive this process's watchdog.  Publish a
+         # short burst so DDS teardown cannot leave the last non-zero sample in
+         # the vendor motor worker.
++        # A disabled/preflight controller must not become a command source
++        # merely because it is exiting. Lease release already holds the robot.
++        owns_output = (getattr(self, '_hardware_enabled', False)
++                       or getattr(self, '_sync_session_acquired', False))
++        if getattr(self, '_dry_run', True) or not owns_output:
++            return super().destroy_node()
+         if getattr(self, '_output_control_mode', 'position') == 'velocity':
+             try:
+                 with self._lock:
+@@ -5040,21 +5121,27 @@
+ def main(args=None):
+-    rclpy.init(args=args)
+-    node = IndependentArmController()
++    import signal
++    from rclpy.signals import SignalHandlerOptions
++    # Default ROS SIGINT handling shuts the context before destroy_node can
++    # publish the final hold/lease release. Keep it alive until cleanup ends.
++    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
++    stopping = threading.Event()
++    previous = {sig: signal.signal(sig, lambda *_: stopping.set())
++                for sig in (signal.SIGINT, signal.SIGTERM)}
+     try:
+-        rclpy.spin(node)
+-    except KeyboardInterrupt:
+-        pass
+-    finally:
++        node = IndependentArmController()
+         try:
++            while rclpy.ok() and not stopping.is_set():
++                rclpy.spin_once(node, timeout_sec=0.05)
++        finally:
+             node.destroy_node()
+-        except KeyboardInterrupt:
+-            pass
++    finally:
+         try:
+             if rclpy.ok():
+                 rclpy.shutdown()
+-        except KeyboardInterrupt:
+-            pass
++        finally:
++            for sig, handler in previous.items():
++                signal.signal(sig, handler)
+ 
+ 
+ if __name__ == '__main__':
+     main()

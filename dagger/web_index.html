@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>CB Collector | DAgger 300</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="vendor/aframe.min.js"></script>
+    <script src="vr_app.js?v=cb-collector-dagger-grip-20260929" defer></script>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main id="launchPanel" class="launch-panel">
+      <div class="brand-logo">AUTOLIFE</div>
+      <div class="title">CB Collector | DAgger 300</div>
+      <div id="serverUrl" class="server-url">Connecting...</div>
+      <section id="hardwareControl" class="hardware-control" aria-live="polite">
+        <div class="hardware-status-row">
+          <span id="hardwareStatusDot" class="hardware-status-dot"></span>
+          <span id="hardwareStatusLabel" class="hardware-status-label">Waiting for controller</span>
+        </div>
+        <div id="hardwareStatusDetail" class="hardware-status-detail">Connecting...</div>
+        <div class="follow-options" hidden>
+          <label for="waistFollowToggle"><input id="waistFollowToggle" type="checkbox" disabled>Waist follow</label>
+          <label for="headFollowToggle"><input id="headFollowToggle" type="checkbox" disabled>Head follow</label>
+        </div>
+        <button id="hardwareToggleButton" class="hardware-toggle-button" type="button" disabled>
+          Hold to start inference + recording
+        </button>
+        <div class="hardware-safety-hint">B discards the current unsaved episode and resets the robot. Saved episodes are kept.</div>
+      </section>
+      <section class="dagger-guide" aria-label="Collector DAgger controls">
+        <strong>DAgger controls</strong>
+        <div class="dagger-guide-grid">
+          <span><kbd>Y</kbd> Start inference + recording</span>
+          <span><kbd>GL / GR</kbd> Hold to take over</span>
+          <span><kbd>X</kbd> Discard episode</span>
+          <span><kbd>A</kbd> Save episode</span>
+          <span><kbd>B</kbd> Discard unsaved episode + reset</span>
+        </div>
+        <p>Press either Grip and keep holding. After the robot holds, move the held controller to correct. A/X trigger once on press, with no long-press action. Browser keyboard: Shift + the same letter.</p>
+      </section>
+      <button id="startVrButton" class="start-button" type="button">Enter VR</button>
+      <button id="cameraModeButton" class="camera-mode-button" type="button">Camera: passthrough</button>
+      <div id="statusText" class="status-text">Preparing...</div>
+    </main>
+    <a-scene vr-mode-ui="enabled: false"
+      webxr="referenceSpaceType: local-floor; optionalFeatures: local-floor, bounded-floor"
+      renderer="antialias: true; colorManagement: true" background="color: #05070A">
+      <a-entity webxr-passthrough="referenceSpaceType: local-floor"></a-entity>
+      <a-entity id="cameraRig" position="0 1.55 -2.0"></a-entity>
+      <a-entity id="leftHand" oculus-touch-controls="hand: left"></a-entity>
+      <a-entity id="rightHand" oculus-touch-controls="hand: right"></a-entity>
+      <a-entity light="type: ambient; intensity: 1.0"></a-entity>
+    </a-scene>
+  </body>
+</html>

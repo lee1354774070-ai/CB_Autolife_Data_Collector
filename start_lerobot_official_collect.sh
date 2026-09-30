@@ -20,6 +20,54 @@ show_help() {
                 echo "Usage: TASK_TEXT='pick up the bottle' bash start_lerobot_official_collect.sh pick_up_bottle"
                 echo "Natural-language instruction stored in every dataset frame."
                 ;;
+            COLLECTOR_MODE)
+                echo "COLLECTOR_MODE"
+                echo "Usage: COLLECTOR_MODE=keyboard|vr|subtask|dagger bash start_lerobot_official_collect.sh task_name"
+                echo "keyboard: original terminal controls. vr: single-operator VR buttons. subtask: VR with ordered SUBTASKS_JSON."
+                echo "dagger: robot-300 incremental V4 + our Thor GR00T; Y=start, GL/GR=takeover, A=save, X=discard, B=reset."
+                echo "Requires DAGGER_SERVER_URL and inspected V4/HG sources. Default DAGGER_PUBLISH=0; set 1 for button-authorized motion."
+                echo "Unset: preserve legacy VR_CONTROL/SUBTASKS_JSON selection; default keyboard."
+                echo "An explicit mode rejects conflicting legacy flags before creating data or starting processes."
+                ;;
+            DAGGER_BACKEND|DAGGER_SERVER_URL|DAGGER_PUBLISH|DAGGER_TOKEN_FILE|DAGGER_DEPENDENCY_ROOT|DAGGER_TOOLS_ROOT|DAGGER_ROS_SETUP|DAGGER_WEB_PORT|DAGGER_ROS_PY|DAGGER_VR_PY|DAGGER_WEB_PY)
+                echo "${parameter} (COLLECTOR_MODE=dagger only)"
+                case "${parameter}" in
+                    DAGGER_BACKEND) echo "owned (default): start one exclusive host. attach: connect to an already-compatible host; never starts or stops its controller/recorder/model/web. Q only detaches; host keeps running. Match OUTPUT_BASE_DIR and task_name. Legacy hosts require a one-time compatible-copy migration." ;;
+                    DAGGER_SERVER_URL) echo "Required Thor GR00T URL, e.g. http://THOR_IP:8777. No default; baseline/frame protocol only." ;;
+                    DAGGER_PUBLISH) echo "0=no hardware publishing (default); 1=Y/C and B/R may move the robot. No automatic start." ;;
+                    DAGGER_TOKEN_FILE) echo "Token file; default /home/ubuntu/.config/autolife_hg_dagger/groot_server.token. Never put tokens in URLs." ;;
+                    DAGGER_DEPENDENCY_ROOT) echo "Inspected V4/HG package parent; default /home/ubuntu/ros2_ws/src. Key sources/configs are hash-checked." ;;
+                    DAGGER_TOOLS_ROOT) echo "Our full Autolife_VLA_Tools root for deploy imports; defaults to this repo, or /home/ubuntu/Autolife_VLA_Tools for standalone Collector." ;;
+                    DAGGER_ROS_SETUP) echo "ROS workspace environment; default /home/ubuntu/ros2_ws/install/setup.bash." ;;
+                    DAGGER_WEB_PORT) echo "VR HTTPS port; default 8447. Changing it does not permit concurrent controllers." ;;
+                    DAGGER_ROS_PY) echo "ROS supervisor/bridge interpreter; default /usr/bin/python3." ;;
+                    DAGGER_VR_PY) echo "V4 controller interpreter; default /home/ubuntu/ros2_ws/venvs/openarmx_v4_placo/bin/python. Must include Placo." ;;
+                    DAGGER_WEB_PY) echo "HTTPS/WebXR interpreter; default /home/ubuntu/ros2_ws/venvs/hg_dagger_web/bin/python." ;;
+                esac
+                echo "Usage: COLLECTOR_MODE=dagger ${parameter}=<value> bash start_lerobot_official_collect.sh task_name"
+                echo "The current adapter supports robot 300, domain 0, 21-D head+upper-waist, three RGB cameras, optional recorded depth."
+                ;;
+            SUBTASKS_JSON)
+                echo "SUBTASKS_JSON"
+                echo "Usage: SUBTASKS_JSON='[\"pick\", \"handover\", \"place\"]' VR_CONTROL=1 bash start_lerobot_official_collect.sh task_name"
+                echo "Ordered subtask texts. Default: [] (disabled). TASK_TEXT remains the overall episode task."
+                echo "Hold GL+GR: Y starts; recording short A confirms the current span; last mark saves."
+                echo "Hold A for VR_A_LONG_PRESS_SEC then release to save early. Unconfirmed frames have subtask_index=-1."
+                echo "Keyboard: N marks, S saves. Use a NEW dataset root when enabling/disabling annotation."
+                ;;
+            VR_INPUT_TOPIC|VR_RESET_PREFIX)
+                echo "${parameter}"
+                echo "VR_INPUT_TOPIC: defaults to /control_topic_<domain>_<robot>; V4 uses /openarmx_teleop_vr_306_v4/vr_input."
+                echo "VR_RESET_PREFIX: defaults to /openarmx_teleop_vr_306_v4; requires guarded reset/status services, not raw vendor reset."
+                echo "Disable old reset chords in the teleoperation copy. B discards with ACK, then resets after both Grips are released."
+                exit 0
+                ;;
+            VR_A_LONG_PRESS_SEC)
+                echo "VR_A_LONG_PRESS_SEC"
+                echo "Usage: VR_A_LONG_PRESS_SEC=1.2 VR_CONTROL=1 SUBTASKS_JSON='[\"pick\",\"place\"]' bash start_lerobot_official_collect.sh task_name"
+                echo "A hold threshold in subtask mode, seconds. Default: 1.0; finite range [0.2, 10]."
+                echo "Action occurs once on release with GL+GR still held; no simultaneous short-press mark."
+                ;;
             OUTPUT_BASE_DIR)
                 echo "OUTPUT_BASE_DIR"
                 echo "Usage: OUTPUT_BASE_DIR=/mnt/nas bash start_lerobot_official_collect.sh task_name"
@@ -54,7 +102,8 @@ show_help() {
                 echo "VR_CONTROL"
                 echo "Usage: VR_CONTROL=1 bash start_lerobot_official_collect.sh task_name"
                 echo "Enable single-operator VR episode control after recorder startup. Default: 0 (keyboard only)."
-                echo "Hold GL+GR and tap/release: A=start after countdown, B=save, X=discard, double Y within 5s=save and quit."
+                echo "Hold GL+GR and tap/release: Y=start, A=save, X=discard, B=discard+guarded reset. Exit in terminal."
+                echo "With SUBTASKS_JSON: recording short A=mark subtask, long A=save early; final mark saves automatically."
                 echo "Keyboard controls remain available. Requires factory /control_topic_<domain>_<robot> String messages."
                 ;;
             VR_START_DELAY_SEC|VR_SPEECH)
@@ -182,8 +231,21 @@ Show one environment variable:
   bash start_lerobot_official_collect.sh MAX_SYNC_DELTA_SEC --help
 
 Common parameters:
+  COLLECTOR_MODE             keyboard, vr, subtask, dagger. Unset: infer legacy settings.
+  DAGGER_BACKEND             owned (default) or attach. Attach requires a compatible host; Q detaches only.
+  DAGGER_SERVER_URL          Required by owned dagger mode; attach reuses the host's policy client.
+  DAGGER_PUBLISH             0=no hardware publishing (default), 1=button-authorized motion; no auto-start.
+  DAGGER_TOKEN_FILE          Thor token path; default ~/.config/autolife_hg_dagger/groot_server.token.
+  DAGGER_DEPENDENCY_ROOT     V4/HG source parent; default /home/ubuntu/ros2_ws/src (version checked).
+  DAGGER_TOOLS_ROOT          Our full VLA tools root; standalone default /home/ubuntu/Autolife_VLA_Tools.
+  DAGGER_ROS_SETUP           Workspace setup.bash; default /home/ubuntu/ros2_ws/install/setup.bash.
+  DAGGER_WEB_PORT            Incremental-VR HTTPS port; default 8447. Existing stack must be stopped first.
+  DAGGER_ROS_PY              Supervisor/bridge interpreter; default /usr/bin/python3.
+  DAGGER_VR_PY               Controller interpreter; default /home/ubuntu/ros2_ws/venvs/openarmx_v4_placo/bin/python.
+  DAGGER_WEB_PY              Web interpreter; default /home/ubuntu/ros2_ws/venvs/hg_dagger_web/bin/python.
   TASK_NAME                  Dataset/task directory name. Positional argument 1.
   TASK_TEXT                  Natural-language task instruction. Positional argument 2 or environment variable.
+  SUBTASKS_JSON               Ordered subtask JSON array. Default: [] (disabled); keyboard N marks.
   OUTPUT_BASE_DIR            Dataset parent directory. Default: /home/ubuntu/nas14
   COLLECT_FPS                Dataset FPS. Default: 30
   WITH_HEAD                  Add 3 neck joints. Default: 0
@@ -193,6 +255,7 @@ Common parameters:
   VR_CONTROL                 Enable VR episode buttons alongside keyboard controls. Default: 0
   VR_START_DELAY_SEC         VR start countdown, 0 through 30 seconds. Default: 3
   VR_SPEECH                  Use existing robot TTS service; does not change volume. Default: 1
+  VR_A_LONG_PRESS_SEC        A hold time for early save in subtask mode. Default: 1.0 seconds
   IMAGE_SOURCE               shm or ros. Default: shm
   IMAGE_POLL_FPS             SHM metadata polling rate. Default: 120
   SYNC_REFERENCE_CAMERA      Timestamp anchor camera. Default: hand_left
@@ -246,16 +309,22 @@ if [ "${2:-}" = "--help" ] || [ "${2:-}" = "-h" ]; then
     exit 0
 fi
 
+# Keep small telemetry/image operations from creating competing BLAS pools.
+# Explicit operator settings win; video/image writer concurrency is unchanged.
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+
 # Reject an ambiguous joint schema before creating directories, sourcing ROS,
 # or starting any process.  Both waist modes read the same four-value packet,
 # but expose different dataset dimensions and therefore cannot be combined.
 WITH_HEAD="${WITH_HEAD:-0}"
 WITH_UPPER_WAIST="${WITH_UPPER_WAIST:-0}"
 WITH_WAIST="${WITH_WAIST:-0}"
-VR_CONTROL="${VR_CONTROL:-0}"
+VR_CONTROL="${VR_CONTROL:-}"
 VR_SPEECH="${VR_SPEECH:-1}"
-if [[ ! "${VR_CONTROL}" =~ ^[01]$ ]] || [[ ! "${VR_SPEECH}" =~ ^[01]$ ]]; then
-    echo "ERROR: VR_CONTROL and VR_SPEECH must be 0 or 1." >&2
+if [[ ! "${VR_SPEECH}" =~ ^[01]$ ]]; then
+    echo "ERROR: VR_SPEECH must be 0 or 1." >&2
     exit 2
 fi
 if [ "${WITH_UPPER_WAIST}" = "1" ] && [ "${WITH_WAIST}" = "1" ]; then
@@ -264,6 +333,15 @@ if [ "${WITH_UPPER_WAIST}" = "1" ] && [ "${WITH_WAIST}" = "1" ]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SUBTASKS_JSON="${SUBTASKS_JSON:-[]}"
+# Resolve once, before directory creation, ROS setup, or any process startup.
+# In particular, DAgger must never accidentally start the factory VR helper.
+MODE_CONFIG="$(python3 "${SCRIPT_DIR}/collector_modes.py" --mode "${COLLECTOR_MODE:-}" \
+    --vr-control "${VR_CONTROL}" --subtasks-json "${SUBTASKS_JSON}")"
+read -r COLLECTOR_MODE VR_CONTROL SUBTASK_COUNT <<< "${MODE_CONFIG}"
+if [ "${COLLECTOR_MODE}" = "dagger" ]; then
+    exec python3 "${SCRIPT_DIR}/dagger/run.py" "$@"
+fi
 TASK_NAME="${1:-mango_pick}"
 TASK_TEXT="${TASK_TEXT:-${2:-${TASK_NAME}}}"
 OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR:-/home/ubuntu/nas14}"
@@ -293,8 +371,15 @@ TOPIC_NODE_ID="${ROS_DOMAIN_ID}_${ROBOT_ID}"
 MOTION_LOCK_FILE="${MOTION_LOCK_FILE:-/tmp/lerobot_robot_${TOPIC_NODE_ID}.motion.lock}"
 
 VR_ARGS=("${VR_SCRIPT}" --base-dir "${BASE_DIR}"
-    --topic "/control_topic_${TOPIC_NODE_ID}" --tts-topic "/topic_tts_${TOPIC_NODE_ID}"
-    --start-delay "${VR_START_DELAY_SEC:-3}" --command-timeout "${CONTROL_ACK_TIMEOUT_SEC:-300}")
+    --topic "${VR_INPUT_TOPIC:-/control_topic_${TOPIC_NODE_ID}}" --tts-topic "/topic_tts_${TOPIC_NODE_ID}"
+    --reset-prefix "${VR_RESET_PREFIX:-/openarmx_teleop_vr_306_v4}"
+    --feedback-topic /collector/feedback
+    --motion-lock-file "${MOTION_LOCK_FILE}"
+    --start-delay "${VR_START_DELAY_SEC:-3}" --command-timeout "${CONTROL_ACK_TIMEOUT_SEC:-300}"
+    --a-long-press-sec "${VR_A_LONG_PRESS_SEC:-1.0}")
+if [ "${SUBTASK_COUNT}" -gt 0 ]; then
+    VR_ARGS+=(--subtask-mode)
+fi
 if [ "${VR_SPEECH}" = "0" ]; then
     VR_ARGS+=(--no-speech)
 fi
@@ -399,6 +484,10 @@ trap on_interrupt INT TERM
 
 echo "=============================================="
 echo "  Official LeRobotDataset batch collection"
+echo "  collector mode: ${COLLECTOR_MODE}"
+if [ "${_COLLECTOR_DAGGER_RECORDING:-0}" = "1" ]; then
+    echo "  controller    : DAgger supervisor (recorder-only child; legacy keyboard disabled)"
+fi
 echo "  task name   : ${TASK_NAME}"
 echo "  task text   : ${TASK_TEXT}"
 echo "  dataset root: ${DATASET_ROOT}"
@@ -468,6 +557,7 @@ RECORDER_ARGS=(
     --output-dir "${DATASET_ROOT}"
     --repo-id "local/${TASK_NAME}"
     --task-name "${TASK_TEXT}"
+    --subtasks-json "${SUBTASKS_JSON}"
     --motion-lock-file "${MOTION_LOCK_FILE}"
     --fps "${COLLECT_FPS}"
     --image-source "${IMAGE_SOURCE}"
@@ -503,6 +593,10 @@ RECORDER_ARGS=(
     "${RECORDER_CAMERA_ARGS[@]}"
     "${RECORDER_FEATURE_ARGS[@]}"
 )
+if [ "${_COLLECTOR_DAGGER_RECORDING:-0}" = "1" ]; then
+    RECORDER_ARGS+=(--dagger --action-arm-topic /hg_dagger/collector/arm_action
+        --action-gripper-topic /hg_dagger/collector/gripper_action)
+fi
 if [ -n "${SYNC_REFERENCE_CAMERA:-}" ]; then
     RECORDER_ARGS+=(--sync-reference-camera "${SYNC_REFERENCE_CAMERA}")
 fi
@@ -585,19 +679,30 @@ if [ "${VR_CONTROL}" = "1" ]; then
         "${ROBOT_PY}" -u "${VR_ARGS[@]}" > >(tee "${LOG_PREFIX}.vr_control.log") 2>&1 &
     VR_PID=$!
     echo "vr_control ${VR_PID} ${LOG_PREFIX}.vr_control.log" >> "${PIDFILE}"
-    echo "  VR controls       : hold GL+GR; A=start, B=save, X=discard, double Y=save and quit"
+    echo "  VR controls       : hold GL+GR; Y=start, A=save, X=discard, B=discard+reset; terminal Q=exit"
+    if [ "${SUBTASK_COUNT}" -gt 0 ]; then
+        echo "  VR annotation     : short A=mark subtask, last mark saves; hold A >= ${VR_A_LONG_PRESS_SEC:-1.0}s then release=save early"
+    fi
 fi
 
 echo "============================================================"
 echo "Interactive controls"
+if [ "${_COLLECTOR_DAGGER_RECORDING:-0}" = "1" ]; then
+    echo "  Recorder managed by DAgger supervisor; use the outer terminal/VR controls."
+else
 echo "  Enter   - Start a new episode"
+if [ "${SUBTASK_COUNT}" -gt 0 ]; then
+    python3 "${SCRIPT_DIR}/subtask_annotations.py" --subtasks-json "${SUBTASKS_JSON}"
+    echo "  N / n   - Mark current subtask; the final mark saves the episode"
+fi
 echo "  S / s   - Save the current episode and pause"
 echo "  D / d   - Discard the current episode and pause"
 echo "  Q / q   - Save pending data and quit"
+fi
 echo "============================================================"
 
 while true; do
-    if [ "${VR_CONTROL}" = "0" ] && [ -f "${EPISODE_EVENT_FILE}" ]; then
+    if [ "${VR_CONTROL}" = "0" ] && [ "${_COLLECTOR_DAGGER_RECORDING:-0}" != "1" ] && [ -f "${EPISODE_EVENT_FILE}" ]; then
         echo ""
         python3 "${CONTROL_SCRIPT}" episode-event --path "${EPISODE_EVENT_FILE}" || true
     fi
@@ -620,6 +725,9 @@ while true; do
     fi
 
     if IFS= read -rsn1 -t 0.2 key; then
+        if [ "${_COLLECTOR_DAGGER_RECORDING:-0}" = "1" ]; then
+            continue  # Only the authority supervisor may open/close DAgger episodes.
+        fi
         case "${key}" in
             "")
                 echo ""
@@ -630,6 +738,13 @@ while true; do
                 echo ""
                 echo "[control] save"
                 send_control_and_report "save" || true
+                ;;
+            [nN])
+                if [ "${SUBTASK_COUNT}" -gt 0 ]; then
+                    echo ""
+                    echo "[control] mark_subtask"
+                    send_control_and_report "mark_subtask" || true
+                fi
                 ;;
             [dD])
                 echo ""

@@ -3,10 +3,14 @@
 import json
 import subprocess
 import unittest
+import tempfile
+import threading
+import time
+from unittest.mock import patch
 from concurrent.futures import Future
 from pathlib import Path
 
-from vr_collector_control import ButtonGestures, VrSession, decode_controls
+from vr_collector_control import ButtonGestures, ReceiptCache, VrSession, decode_controls
 
 
 def payload(*faces, grips=True):
@@ -20,7 +24,7 @@ def payload(*faces, grips=True):
 
 class GestureTest(unittest.TestCase):
     def test_all_bindings_fire_only_on_release(self):
-        for button, expected in [(('r', 4), 'start'), (('r', 5), 'save'), (('l', 4), 'discard'), (('l', 5), 'arm_quit')]:
+        for button, expected in [(('r', 4), 'save'), (('r', 5), 'reset'), (('l', 4), 'discard'), (('l', 5), 'start')]:
             with self.subTest(button=button):
                 gestures = ButtonGestures()
                 self.assertIsNone(gestures.update(True, set(), 1))
@@ -49,12 +53,12 @@ class GestureTest(unittest.TestCase):
         gestures.update(True, {('r', 5)}, 3)
         self.assertIsNone(gestures.update(True, set(), 4))
 
-    def test_double_y_requires_time_window_and_continuous_grips(self):
-        for release_grips, second_time, expected in [(False, 4, 'quit'), (False, 10, 'arm_quit'), (True, 4, 'arm_quit')]:
+    def test_double_y_never_quits(self):
+        for release_grips, second_time, expected in [(False, 4, 'start'), (False, 10, 'start'), (True, 4, 'start')]:
             gestures = ButtonGestures()
             gestures.update(True, set(), 1)
             gestures.update(True, {('l', 5)}, 2)
-            self.assertEqual(gestures.update(True, set(), 2.1), 'arm_quit')
+            self.assertEqual(gestures.update(True, set(), 2.1), 'start')
             if release_grips:
                 gestures.update(False, set(), 3)
                 gestures.update(True, set(), 3.1)
@@ -73,9 +77,56 @@ class GestureTest(unittest.TestCase):
         gestures = ButtonGestures()
         gestures.update(True, set(), 1)
         gestures.update(True, {('l', 5)}, 1.1)
-        self.assertEqual(gestures.update(True, set(), 1.2), 'arm_quit')
+        self.assertEqual(gestures.update(True, set(), 1.2), 'start')
         gestures.update(True, {('l', 5)}, 1.21)
         self.assertIsNone(gestures.update(True, set(), 1.22))
+
+
+class ReceiptCacheTest(unittest.TestCase):
+    def test_unchanged_files_are_not_parsed_again_and_atomic_replace_refreshes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'status.json'
+            path.write_text('{"request_id":"old"}')
+            with patch('vr_collector_control.json.loads', wraps=json.loads) as loads:
+                cache = ReceiptCache((path,), interval=.005)
+                try:
+                    deadline = time.monotonic() + 1
+                    while not cache.snapshot()[0] and time.monotonic() < deadline:
+                        time.sleep(.005)
+                    self.assertEqual(cache.snapshot()[0]['request_id'], 'old')
+                    time.sleep(.03)
+                    self.assertEqual(loads.call_count, 1)
+                    replacement = Path(directory) / 'next.json'
+                    replacement.write_text('{"request_id":"new"}')
+                    replacement.replace(path)
+                    deadline = time.monotonic() + 1
+                    while cache.snapshot()[0].get('request_id') != 'new' and time.monotonic() < deadline:
+                        time.sleep(.005)
+                    self.assertEqual(cache.snapshot()[0]['request_id'], 'new')
+                    self.assertEqual(loads.call_count, 2)
+                finally:
+                    cache.close()
+
+    def test_blocked_storage_does_not_block_callbacks(self):
+        blocked, release = threading.Event(), threading.Event()
+        def slow(*args, **kwargs):
+            blocked.set()
+            release.wait(2)
+            return '{}'
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'status.json'
+            path.write_text('{}')
+            with patch.object(Path, 'read_text', slow):
+                cache = ReceiptCache((path,))
+                try:
+                    self.assertTrue(blocked.wait(1))
+                    started = time.monotonic()
+                    for _ in range(1000):
+                        self.assertEqual(cache.snapshot(), ({},))
+                    self.assertLess(time.monotonic() - started, .1)
+                finally:
+                    release.set()
+                    cache.close()
 
 
 class SessionTest(unittest.TestCase):
@@ -99,7 +150,7 @@ class SessionTest(unittest.TestCase):
                     frames=30, total_saved_episodes=4, session_saved_episodes=2, **kwargs)
 
     def test_countdown_does_not_claim_recording_before_ack(self):
-        self.tap(('r', 4), 1)
+        self.tap(('l', 5), 1)
         for now in [2, 3, 4, 4.3]:
             self.session.on_payload(payload(), now)
             self.session.tick(now)
@@ -110,14 +161,14 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(self.session.state, 'recording')
         self.assertIn('开始录制', self.speech)
 
-    def test_repeated_a_does_not_extend_countdown(self):
-        self.tap(('r', 4), 1)
+    def test_repeated_y_does_not_extend_countdown(self):
+        self.tap(('l', 5), 1)
         deadline = self.session.start_at
-        self.tap(('r', 4), 1.4)
+        self.tap(('l', 5), 1.4)
         self.assertEqual(self.session.start_at, deadline)
 
     def test_stale_input_cancels_countdown(self):
-        self.tap(('r', 4), 1)
+        self.tap(('l', 5), 1)
         self.session.tick(5)
         self.assertIsNone(self.session.start_at)
         self.assertFalse(self.sent)
@@ -195,15 +246,174 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(self.session.state, 'unknown')
         self.assertFalse(self.sent)
 
+    def test_reset_waits_for_discard_ack_and_does_not_touch_saved_data(self):
+        self.session.command('reset', 1)
+        self.assertEqual([c for c, _ in self.sent], ['discard'])
+        self.sent[0][1].set_result(self.receipt('discard'))
+        self.session.tick(2)
+        self.assertEqual([c for c, _ in self.sent], ['discard', 'reset'])
+        self.assertEqual(self.session.state, 'resetting')
+        self.sent[1][1].set_result({'success': True})
+        self.session.tick(3)
+        self.assertEqual(self.session.state, 'idle')
+        self.assertEqual(self.speech[-1], '复位完成')
+
+    def test_unknown_discard_never_resets(self):
+        self.session.command('reset', 1)
+        self.sent[0][1].set_exception(TimeoutError('unknown'))
+        self.session.tick(2)
+        self.session.command('reset', 3)
+        self.assertEqual([c for c, _ in self.sent], ['discard'])
+        self.assertEqual(self.session.state, 'unknown')
+
+    def test_pending_save_blocks_b_and_no_reset_is_queued(self):
+        self.session.command('save', 1)
+        self.session.command('reset', 2)
+        self.sent[0][1].set_result(self.receipt('save'))
+        self.session.tick(3)
+        self.assertEqual([c for c, _ in self.sent], ['save'])
+
+    def test_reset_during_countdown_closes_then_resets(self):
+        self.session.last_input = 1
+        self.session.command('start', 1)
+        self.session.command('reset', 2)
+        self.assertIsNone(self.session.start_at)
+        self.assertEqual([c for c, _ in self.sent], ['discard'])
+
+    def test_distinct_feedback_after_ack_only(self):
+        from vr_feedback import PATTERNS
+        events = []
+        self.session.feedback = events.append
+        self.session.command('save', 1)
+        self.assertEqual(events, ['saving'])
+        self.sent[0][1].set_result(self.receipt('save'))
+        self.session.tick(2)
+        self.assertEqual(events, ['saving', 'save'])
+        self.assertEqual(len(PATTERNS), len({tuple(p) for p in PATTERNS.values()}))
+
+    def test_delayed_mark_receipt_cannot_undo_newer_invalidation(self):
+        self.session.accept_event(dict(event='episode_invalidated', wall_time=102, reason='gap'))
+        self.session.accept_status(self.receipt('mark_subtask', stamp=101))
+        self.assertEqual(self.session.state, 'invalid')
+        self.assertFalse(any(text == '下一步' for text in self.speech))
+
+    def test_old_future_receipt_cannot_undo_newer_keyboard_save(self):
+        self.session.accept_status(self.receipt('save', stamp=102))
+        self.session.accept_status(self.receipt('start', stamp=101))
+        self.assertEqual(self.session.state, 'idle')
+
 
 class LauncherHelpTest(unittest.TestCase):
     launcher = Path(__file__).resolve().parents[1] / 'start_lerobot_official_collect.sh'
 
     def test_vr_parameter_help_works_without_ros(self):
-        for name in ('VR_CONTROL', 'VR_SPEECH', 'VR_START_DELAY_SEC'):
+        for name in ('VR_CONTROL', 'VR_SPEECH', 'VR_START_DELAY_SEC', 'SUBTASKS_JSON', 'VR_A_LONG_PRESS_SEC', 'VR_INPUT_TOPIC', 'VR_RESET_PREFIX'):
             result = subprocess.run(['bash', str(self.launcher), name, '--help'], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(name, result.stdout)
+
+
+class SubtaskVrTest(unittest.TestCase):
+    tap = SessionTest.tap
+    receipt = SessionTest.receipt
+
+    def setUp(self):
+        self.sent, self.speech, self.logs = [], [], []
+
+        def submit(command):
+            future = Future()
+            self.sent.append((command, future))
+            return future
+
+        self.session = VrSession(submit, self.speech.append, start_delay=0,
+                                 subtask_mode=True, a_long_press_sec=1, log=self.logs.append)
+
+    def hold_a(self, start=1):
+        self.session.on_payload(payload(), start)
+        for i in range(7):
+            self.session.on_payload(payload(('r', 4)), start + .1 + i * .2)
+        self.assertFalse(self.sent, 'A must not fire until release')
+        self.session.on_payload(payload(), start + 1.4)
+
+    def test_only_y_starts_in_subtask_mode(self):
+        self.hold_a()
+        self.assertFalse(self.sent)
+        self.tap(('r', 4), 4)
+        self.assertFalse(self.sent)
+        self.tap(('l', 5), 5)
+        self.assertEqual([c for c, _ in self.sent], ['start'])
+
+    def test_recording_short_a_marks_and_waits_for_real_confirmation(self):
+        self.session.state = 'recording'
+        self.tap(('r', 4), 1)
+        self.assertEqual([c for c, _ in self.sent], ['mark_subtask'])
+        self.assertFalse(self.speech)
+        self.sent[0][1].set_result(self.receipt('mark_subtask', subtasks={
+            'enabled': True, 'confirmed': 1, 'total': 3, 'next_subtask': 'handover'}))
+        self.session.tick(1.3)
+        self.assertEqual(self.session.state, 'recording')
+        self.assertEqual(self.speech, ['下一步'])
+
+    def test_recording_long_a_only_saves_no_short_mark(self):
+        self.session.state = 'recording'
+        self.hold_a()
+        self.assertEqual([c for c, _ in self.sent], ['save'])
+        self.session.on_payload(payload(), 2.5)
+        self.assertEqual(len(self.sent), 1)
+
+    def test_final_mark_announces_saving_but_never_success_before_receipt(self):
+        self.session.state = 'recording'
+        self.session.subtask_progress = {'confirmed': 2, 'total': 3}
+        self.tap(('r', 4), 1)
+        self.assertEqual([c for c, _ in self.sent], ['mark_subtask'])
+        self.assertEqual(self.speech, ['保存中'])
+        self.assertEqual(self.session.state, 'recording')
+
+    def test_last_mark_save_and_early_save_have_distinct_brief_speech(self):
+        for index, (complete, phrase) in enumerate([(True, '已保存'), (False, '已保存，标注未完成')]):
+            self.session.accept_status(self.receipt('save', stamp=100 + index, subtasks={
+                'enabled': True, 'confirmed': 3 if complete else 1, 'total': 3, 'complete': complete}))
+            self.assertEqual(self.session.state, 'idle')
+            self.assertEqual(self.speech[-1], phrase)
+
+    def test_press_started_during_pending_save_does_not_start_new_episode(self):
+        self.session.state = 'recording'
+        self.session.command('save', 1)
+        self.session.on_payload(payload(), 1.1)
+        self.session.on_payload(payload(('r', 4)), 1.2)
+        self.sent[0][1].set_result(self.receipt('save'))
+        self.session.tick(1.3)
+        self.session.on_payload(payload(), 1.4)
+        self.assertEqual([c for c, _ in self.sent], ['save'])
+
+    def test_no_heartbeat_or_grip_loss_cancels_long_press(self):
+        for kind in ('gap', 'grip', 'malformed'):
+            self.session.state = 'recording'
+            self.session.on_payload(payload(), 1)
+            self.session.on_payload(payload(('r', 4)), 1.1)
+            if kind == 'grip':
+                self.session.on_payload(payload(('r', 4), grips=False), 1.2)
+            elif kind == 'malformed':
+                self.session.on_payload('{}', 1.2)
+            self.session.on_payload(payload(), 2.4 if kind == 'gap' else 1.3)
+            self.assertFalse(self.sent)
+
+    def test_threshold_boundary_and_held_repeats(self):
+        for duration, expected in ((.99, 'a_short'), (1.0, 'a_long'), (2., 'a_long')):
+            gesture = ButtonGestures(a_long_press_sec=1)
+            gesture.update(True, set(), 0)
+            gesture.update(True, {('r', 4)}, 1)
+            gesture.update(True, {('r', 4)}, 1 + duration / 2)
+            self.assertEqual(gesture.update(True, set(), 1 + duration), expected)
+
+    def test_bad_long_press_threshold_is_rejected_without_ros(self):
+        script = Path(__file__).resolve().parents[1] / 'vr_collector_control.py'
+        for value in ('nan', 'inf', '0', '-1', '11'):
+            result = subprocess.run(['python3', str(script), '--base-dir', '/tmp/test',
+                                     '--topic', '/test/input', '--tts-topic', '/test/tts',
+                                     '--a-long-press-sec', value, '--check-config'], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('--a-long-press-sec must', result.stderr)
 
 
 if __name__ == '__main__':
