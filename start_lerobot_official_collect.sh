@@ -59,7 +59,7 @@ show_help() {
                 echo "${parameter}"
                 echo "VR_INPUT_TOPIC: defaults to /control_topic_<domain>_<robot>; V4 uses /openarmx_teleop_vr_306_v4/vr_input."
                 echo "VR_RESET_PREFIX: defaults to /openarmx_teleop_vr_306_v4; requires guarded reset/status services, not raw vendor reset."
-                echo "Disable old reset chords in the teleoperation copy. X resets only while idle, after both Grips are released; finish with B or Y first."
+                echo "Factory input: X reset is not integrated; use the factory reset control. V4: disable old reset chords; X resets only while idle after both Grips are released."
                 exit 0
                 ;;
             VR_A_LONG_PRESS_SEC)
@@ -109,7 +109,7 @@ show_help() {
             VR_START_DELAY_SEC|VR_SPEECH)
                 echo "${parameter}"
                 echo "Usage: VR_CONTROL=1 ${parameter}=<value> bash start_lerobot_official_collect.sh task_name"
-                echo "VR_START_DELAY_SEC: countdown seconds, 0 through 30, default 3. B/X cancels countdown."
+                echo "VR_START_DELAY_SEC: countdown seconds, 0 through 30, default 3. B/Y cancels countdown; X cancels then checks reset availability."
                 echo "VR_SPEECH: 1=use existing robot TTS service, 0=silent, default 1. System volume is unchanged."
                 echo "Command confirmation timeout uses CONTROL_ACK_TIMEOUT_SEC (default 300 seconds)."
                 ;;

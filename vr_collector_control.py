@@ -61,7 +61,7 @@ def _decode_controls(data):
 
 
 class ButtonGestures:
-    """Require neutral -> one face press -> release, with both grips held.
+    """Require a neutral sample, then one face press/release with both grips held.
 
     Grips released, mixed face buttons, invalid input, or a stream gap cancel
     the gesture. Starting the process with A held cannot start recording.
@@ -78,8 +78,14 @@ class ButtonGestures:
         self.pressed_at = None
 
     def update(self, grips, faces, now):
-        if not grips or len(faces) > 1:
+        if len(faces) > 1:
             self.reset()
+            return None
+        if not grips:
+            self.reset()
+            # Neutral may precede the Grip chord; do not require an extra packet
+            # with both Grips already held before accepting the face press.
+            self.armed = not faces
             return None
         if not faces:
             command, self.candidate = self.candidate, None
@@ -108,9 +114,11 @@ class VrSession:
     """One in-flight command; no delayed queue of accidental button presses."""
 
     def __init__(self, submit, speak, *, start_delay=3.0, input_timeout=0.75,
-                 subtask_mode=False, a_long_press_sec=1.0, log=print, feedback=None):
+                 subtask_mode=False, a_long_press_sec=1.0, log=print, feedback=None,
+                 reset_supported=True):
         self.submit, self.speak, self.log = submit, speak, log
         self.feedback = feedback or (lambda event: None)
+        self.reset_supported = reset_supported
         self.start_delay, self.input_timeout = start_delay, input_timeout
         self.subtask_mode = subtask_mode
         self.subtask_progress = {}
@@ -126,6 +134,8 @@ class VrSession:
         self.status_time = 0.0
         self.event_key = None
         self.grips_released = False
+        self.last_busy_notice = float("-inf")
+        self.last_controls = None
 
     def on_payload(self, payload, now):
         try:
@@ -140,8 +150,13 @@ class VrSession:
         self.last_input = now
         self.grips_released = (not any(data[name]["gripActive"] for name in ("leftController", "rightController"))
                                if "leftController" in data else not any(data[h]["b"][1]["p"] for h in ("l", "r")))
+        controls = (bool(grips), tuple(sorted(faces)))
+        if controls != self.last_controls:
+            self.last_controls = controls
+            self.log(f"[VR input] GL+GR={bool(grips)}; faces={sorted(faces)}")
         command = self.buttons.update(grips, faces, now)
         if command:
+            self.log(f"[VR] Button accepted: {command}")
             self.command(command, now)
 
     def command(self, command, now):
@@ -160,7 +175,10 @@ class VrSession:
                 self.quit_after_pending = True
                 self.speak("等待当前操作完成后退出")
             else:
-                self.log("[VR] Command ignored: recorder operation pending")
+                self.log(f"[VR] Command ignored: {self.pending_command} awaiting recorder acknowledgement")
+                if now - self.last_busy_notice >= 2:
+                    self.last_busy_notice = now
+                    self.speak("操作处理中，请等待结果，不需要重复按键")
             return
         if self.state == "exiting":
             return
@@ -188,6 +206,10 @@ class VrSession:
             # Reset never closes or discards an episode.
             if self.state != "idle":
                 self.speak("请先按B保存或Y丢弃，再按X复位")
+                self.feedback("error")
+                return
+            if not self.reset_supported:
+                self.speak("原厂复位接口尚未接入，请使用原厂复位功能")
                 self.feedback("error")
                 return
             self._send("reset")
@@ -250,13 +272,17 @@ class VrSession:
             self.speak("VR信号中断，已取消倒计时")
             return
         remaining = max(0, math.ceil(self.start_at - now))
+        if self.countdown is not None and remaining < self.countdown:
+            # A delayed callback must not skip spoken numbers and start early.
+            remaining = self.countdown - 1
+            self.start_at = now + remaining
         if remaining == 0:
             self.start_at = None
             self._send("start")
         elif remaining != self.countdown:
             self.countdown = remaining
             self.log(f"[VR] Countdown: {remaining}")
-            self.speak(str(remaining))
+            self.speak({3: "三", 2: "二", 1: "一"}.get(remaining, str(remaining)))
             self.feedback("countdown")
 
     def accept_status(self, status):
@@ -275,7 +301,15 @@ class VrSession:
         self.start_at = None
         self.log(format_status(status))
         if not status.get("success"):
-            if str(status.get("message", "")).startswith(("save failed:", "discard failed:")):
+            event = status.get("event")
+            message = str(status.get("message", ""))
+            if (event in ("save", "discard") and message == f"no pending episode to {event}"
+                    and status.get("recording") is False and not status.get("episode_invalid")):
+                self.state = "idle"
+                self.speak("当前没有待处理数据，可以按A开始下一条")
+                self.feedback("cancel")
+                return
+            if message.startswith(("save failed:", "discard failed:")):
                 self.state = "unknown"
             elif status.get("episode_invalid"):
                 self.state = "invalid"
@@ -297,7 +331,7 @@ class VrSession:
             if self.subtask_mode:
                 self.speak("已保存" if subtasks.get("complete") else "已保存，标注未完成")
             else:
-                self.speak(f"保存成功，共{status.get('total_saved_episodes', 0)}条，本次新增{status.get('session_saved_episodes', 0)}条")
+                self.speak(f"保存成功，共{status.get('total_saved_episodes', 0)}条，本条{status.get('frames', 0)}帧，可以开始下一次采集")
         elif event == "mark_subtask":
             self.state = "recording"
             self.speak("下一步")
@@ -432,6 +466,7 @@ def main():
     feedback_pub = node.create_publisher(String, args.feedback_topic, 10)
 
     def speak(text):
+        print(f"[VR speech{' disabled' if publisher is None else ''}] {text}", flush=True)
         if publisher is not None:
             publisher.publish(String(data=json.dumps({"status": "play", "text": text}, ensure_ascii=False)))
 
@@ -442,6 +477,7 @@ def main():
 
     session = VrSession(submit, speak, start_delay=args.start_delay, subtask_mode=args.subtask_mode,
                         a_long_press_sec=args.a_long_press_sec, log=lambda text: print(text, flush=True),
+                        reset_supported=not args.topic.startswith("/control_topic_"),
                         feedback=lambda event: feedback_pub.publish(String(data=json.dumps(feedback_packet(event)))))
     from vr_reset import GuardedReset
     reset = GuardedReset(node, args.reset_prefix,
@@ -473,14 +509,18 @@ def main():
             ready_at = None
             if publisher is not None and publisher.get_subscription_count() == 0:
                 print(f"[VR] WARNING: no TTS subscriber on {args.tts_topic}; check the robot speech service", flush=True)
-            speak("采集工具已就绪")
+            if session.start_at is None and session.pending is None and session.state == "idle":
+                speak("采集工具已就绪")
         latest_input = session.last_input or input_started_at
         if now - latest_input > 5 and not input_missing:
             input_missing = True
             print(f"[VR] WARNING: no recent valid input on {args.topic}; check headset and VR service", flush=True)
+            speak("未收到手柄信号，请检查原厂遥操连接和采集输入话题")
         elif session.last_input is not None and now - session.last_input <= session.input_timeout and input_missing:
             input_missing = False
             print("[VR] Input resumed", flush=True)
+            if session.start_at is None and session.pending is None:
+                speak("手柄连接已恢复")
 
     # Accept either reliable or best-effort factory publishers, and reject stale
     # gestures using our own heartbeat instead of building a DDS backlog.
@@ -492,7 +532,10 @@ def main():
     node.create_timer(0.1, monitor)
     print(f"[VR] Listening: {args.topic}; speech: {args.tts_topic if publisher else 'off'}", flush=True)
     print("[VR] Hold GL+GR; tap/release A=start, B=save, X=reset only, Y=discard only. Exit in terminal.", flush=True)
-    print("[VR] X requires the guarded V4 reset service. Release both Grips after X; unavailable service blocks reset.", flush=True)
+    if session.reset_supported:
+        print("[VR] X requires the guarded V4 reset service. Release both Grips after X; unavailable service blocks reset.", flush=True)
+    else:
+        print("[VR] Factory input: X reset is not integrated; use the factory reset control. No V4 reset will be sent.", flush=True)
     if args.subtask_mode:
         print(f"[VR] While recording: short B=mark next subtask (last mark saves); "
               f"hold B >= {args.a_long_press_sec:g}s then release=save early", flush=True)

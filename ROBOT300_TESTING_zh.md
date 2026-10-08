@@ -176,38 +176,34 @@ DAgger终端保留原键位：C开始、A保存、X/D丢弃、R复位、Q退出�
 
 ## 普通数采、单人VR和子任务现场验收
 
-DAgger验收不代表其他模式已验收。三种录制模式都不启动模型或遥操控制器；
-先结束DAgger，单独启动已有V4遥操（8446），再运行下面的采集脚本。
-原厂dashboard/action_player和其他关节控制入口保持关闭，ARM与相机服务保持运行。
-
-终端1启动已安装的300遥操入口（启动后需在网页手动使能；使能可能执行准备姿态复位）：
-
-```bash
-/home/ubuntu/.local/bin/autolife-vr-teleop-300
-```
-
-终端2先准备环境，并关闭旧遥操组合键复位。确认参数返回成功后再进入网页操作：
+普通键盘、单人VR和子任务采集默认使用**原厂遥操**，不需要打开8446。
+原厂遥操保持运行；DAgger须先保存/丢弃并退出，避免控制器同时运行。
+使用已经部署的集合版绝对路径；`/home/ubuntu/lerobot_data_collector` 是旧版，
+不识别 `COLLECTOR_MODE`。新终端不要依赖此前导出的变量：
 
 ```bash
-cd /home/ubuntu/collector_validation/20260930_github_dryrun/collector
 source /home/ubuntu/ros2_ws/src/autolife_hg_dagger_MZJ_300/scripts/source_hg_ros_env.sh
 set +u
-ros2 param set /independent_vr_mapper_306_v4 quick_reset_enabled false
-unset COLLECTOR_MODE VR_CONTROL SUBTASKS_JSON
+cd /home/ubuntu/collector_validation/20260930_github_dryrun/collector
+unset VR_CONTROL SUBTASKS_JSON
 export OUTPUT_BASE_DIR=/home/ubuntu/nas/collector_test
 export TASK_TEXT='Pick the laundry bag.'
 export WITH_HEAD=1 WITH_UPPER_WAIST=1 WITH_WAIST=0 WITH_DEPTH=1
 export START_HAND_PRODUCER=0 ACTION_MODE=status_target
-export VR_INPUT_TOPIC=/openarmx_teleop_vr_306_v4/vr_input
+export VR_INPUT_TOPIC=/control_topic_0_300
+export VR_SPEECH=1 VR_START_DELAY_SEC=3
 ```
 
-先在8446网页手动使能，测试左右臂增量、松握再握、快慢扳机、头腰开关。
-下面一次只运行一个采集模式，每种结束用终端Q退出，遥操本身仍由终端1管理。
+原厂模式启动后必须显示 `[VR] Listening: /control_topic_0_300`。
+使用按键前戴上头显、进入原厂沉浸式遥操；停留在菜单或手柄未激活时，
+话题可能仍有消息，但按键全部为松开，采集端无法识别组合键。
+只有明确使用独立V4遥操时才改用它的输入话题；不要把DAgger的网页/输入配置用于原厂数采。
+下面一次只运行一个采集模式，每种结束用终端Q退出，原厂遥操保持运行。
 
 | 模式 | 采集启动命令 | 现场流程和通过标准 |
 |---|---|---|
 | 普通键盘数采 | `COLLECTOR_MODE=keyboard bash start_lerobot_official_collect.sh keyboard_01` | Enter开始，遥操5～10秒后S保存；再Enter录制后D丢弃；再保存一条，Q退出。应有2条保存，丢弃不增加条目。 |
-| 单人VR | `COLLECTOR_MODE=vr bash start_lerobot_official_collect.sh vr_01` | 全程按住GL+GR，再短按并松开面键。A倒计时3秒开始，B保存，Y丢弃，X仅复位。录制中X应拒绝；空闲X后按提示松开双Grip，复位完成需网页重新使能。倒计时中B/Y应取消。 |
+| 单人VR | `COLLECTOR_MODE=vr bash start_lerobot_official_collect.sh vr_01` | 全程按住GL+GR，再短按并松开面键。A倒计时3秒开始，B保存，Y丢弃，X仅复位。录制中X应拒绝；原厂模式X会明确提示复位未接入，使用原厂复位功能。倒计时中B/Y应取消。 |
 | 子任务 | 见下方 | A开始，第一/二次短B标记并继续录制，第三次短B自动保存。第二条长B至少1秒再松开，应提前保存并标记待审核。Y丢弃后下一条从第一个子任务开始。 |
 
 ```bash
@@ -218,8 +214,17 @@ bash start_lerobot_official_collect.sh subtask_01
 
 单人和子任务模式的A/B/X/Y均需GL+GR组合，面键松开时双Grip仍需按住。
 网页实际发送面键0/1，2026-10-08已修复采集端只接受bool的兼容遗漏；非法值仍拒绝。
-191项单元测试和V4格式的单人/分段隔离ROS链路通过，未代替现场动作、声音、视频验收。
-原独立V4网页不自动加载集合版头显提示扩展，先以采集终端和语音回执验收，勿把旧网页提示当作新按键规则。
+本次反馈补丁通过196项单元测试，以及原厂格式的单人/分段隔离ROS链路；
+此前V4数值按键格式也已通过两种隔离链路。隔离测试不发布硬件动作，不替代现场验收。
+用户在原厂沉浸式遥操中确认组合键可用；现场日志`unified_vr_02/logs/5.vr_control.log`
+记录完整3/2/1、A开始、B保存146帧，数据目录累计3条640帧。
+这条现场记录来自部署反馈补丁前的版本，用于确认原厂按键与保存链路已恢复。
+原厂网页不自动加载集合版头显提示扩展，以采集终端和机器人语音回执验收。
+每次A按键接受后播报“三、二、一”，完整倒计时后才发送录制请求；收到回执再播报“开始录制”。
+B播报保存中，收到回执后播报已保存条数和本条帧数；Y播报丢弃结果。
+没有待处理数据、保存忙碌、输入失联或失败都有明确提示。日志中的`[VR input]`、
+`Button accepted`、`Countdown`、`[VR speech]`可区分按键未到达、组合未匹配和命令等待。
+音量故障排查应检查原厂TTS接收日志及实际输出声卡；采集程序本身不改变系统音量。
 
 同模式、同参数、同任务名正常退出后重新启动，保存一条，应接着编号，旧数据仍在。
 深度开关、关节维度、action模式或子任务标注开关改变时必须换任务目录。

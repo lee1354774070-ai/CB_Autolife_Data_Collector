@@ -147,9 +147,10 @@ still works when the mode is unset. Keyboard controls remain
 available in VR mode. Optional settings: `VR_START_DELAY_SEC=3` (0 through 30),
 `VR_SPEECH=0` to disable Chinese voice announcements. Speech uses the existing
 robot TTS service and current system volume. The factory VR input service must
-already be running. For V4 input set `VR_INPUT_TOPIC=/openarmx_teleop_vr_306_v4/vr_input`.
+already be running; wear the headset and enter immersive teleoperation before using buttons. For V4 input set `VR_INPUT_TOPIC=/openarmx_teleop_vr_306_v4/vr_input`.
 X causes real motion through the guarded V4 services at
 `VR_RESET_PREFIX=/openarmx_teleop_vr_306_v4`; unavailable services block reset.
+Factory-input X reset is not integrated: it announces that limitation and does not call V4.
 Disable legacy B/reset chords in the teleoperation mapper so collector owns X exclusively.
 No vendor reset-topic fallback exists. Pending/uncertain storage blocks reset;
 saved data is retained. Reset leaves the controller disabled; re-enable in the VR page.

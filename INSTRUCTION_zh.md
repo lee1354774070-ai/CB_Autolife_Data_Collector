@@ -114,6 +114,7 @@ IPC 位于 task 目录下：命令 FIFO、原子 status JSON、ready JSON、epis
 ROS domain 和机器人编号与录制器一致。输入为 `/control_topic_<domain>_<robot>` 的
 `std_msgs/String` JSON：`l/r.b[1].p` 为握持键，左侧 4/5 为 X/Y，右侧 4/5 为 A/B。
 向 `/topic_tts_<domain>_<robot>` 发布播报请求，向 `/collector/feedback` 发布结构化振动事件。
+原厂输入模式的X仅提示复位尚未接入，不调用另一套控制器；显式使用V4输入时，
 X 通过 `vr_reset.py` 调用 V4 受保护复位接口，不直接发布关节目标。
 不再猜测 ASYNC/HOME/SYNC 状态，也不改变原厂遥操作模式。
 

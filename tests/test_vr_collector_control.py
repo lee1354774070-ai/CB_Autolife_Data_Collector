@@ -33,6 +33,17 @@ class GestureTest(unittest.TestCase):
                 self.assertEqual(gestures.update(True, set(), 3), expected)
                 self.assertIsNone(gestures.update(True, set(), 4))
 
+    def test_grips_and_face_may_arrive_together_after_neutral(self):
+        gestures = ButtonGestures()
+        self.assertIsNone(gestures.update(False, set(), 1))
+        self.assertIsNone(gestures.update(True, {('r', 4)}, 1.1))
+        self.assertEqual(gestures.update(True, set(), 1.2), 'start')
+        # A face held across Grip loss still cannot complete a stale gesture.
+        gestures.update(True, {('r', 4)}, 2)
+        gestures.update(False, {('r', 4)}, 2.1)
+        gestures.update(True, {('r', 4)}, 2.2)
+        self.assertIsNone(gestures.update(True, set(), 2.3))
+
     def test_held_button_at_startup_cannot_fire(self):
         gestures = ButtonGestures()
         gestures.update(True, {('r', 5)}, 1)
@@ -178,7 +189,7 @@ class SessionTest(unittest.TestCase):
 
     def test_countdown_does_not_claim_recording_before_ack(self):
         self.tap(('r', 4), 1)
-        for now in [2, 3, 4, 4.3]:
+        for now in [1.5, 2, 2.2, 2.5, 3, 3.2, 3.5, 4, 4.3]:
             self.session.on_payload(payload(), now)
             self.session.tick(now)
         self.assertEqual([c for c, _ in self.sent], ['start'])
@@ -187,6 +198,47 @@ class SessionTest(unittest.TestCase):
         self.session.tick(4.4)
         self.assertEqual(self.session.state, 'recording')
         self.assertIn('开始录制', self.speech)
+
+    def test_delayed_timer_still_speaks_three_two_one_before_start(self):
+        self.tap(('r', 4), 1)
+        for now in (5, 6):
+            self.session.on_payload(payload(), now)
+            self.session.tick(now)
+            self.assertFalse(self.sent)
+        self.assertEqual(self.speech, ['三', '二', '一'])
+        self.session.on_payload(payload(), 7)
+        self.session.tick(7)
+        self.assertEqual([c for c, _ in self.sent], ['start'])
+
+    def test_each_round_has_countdown_and_confirmed_save_or_discard_feedback(self):
+        for index, finish in enumerate(('save', 'discard')):
+            start = 10 + index * 10
+            self.tap(('r', 4), start)
+            for offset in (.5, 1, 1.3, 1.8, 2.4, 2.9, 3.5):
+                self.session.on_payload(payload(), start + offset)
+                self.session.tick(start + offset)
+            self.assertEqual(self.sent[-1][0], 'start')
+            self.sent[-1][1].set_result(self.receipt('start', stamp=start))
+            self.session.tick(start + 3.6)
+            self.session.command(finish, start + 4)
+            before = len(self.speech)
+            self.sent[-1][1].set_result(self.receipt(finish, stamp=start + 4))
+            self.session.tick(start + 4.1)
+            self.assertEqual(len(self.speech), before + 1)
+            self.assertEqual(self.session.state, 'idle')
+        for spoken in ('三', '二', '一', '开始录制'):
+            self.assertEqual(self.speech.count(spoken), 2)
+        self.assertTrue(any('保存成功' in s and '30帧' in s for s in self.speech))
+        self.assertIn('已丢弃，可以开始下一次采集', self.speech)
+
+    def test_no_pending_episode_is_ready_feedback_not_a_failed_session(self):
+        for event in ('save', 'discard'):
+            status = self.receipt(event, stamp=100 if event == 'save' else 101,
+                                  message=f'no pending episode to {event}')
+            status.update(success=False, recording=False, frames=0)
+            self.session.accept_status(status)
+            self.assertEqual(self.session.state, 'idle')
+            self.assertEqual(self.speech[-1], '当前没有待处理数据，可以按A开始下一条')
 
     def test_repeated_a_does_not_extend_countdown(self):
         self.tap(('r', 4), 1)
@@ -272,6 +324,16 @@ class SessionTest(unittest.TestCase):
         self.session.command('start', 1)
         self.assertEqual(self.session.state, 'unknown')
         self.assertFalse(self.sent)
+
+    def test_factory_reset_is_reported_without_motion_or_latching_unknown(self):
+        self.session.reset_supported = False
+        self.session.command('reset', 1)
+        self.assertFalse(self.sent)
+        self.assertEqual(self.session.state, 'idle')
+        self.assertIn('原厂复位接口尚未接入', self.speech[-1])
+        self.session.last_input = 2
+        self.session.command('start', 2)
+        self.assertIsNotNone(self.session.start_at)
 
     def test_idle_reset_sends_no_recorder_command(self):
         self.session.command('reset', 1)
