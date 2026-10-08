@@ -307,8 +307,8 @@ It does not claim RTC overlap, hard deadlines, or zero motion jitter.
 Validation: isolated-domain ROS supervisor/FIFO tests with fake hardware, and
 real LeRobot 0.6.0 Parquet/video write/resume/read tests using synthetic frames.
 Neither validates physical takeover latency, collision behavior, audible/haptic
-feedback, or closed-loop task success. The robot's running colleague stack was
-read, not replaced or restarted; supervised live acceptance remains required.
+feedback, or closed-loop task success. Basic operator acceptance was reported on
+2026-10-08; release regressions and remaining checks are in `ROBOT300_TESTING_zh.md`.
 
 ## Subtask annotation and latency
 

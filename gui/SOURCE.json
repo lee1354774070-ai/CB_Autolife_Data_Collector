@@ -1,0 +1,11 @@
+{
+  "source": "Robot 300 reviewed desktop launcher",
+  "source_sha256": "cf9bbba84cf66edeb25409aa460d7e9ac5a417e4ad847d4e5a859eb24036c653",
+  "adapter": "dagger/desktop_copy.py",
+  "collector_root": "/home/ubuntu/CB_Autolife_Data_Collector",
+  "changes": [
+    "Unified backend --serve, same UI and recorder receipts",
+    "A start / B save / X reset / Y discard; no double-Y exit",
+    "Neutral source and log paths"
+  ]
+}

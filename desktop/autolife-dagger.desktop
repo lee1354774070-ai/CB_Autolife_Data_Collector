@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=云蝶DAgger启动器
+Comment=正式版DAgger：打开界面后手动开始，保存结果以回执为准
+Exec=env DAGGER_PUBLISH=1 /home/ubuntu/CB_Autolife_Data_Collector/scripts/open_dagger_launcher.sh
+Path=/home/ubuntu/CB_Autolife_Data_Collector
+Icon=applications-engineering
+Terminal=false
+Categories=Science;Robotics;

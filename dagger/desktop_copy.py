@@ -18,7 +18,7 @@ REVIEWED = {
 }
 
 LABELS = {
-    '云蝶DAgger启动器': '云蝶集合版 DAgger 启动器',
+    '云蝶DAgger启动器': '云蝶DAgger启动器',
     '丢弃 / 全身复位': '丢弃本条（不复位）',
     '保存并退出': '退出采集',
     '丢弃本条并机械复位？': '丢弃当前条？本操作不复位。',
@@ -26,21 +26,28 @@ LABELS = {
     '本窗口 Shift+A 开始 / B 保存 / X 丢弃 / Y 五秒内按两次退出': 'Shift+A 开始 / Shift+B 保存 / Shift+Y 丢弃 / Shift+X 仅复位',
     '接管：手柄 Grip   /   键盘：控制页面 Shift + A / B / X / Y': '短按面键操作 · B/Y 不复位 · 退出用退出按钮',
     '未接管，结束时丢弃': '无接管也可按 B 保存整条',
-    '数据位置  /home/ubuntu/nas/dagger': 'Data location: OUTPUT_BASE_DIR (default /home/ubuntu/nas14)',
+    '建议先在头显保存，并双 Y 正常退出。\n直接停止不能保证当前未保存数据被保存。\n\n现在停止服务？': '请先保存或丢弃本条并等待结果。\n未确认的数据退出时会丢弃。\n\n现在停止服务？',
+    '请先在头显双 Y 退出，或点击“停止服务”，然后关闭窗口。': '请先保存或丢弃本条并等待回执，停止服务后再关闭窗口。',
+    '维；仅影响录制，模型推理维度不变': '维；当前模型要求21维，请保持头部和上腰开启',
+    '数据位置  /home/ubuntu/nas/dagger': '数据位置由 OUTPUT_BASE_DIR 指定',
 }
 
 
-def render(source, tools_root):
+def render(source, tools_root, collector_root=None):
     if hashlib.sha256(source).hexdigest() not in REVIEWED:
         raise ValueError('Unreviewed desktop launcher; inspect its code before adapting it')
     tree = ast.parse(source.decode())
-    run = str(Path(tools_root).resolve() / 'lerobot_data_collector/dagger/run.py')
+    # Explicit deployment paths must not follow symlinks on the build host.
+    collector = Path(collector_root).absolute() if collector_root is not None else Path(tools_root).resolve() / 'lerobot_data_collector'
+    run = str(collector / 'dagger/run.py')
 
     class Adapter(ast.NodeTransformer):
         def visit_Constant(self, node):
             return ast.copy_location(ast.Constant(LABELS.get(node.value, node.value)), node) if isinstance(node.value, str) else node
 
         def visit_Assign(self, node):
+            if collector_root is not None and any(isinstance(t, ast.Name) and t.id == 'BASE' for t in node.targets):
+                node.value = ast.parse(f"Path({str(collector)!r})", mode='eval').body
             if any(isinstance(t, ast.Name) and t.id == 'DATA_ROOT' for t in node.targets):
                 node.value = ast.parse("Path(os.environ.get('OUTPUT_BASE_DIR', '/home/ubuntu/nas14'))", mode='eval').body
             if any(isinstance(t, ast.Name) and t.id == 'LOGS' for t in node.targets):
@@ -83,12 +90,13 @@ def main():
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--tools-root', type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--collector-root', type=Path, help='Standalone collector root; omit for the legacy tools layout')
     args = parser.parse_args()
     source, output = args.source.resolve(), args.output.resolve()
     source_root = source.parent.parent if source.parent.name == 'scripts' else source.parent
     if source == output or source_root in output.parents:
         parser.error('Output must be outside the colleague source tree')
-    content = render(source.read_bytes(), args.tools_root)
+    content = render(source.read_bytes(), args.tools_root, args.collector_root)
     if output.exists():
         if output.read_text() != content:
             parser.error('Output already exists with different contents; choose a new copy path')

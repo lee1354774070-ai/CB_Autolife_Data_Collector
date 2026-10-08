@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class ReleaseEntryTest(unittest.TestCase):
     def test_dagger_entry_and_legacy_alias_both_offer_help_without_starting(self):
         for name in ('start_dagger.sh', 'start_mzj300_dagger.sh'):
+            self.assertTrue(os.access(ROOT / name, os.X_OK))
             result = subprocess.run(['bash', str(ROOT / name), '--help'],
                                     capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stderr)

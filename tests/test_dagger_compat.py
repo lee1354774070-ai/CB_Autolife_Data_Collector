@@ -114,3 +114,8 @@ class Launcher:
         self.assertNotIn('hg_dagger_', output)
         self.assertIn('return self.stop()', output)
         self.assertIn("'DAGGER_BACKEND': 'owned'", output)
+        with patch('dagger.desktop_copy.REVIEWED', {hashlib.sha256(source).hexdigest()}), \
+                patch.object(Path, 'resolve', side_effect=AssertionError('Do not resolve a remote deployment path locally')):
+            standalone = render(source, Path('/tools'), Path('/collector'))
+        self.assertIn('/collector/dagger/run.py', standalone)
+        self.assertNotIn('/tools/lerobot_data_collector', standalone)

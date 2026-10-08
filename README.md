@@ -171,6 +171,20 @@ DAgger退出会丢弃未确认条目，想保留时应先B保存并确认；保�
 也可使用 `start_dagger.sh` 作为300的便捷入口，默认不发布硬件动作。
 它预设服务器、21维、深度和数据目录；统一入口与这个脚本使用同一套实现。
 
+### 桌面启动器
+
+300桌面的“云蝶DAgger启动器”使用同一正式后端，保留原有界面、状态同步和按钮。
+快捷方式预设允许按钮触发硬件控制；打开窗口本身不开始推理。
+也可从终端启动：
+
+```bash
+DAGGER_PUBLISH=1 bash scripts/open_dagger_launcher.sh
+```
+
+省略 `DAGGER_PUBLISH=1` 时默认无动作模式。桌面Shift+A开始、Shift+B保存、
+Shift+X仅复位、Shift+Y仅丢弃；退出用退出按钮，先处理当前数据并确认回执。
+这个桌面窗口用于DAgger，其他模式仍使用本文统一脚本。
+
 ### 夹爪与 Thor
 
 Thor 必须提供 `controller_submission_receipts=true`，并保持已验证的阶段夹爪策略。
