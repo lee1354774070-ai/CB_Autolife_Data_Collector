@@ -1,10 +1,10 @@
-import json,time,rclpy,urllib.request,ssl
+import json,time,rclpy,urllib.request,ssl,os
 from pathlib import Path
 from std_msgs.msg import String
 from rclpy.qos import qos_profile_sensor_data
 from collections import Counter
 from dagger.dependencies import COMMAND_PUBLISHERS
-rclpy.init();node=rclpy.create_node("mzj_dryrun_acceptance")
+rclpy.init();node=rclpy.create_node("dagger_dryrun_acceptance")
 states={}; counts=Counter()
 for name,topic in (("control","/hg_dagger/control_state"),("controller","/openarmx_teleop_vr_306_v4/status"),("policy","/hg_dagger/policy_status")):
  node.create_subscription(String,topic,lambda msg,key=name:states.update({key:json.loads(msg.data)}),10)
@@ -25,7 +25,7 @@ try:
  assert "independent_arm_controller_306_v4" not in names,names
  context=ssl._create_unverified_context()
  for path in ("/","/vr_app.js"):
-  with urllib.request.urlopen("https://127.0.0.1:8447"+path,context=context,timeout=5) as response:
+  with urllib.request.urlopen("https://127.0.0.1:"+os.environ.get("DAGGER_WEB_PORT","8447")+path,context=context,timeout=5) as response:
    body=response.read().decode()
    assert response.status==200
    if path=="/vr_app.js": assert "进入 VR 后保持待命；按 A 开始。" in body

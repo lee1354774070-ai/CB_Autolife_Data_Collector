@@ -1,7 +1,7 @@
-"""MZJ motion/session implementation with collection-only operator adapters.
+"""DAgger motion/session implementation with collection-only operator adapters.
 
 Motion selection, clutch/gripper handling, full-body reset and policy forwarding
-come from the pinned MZJ source in mzj_base. This module adds collection receipts,
+come from the pinned DAgger source in dagger_base. This module adds collection receipts,
 operator attachment, explicit A/B/X/Y semantics and status/haptic presentation.
 """
 import json
@@ -11,8 +11,8 @@ import time
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 from std_srvs.srv import SetBool, Trigger
-from .mzj_base.core import Mode, finite_vector
-from .mzj_base.supervisor_node import HgDaggerSupervisor
+from .control.core import Mode, finite_vector
+from .control.supervisor_node import HgDaggerSupervisor
 from .compat import CommandGate, CompatibilityPublisher, FEATURES, SERVICE, VERSION
 from .status_cache import CachedCollector
 from .trace import AsyncTrace
@@ -57,7 +57,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             with_depth=os.environ.get('WITH_DEPTH', '0') == '1',
             task_text=os.environ.get('TASK_TEXT', '')))
         self.create_service(SetParametersAtomically, SERVICE, self._on_attached_command)
-        self.get_logger().info("MZJ-based DAgger: A=start, GL/GR=takeover, B=save, Y=discard, X=reset")
+        self.get_logger().info("AutoLife DAgger: A=start, GL/GR=takeover, B=save, Y=discard, X=reset")
 
     def _feedback(self, event, text):
         if hasattr(self, "_feedback_pub"):
@@ -227,7 +227,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             super()._publish_state()
 
     def _begin_failure_hold(self, reason, *, hold_to_intervene=False):
-        # MZJ initializes the current-pose/gripper pickup and revokes policy.
+        # DAgger initializes the current-pose/gripper pickup and revokes policy.
         super()._begin_failure_hold(reason, hold_to_intervene=hold_to_intervene)
         if hold_to_intervene:
             # The controller's atomic epoch handoff checks physical freshness.
@@ -375,7 +375,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
         return response
 
     def _finish_collection_trial(self, save):
-        # Close motion authority before storage waits, using the MZJ FIFO and
+        # Close motion authority before storage waits, using the DAgger FIFO and
         # reconciliation logic. No implicit mechanical reset on either branch.
         disabled, detail = self._forward_enable(False)
         with self._lock:

@@ -1,4 +1,4 @@
-"""Opt-in MZJ Thor regression tests. Run with the Thor repo on PYTHONPATH."""
+"""Opt-in DAgger Thor regression tests. Run with the Thor repo on PYTHONPATH."""
 from dataclasses import replace
 from types import SimpleNamespace
 import unittest

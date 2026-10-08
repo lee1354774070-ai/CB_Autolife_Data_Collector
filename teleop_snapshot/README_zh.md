@@ -9,9 +9,9 @@
 备份和重复的嵌套网页目录。原包说明书描述原版遥操作，集成后的按键和启动方法以
 Collector 的 README / INSTRUCTION 为准。
 
-## 2026-10-08 MZJ 融合
+## 2026-10-08 DAgger 融合
 
-已合入 `4055b75`。逐文件比较确认：除控制器补入 MZJ 复位张爪权限检查外，
+已合入 `4055b75`。逐文件比较确认：除控制器补入 DAgger 复位张爪权限检查外，
 其余73个非文档文件与300实际运行副本一致。已有增量遥操、平滑、IK和位姿配置保留。
 `tests/dagger_ros_smoke.py` 会校验此快照与生成副本的74个非文档文件一致。
 DAgger入口覆盖夹爪范围/响应参数并关闭旧复位手势，按键以 A 开始、B 保存、
@@ -21,11 +21,11 @@ X 仅复位、Y 仅丢弃为准。详细验收见 `ROBOT300_TESTING_zh.md`。
 
 仍通过 `COLLECTOR_MODE=dagger` 启动。启动器会校验原版依赖并生成不可覆盖的运行副本。
 这里用于查看、版本管理和审查，不改变当前启动方式，也不会自动替换机器人运行中的程序。
-不要将 `DAGGER_DEPENDENCY_ROOT` 指向这里：这里已经打过补丁，且未包含 HG 依赖包。
+不要将 `DAGGER_DEPENDENCY_ROOT` 指向这里：这里已经打过补丁，不能再次对其应用同一补丁。
 
 完整 DAgger 还使用 Collector 的 `dagger/mapper.py`、`supervisor.py`、
 `controller_handoff.py`、`web_bridge.py` 等适配代码。直接运行原包 launch 文件
-不等于启动我们的 DAgger。仍需安装 ROS 2、Placo、机器人 SDK/服务及已校验的 HG 包。
+不等于启动我们的 DAgger。仍需安装 ROS 2、Placo、机器人 SDK/服务；HG控制与配置已随Collector打包。
 独立仓库使用 Thor 推理时，`DAGGER_TOOLS_ROOT` 仍需指向完整 VLA Tools 仓库。
 不能同时运行两个硬件控制器。
 

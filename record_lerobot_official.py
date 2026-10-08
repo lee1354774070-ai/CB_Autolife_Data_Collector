@@ -951,13 +951,13 @@ class OfficialLeRobotRecorder(Node):
             )
 
         if self.dagger is not None:
-            # Reuse MZJ's bounded, lossless staging writer on create AND resume.
+            # Reuse DAgger's bounded, lossless staging writer on create AND resume.
             # Compression runs after authority is revoked, when saving video.
             from dagger.capture_image_writer import CaptureImageWriter
             self.dataset.writer.image_writer = CaptureImageWriter(
                 num_threads=self.args.image_writer_threads)
             self.get_logger().info(
-                "MZJ capture: lossless uncompressed PNG, raw uint16 depth, "
+                "DAgger capture: lossless uncompressed PNG, raw uint16 depth, "
                 f"{self.args.image_writer_threads} writer threads, queue limit 64")
 
         # Resolve the anchor only after resume/create establishes the exact

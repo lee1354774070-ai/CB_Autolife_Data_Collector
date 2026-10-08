@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="HD-DAGGER VR read-only spectator monitor">
+    <title>HD-DAGGER VR 实时监看</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: #05070a;
+        color: #e8edf3;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; background: #05070a; }
+      .page { min-height: 100vh; display: grid; grid-template-rows: auto 1fr auto; }
+      header, footer {
+        display: flex; align-items: center; gap: 14px; padding: 10px 16px;
+        background: rgba(10, 15, 22, 0.96); border-color: #263241;
+      }
+      header { border-bottom: 1px solid #263241; }
+      footer { border-top: 1px solid #263241; color: #9aabba; font-size: 13px; }
+      h1 { margin: 0; font-size: 18px; font-weight: 650; }
+      .spacer { flex: 1; }
+      .badge {
+        padding: 5px 9px; border: 1px solid #435365; border-radius: 999px;
+        color: #d7e0ea; background: #151c25; font-size: 13px; white-space: nowrap;
+      }
+      .badge.ok { color: #7dffcf; border-color: #28785e; }
+      .badge.warn { color: #ffd166; border-color: #7f682e; }
+      button {
+        border: 1px solid #435365; border-radius: 8px; padding: 7px 11px;
+        color: #e8edf3; background: #18212c; cursor: pointer;
+      }
+      main { position: relative; min-height: 0; overflow: hidden; background: #000; }
+      #cameraFeed {
+        display: block; width: 100%; height: 100%; min-height: 420px;
+        object-fit: contain; background: #000;
+      }
+      .hud {
+        position: absolute; top: 16px; left: 50%; transform: translateX(-50%);
+        width: min(900px, calc(100% - 32px)); padding: 10px 16px;
+        border-radius: 12px; border-left: 6px solid #d7e0ea;
+        background: rgba(5, 10, 16, 0.82); text-align: center;
+        font-size: clamp(16px, 2vw, 24px); font-weight: 650;
+        text-shadow: 0 1px 2px #000;
+      }
+      .hud.policy { border-left-color: #79c7ff; }
+      .hud.expert { border-left-color: #7dffcf; }
+      .hud.warning { border-left-color: #ffb86b; }
+      .hud.error { border-left-color: #ff6b6b; }
+      .details {
+        position: absolute; right: 14px; bottom: 14px; min-width: 280px;
+        padding: 10px 12px; border-radius: 10px; background: rgba(5, 10, 16, 0.78);
+        font: 13px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+      }
+      .details div { display: flex; justify-content: space-between; gap: 18px; }
+      .details span:first-child { color: #8fa2b5; }
+      .offline {
+        position: absolute; inset: 0; display: none; place-items: center;
+        color: #ffb86b; background: rgba(0, 0, 0, 0.72); font-size: 20px;
+      }
+      .offline.visible { display: grid; }
+      @media (max-width: 700px) {
+        header { flex-wrap: wrap; }
+        .details { left: 10px; right: 10px; min-width: 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header>
+        <h1>HD-DAGGER VR 实时监看</h1>
+        <span id="vrBadge" class="badge warn">VR 未连接</span>
+        <span id="transportBadge" class="badge">传输 --</span>
+        <span class="spacer"></span>
+        <button id="fullscreenButton" type="button">全屏</button>
+      </header>
+      <main>
+        <img id="cameraFeed" src="/api/camera/stream.mjpg" alt="VR 头部 RGBD 相机画面">
+        <div id="stateHud" class="hud">正在读取 HD-DAGGER 状态……</div>
+        <div class="details">
+          <div><span>HD-DAGGER</span><strong id="modeValue">--</strong></div>
+          <div><span>XR 姿态</span><strong id="xrValue">--</strong></div>
+          <div><span>手柄</span><strong id="handsValue">--</strong></div>
+          <div><span>实时包延迟</span><strong id="ageValue">--</strong></div>
+          <div><span>相机帧率</span><strong id="fpsValue">--</strong></div>
+          <div><span>待落盘片段</span><strong id="pendingValue">0</strong></div>
+        </div>
+        <div id="offlineNotice" class="offline">VR Web 状态断开，正在重连……</div>
+      </main>
+      <footer>
+        <span>只读监看：不连接控制 WebSocket，不会使能或发送机器人指令。</span>
+        <span class="spacer"></span>
+        <span id="clockValue">--</span>
+      </footer>
+    </div>
+    <script src="vr_monitor.js?v=hd-dagger-spectator-1"></script>
+  </body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "source": "Robot 300 validated HG-DAgger config and web assets, 2026-10-08",
+  "files": {
+    "config/hg_dagger.yaml": "2cca5e4a02d2c5a90c7da8d3580dd2f15d2be04e9394430ca75c54782ab58a43",
+    "web/index.html": "4471275b1da8565244c0caf9c69ccfb093f3b70b29f5ef7d5c1462cbbc5f21f0",
+    "web/styles.css": "f447b2ba2f33c5ee9f781b3063a20fd62f7582947f4b13332b411f8af5fe1582",
+    "web/vr_app.js": "39fc7edabd94866d451c7adf24a2cb9b64e8e48eb3128d941d89e9d9f98c3656",
+    "web/vr_monitor.html": "0c8392020d4592f1b3c07c0a6d4fb0a7275fcb610bde530cdaa5081902a4e870",
+    "web/vr_monitor.js": "79c742d5b5f5720800b8a23cfd9cabf21096c9f9d6be59c7d5580c07f9454f7b"
+  }
+}

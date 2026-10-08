@@ -1,4 +1,4 @@
-"""MZJ GR00T client, retaining its capture, chunk execution and cancellation.
+"""DAgger GR00T client, retaining its capture, chunk execution and cancellation.
 
 The sole protocol addition reports a controller-submission receipt, never
 claims physical completion from a ROS forward acknowledgement.
@@ -7,8 +7,8 @@ import json
 import cv2
 import time
 from std_msgs.msg import String
-from .mzj_base.groot_policy_bridge import GrootPolicyBridge
-from .mzj_base.groot_bridge_core import array_digest_float32
+from .control.groot_policy_bridge import GrootPolicyBridge
+from .control.groot_bridge_core import array_digest_float32
 
 
 class CollectorThorBridge(GrootPolicyBridge):

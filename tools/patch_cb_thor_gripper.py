@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Port the validated MZJ phase gripper to the inspected CB Thor source.
+"""Port the validated DAgger phase gripper to the inspected CB Thor source.
 Preview by default; --apply backs up sources. Does not restart any service.
 Enable with --gripper-phase-aware; omit that flag for continuous actions.
 """
@@ -10,7 +10,7 @@ import hashlib
 from pathlib import Path
 import shutil
 import time
-from patch_mzj_thor_receipts import replace_once
+from patch_thor_receipts import replace_once
 
 HASHES = {
  "server.py":"507076710ba4ad21669a6796e50e7152562f763a5644c6415d6043b7c9e22cbf",
@@ -112,7 +112,7 @@ def main():
         print("".join(difflib.unified_diff(source.splitlines(True),updated.splitlines(True),
                                          fromfile=name,tofile=name)),end="")
     if args.apply:
-        backup=args.repo/".codex_backups"/("mzj_phase_gripper_"+time.strftime("%Y%m%d_%H%M%S"))
+        backup=args.repo/".codex_backups"/("dagger_phase_gripper_"+time.strftime("%Y%m%d_%H%M%S"))
         backup.mkdir(parents=True,exist_ok=False)
         for path,_ in updates: shutil.copy2(path,backup/path.name)
         for path,updated in updates: path.write_text(updated)

@@ -1,4 +1,4 @@
-"""Fail closed when the private V4/HG interfaces differ from the inspected build.
+"""Fail closed when the V4 interfaces and bundled DAgger assets differ from the inspected build.
 
 These are source identities, not a claim of physical validation. There is no
 skip-version-check flag: a new robot build must be inspected and tested first.
@@ -14,27 +14,21 @@ import os
 HASHES = {
     "openarmx_teleop_vr_306_v4/config/controller.yaml": "5ca8edc6fae5639ebef10ddcb37275906abfe5b80d1dcf9492426aeb6ccb92be",
     "openarmx_teleop_vr_306_v4/config/teleop.yaml": "2c6dd14c14ce656a458f6bea0e84f46114aa571106ec5594fd823394b179629d",
-    "autolife_hg_dagger_MZJ_300/config/hg_dagger.yaml": "2cca5e4a02d2c5a90c7da8d3580dd2f15d2be04e9394430ca75c54782ab58a43",
-    "autolife_hg_dagger_MZJ_300/autolife_hg_dagger_mzj_300/core.py": "948c8dd205f091fa3045aa89074b63c42e636c72c65b74f86bf452d32e84325a",
-    "autolife_hg_dagger_MZJ_300/autolife_hg_dagger_mzj_300/supervisor_node.py": "28db83d97742a4f89455699315fcfb147d668d1237d7213322b94c15e802321a",
-    "autolife_hg_dagger_MZJ_300/autolife_hg_dagger_mzj_300/recorder.py": "df4c53de9b388c54068ad4fed0b2b93d2f0f60faee4e7a10d8e35648f8ae384d",
-    "autolife_hg_dagger_MZJ_300/web/vr_app.js": "b70973956d2d89811b44bfa78a159831a86091de226b00d14ea3345bf147901e",
     "openarmx_teleop_vr_306_v4/openarmx_teleop_vr_306_v4/controller_node.py": "099568348c4a92b36200cb8052b7f46eea7bea698ae35caecfe24a862cbb993b",
     "openarmx_teleop_vr_306_v4/openarmx_teleop_vr_306_v4/vr_mapper_node.py": "ccb5dfc38623b143dc9870ac6f909df3e8b50f475d3c979d785b88c8127fd4ee",
     "openarmx_teleop_vr_306_v4/openarmx_teleop_vr_306_v4/vr_web_bridge.py": "6fffdf186ae9c774b2ecb46e9c361a6a6388fa72052cf823eb75ecabad586f53",
 }
 
-# Reviewed MZJ revisions: explicit VR start, detailed notices, and verified
-# reset gripper opening. Keep original identities; never accept arbitrary edits.
-REVIEWED_ALTERNATES = {
-    "autolife_hg_dagger_MZJ_300/autolife_hg_dagger_mzj_300/supervisor_node.py": {
-        "6987faee7efe058b208a8eb48947a0d4bbefc1a6450e9a9d83f8e93427f96e4d",
-    },
-    "autolife_hg_dagger_MZJ_300/web/vr_app.js": {
-        "a1721c6b7931bfaeba860ebc000d974a1d833657b3b2ebd5cb0db13ee592214d",
-        "39fc7edabd94866d451c7adf24a2cb9b64e8e48eb3128d941d89e9d9f98c3656",
-    },
+ASSETS = Path(__file__).with_name("assets")
+ASSET_HASHES = {
+    "config/hg_dagger.yaml": "2cca5e4a02d2c5a90c7da8d3580dd2f15d2be04e9394430ca75c54782ab58a43",
+    "web/index.html": "4471275b1da8565244c0caf9c69ccfb093f3b70b29f5ef7d5c1462cbbc5f21f0",
+    "web/styles.css": "f447b2ba2f33c5ee9f781b3063a20fd62f7582947f4b13332b411f8af5fe1582",
+    "web/vr_app.js": "39fc7edabd94866d451c7adf24a2cb9b64e8e48eb3128d941d89e9d9f98c3656",
+    "web/vr_monitor.html": "0c8392020d4592f1b3c07c0a6d4fb0a7275fcb610bde530cdaa5081902a4e870",
+    "web/vr_monitor.js": "79c742d5b5f5720800b8a23cfd9cabf21096c9f9d6be59c7d5580c07f9454f7b"
 }
+REVIEWED_ALTERNATES = {}
 
 # These vendor nodes register endpoints even when no task is running. Permit
 # only their audited idle endpoints, never an active command. In particular,
@@ -85,11 +79,12 @@ def interpreter_environment(executable: str, environ: dict[str, str]) -> dict[st
 
 
 def validate(root: Path) -> None:
-    for relative, expected in HASHES.items():
-        path = root / relative
-        allowed = {expected, *REVIEWED_ALTERNATES.get(relative, ())}
-        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() not in allowed:
-            raise RuntimeError(f"DAgger dependency changed or missing: {path}; inspect this build before running")
+    for directory, manifest in ((ASSETS, ASSET_HASHES), (root, HASHES)):
+        for relative, expected in manifest.items():
+            path = directory / relative
+            allowed = {expected, *REVIEWED_ALTERNATES.get(relative, ())}
+            if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() not in allowed:
+                raise RuntimeError(f"DAgger dependency changed or missing: {path}; inspect this build before running")
 
 
 def conflicting_processes(proc: Path = Path("/proc")) -> list[int]:

@@ -16,6 +16,10 @@
     ],
     "core.py": [
       "Add explicit expert-authority selection for the collection atomic V4 handoff; no HOLD ACK claim"
+    ],
+    "groot_policy_bridge.py": [
+      "Default camera-reader path follows the installed collector root"
     ]
-  }
+  },
+  "package": "dagger.control"
 }

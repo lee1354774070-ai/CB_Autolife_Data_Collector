@@ -183,7 +183,7 @@ A legacy running stack must be stopped once before starting that copy.
 
 `COLLECTOR_MODE=dagger` selects the **new incremental V4 stack**, not factory VR.
 The adapter depends on the inspected robot-300 sources under
-`/home/ubuntu/ros2_ws/src/{openarmx_teleop_vr_306_v4,autolife_hg_dagger_MZJ_300}`.
+`/home/ubuntu/ros2_ws/src/openarmx_teleop_vr_306_v4`, plus the bundled `dagger/control/` and `dagger/assets/` directories.
 Critical files/configs are SHA-256 checked. Changes require review and new tests;
 there is no bypass switch. Existing controllers, unknown command publishers,
 or any observed command during the startup window cause preflight rejection.
@@ -203,14 +203,14 @@ Do not run the normal Thor robot client
 alongside this stack; its policy bridge owns the remote proposal/ACK session.
 `runtime_copy.py` creates a content-identified V4 copy in `.runtime/`, applies
 `v4_controller.patch` only there, then validates cached-copy hashes on reuse.
-The original V4/HG directories are never patched. Mapper, IK algorithms, limits
+The original V4 directory is never patched. Mapper, IK algorithms, limits
 and collision checks remain from the inspected version, not replaced with guessed parameters.
 
 Current scope: robot 300/domain 0, 21-D arms+grippers+head+upper waist, three RGB
 inputs and GR00T `policy_only_baseline`/`policy_only_frame`. Depth can be recorded,
 but is not fed to this RGB-only model contract. PI0.5 and causal EDVA/SOMA Outcome
-history are not integrated here. The pinned `dagger/mzj_base/` snapshot supplies
-the MZJ supervisor, incremental gripper/pickup, full-body reset, FIFO and GR00T
+history are not integrated here. The pinned `dagger/control/` snapshot supplies
+the DAgger supervisor, incremental gripper/pickup, full-body reset, FIFO and GR00T
 capture/21-D mapping/chunk execution. `SOURCE.json` records provenance and changes.
 Thin adapters add collection controls, provenance, session/epoch fencing and
 controller-submission receipts. Received actions are never clipped or rewritten.
@@ -342,8 +342,8 @@ not hard real-time: Linux, DDS, NAS and camera scheduling can add jitter. At
 processing effects. Camera frames still waiting in FIFOs are outside the marked
 span. Brief TTS cues replace long spoken task texts during continuous work; the
 external TTS service may still queue them. Verify audible feedback on hardware.
-No vendor vibration-send protocol was found, so haptics are not implemented and
-no guessed messages are sent to motion topics.
+Factory single-operator haptics are not integrated. The DAgger web UI vibrates
+only on takeover; no feedback is sent to motion topics.
 
 Each `annotations/subtasks/episode_<six-digit-index>.json` contains:
 
@@ -387,16 +387,16 @@ chunk boundary handling.
 ## Verification
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python -m pytest -p no:cacheprovider -q tests
+python -B -m unittest discover -s tests -p 'test_*.py'
 bash -n start_lerobot_official_collect.sh
 # Optional: ROS transport only, isolated topics + fake recorder, no motion/audio.
-python tests/vr_ros_smoke.py
+ROS_DOMAIN_ID=211 python tests/vr_ros_smoke.py
 # Optional subtask gestures; still private topics and a fake recorder.
-python tests/vr_ros_smoke.py --subtasks
+ROS_DOMAIN_ID=211 python tests/vr_ros_smoke.py --subtasks
 ```
 
 Core regression tests are development-only and never loaded by the launcher.
-Historical reports and one-off dataset/remote experiments are not shipped.
+Historical validation is in `docs/validation/`; opt-in diagnostics are in `tests/remote/`.
 SSE tests require aiohttp in the VR web environment; the rest run without it.
 Do not infer robot acceptance or minimum CPU usage from these software tests.
 

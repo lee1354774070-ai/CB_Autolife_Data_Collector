@@ -1,4 +1,4 @@
-"""Bounded, lossless temporary-image writer used only by the MZJ recorder.
+"""Bounded, lossless temporary-image writer used only by the DAgger recorder.
 
 Capture spends CPU on copying pixels, not PNG compression. Final video encoding
 still runs through LeRobot at save time. No ROS publishers or hardware APIs.

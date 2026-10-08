@@ -1,4 +1,4 @@
-"""MZJ capture regressions: lossless pixels, bounded work, and process isolation."""
+"""DAgger capture regressions: lossless pixels, bounded work, and process isolation."""
 import json
 import os
 from pathlib import Path

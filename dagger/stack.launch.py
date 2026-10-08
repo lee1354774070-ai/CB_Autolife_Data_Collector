@@ -14,13 +14,12 @@ from launch.actions import ExecuteProcess, RegisterEventHandler, EmitEvent
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from dagger.dependencies import interpreter_environment
+from dagger.dependencies import ASSETS, interpreter_environment
 
 
 def generate_launch_description():
-    root = Path(os.environ["DAGGER_DEPENDENCY_ROOT"])
     vr = Path(os.environ["DAGGER_V4_RUNTIME_ROOT"])
-    hg = root / "autolife_hg_dagger_MZJ_300"
+    hg = ASSETS
     here = Path(__file__).resolve().parent
     runtime = str(here / "runtime.py")
     base = Path(os.environ["DAGGER_BASE_DIR"])
@@ -83,7 +82,7 @@ def generate_launch_description():
     bridge = process([python, runtime, "bridge"], params={
         "server_url": os.environ["DAGGER_SERVER_URL"], "token_file": os.environ["DAGGER_TOKEN_FILE"],
         "task": json.dumps(os.environ["TASK_TEXT"]),
-        "collector_root": "/home/ubuntu/lerobot_data_collector",
+        "collector_root": str(here.parent),
         "joint_state_topic": "/topic_arm_whole_body_and_gripper_current_joints_status_0_300",
     })
     web = process([web_python, runtime, "web"], params={

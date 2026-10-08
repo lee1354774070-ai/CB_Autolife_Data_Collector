@@ -89,7 +89,7 @@ class GrootPolicyBridge(Node):
             "max_image_delta_sec": 0.04,
             "camera_wait_timeout_sec": 5.0,
             "jpeg_quality": 90,
-            "collector_root": "/home/ubuntu/lerobot_data_collector",
+            "collector_root": str(Path(__file__).resolve().parents[2]),
             "joint_state_topic": "/topic_arm_whole_body_and_gripper_current_joints_status_0_300",
         }
         for name, value in defaults.items():

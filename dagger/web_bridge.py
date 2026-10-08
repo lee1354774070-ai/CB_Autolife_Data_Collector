@@ -10,11 +10,12 @@ from pathlib import Path
 from aiohttp import web
 from openarmx_teleop_vr_306_v4 import vr_web_bridge as upstream
 from vr_feedback import PATTERNS
+from .dependencies import ASSETS
 
 
 def main():
     original = upstream.VrWebBridge
-    source = Path(os.environ["DAGGER_DEPENDENCY_ROOT"]) / "autolife_hg_dagger_MZJ_300"
+    source = ASSETS
 
     class CollectorWebBridge(original):
         def __init__(self):

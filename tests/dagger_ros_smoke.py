@@ -107,7 +107,7 @@ def main():
     if os.environ.get("ROS_DOMAIN_ID") != "211":
         raise SystemExit("This no-motion test requires isolated ROS_DOMAIN_ID=211")
     root = Path(os.environ["DAGGER_DEPENDENCY_ROOT"])
-    sys.path[:0] = [str(Path(__file__).resolve().parents[1]), str(root / "autolife_hg_dagger_MZJ_300"),
+    sys.path[:0] = [str(Path(__file__).resolve().parents[1]),
                    str(root / "openarmx_teleop_vr_306_v4")]
     from dagger.dependencies import validate
     validate(root)
@@ -281,7 +281,7 @@ def main():
             assert command['left_gripper_target_joints_position'] == [360.]
             assert command['right_gripper_target_joints_position'] == [360.]
             assert node._expert_gripper_pickup_pending == [False, False]
-            print('MZJ_FAST_TRIGGER_PICKUP_PASS target=360 feedback_360_accepted=true')
+            print('DAGGER_FAST_TRIGGER_PICKUP_PASS target=360 feedback_360_accepted=true')
             vr(gripActive=True)
             assert node._machine.authority_epoch == epoch, "Held Grip retriggered takeover"
             vr(gripActive=False, yButton=False)

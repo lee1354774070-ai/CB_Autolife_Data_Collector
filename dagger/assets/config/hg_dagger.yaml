@@ -1,0 +1,31 @@
+hg_dagger_supervisor:
+  ros__parameters:
+    human_finish_only: true
+    default_depth_enabled: true
+    rgbd_only: true
+    button_double_click_window_sec: 5.0
+    hold_confirmation_timeout_sec: 1.0
+    policy_timeout_sec: 1.25
+    policy_status_timeout_sec: 1.0
+    expert_timeout_sec: 0.35
+    grip_release_debounce_sec: 0.20
+    policy_warmup_min_actions: 1
+    policy_warmup_min_duration_sec: 0.0
+    policy_resume_max_arm_jump_deg: 8.0
+    policy_resume_max_gripper_jump_deg: 80.0
+    policy_resume_max_observation_age_sec: 2.0
+    minimum_episode_frames: 15
+    collector_action_rate_hz: 30.0
+    pre_failure_ring_seconds: 5.0
+    trace_root: "/home/ubuntu/hg_dagger_data_300/hg_dagger_task/hg_dagger_sidecar"
+    rgb_collector_fifo: "/home/ubuntu/hg_dagger_data_300/hg_dagger_task/hg_dagger_rgb/.official_recording_control"
+    rgbd_collector_fifo: "/home/ubuntu/hg_dagger_data_300/hg_dagger_task/hg_dagger_rgbd/.official_recording_control"
+    collector_start_command: "start"
+    collector_save_command: "save"
+    collector_discard_command: "discard"
+    collector_command_timeout_sec: 4.0
+    collector_save_timeout_sec: 120.0
+    quick_reset_request_timeout_sec: 3.0
+    quick_reset_wait_timeout_sec: 65.0
+    vendor_joint_command_topic: "/topic_arm_whole_body_target_joints_position_0_300"
+    vendor_gripper_command_topic: "/topic_arm_gripper_target_joints_position_0_300"

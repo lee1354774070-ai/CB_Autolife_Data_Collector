@@ -67,10 +67,10 @@ class ReadinessTest(unittest.TestCase):
         self.assertIn('cancelled', self.wait()[1])
 
     def start(self, enabled):
-        # Run the pinned MZJ start body: recording must precede policy authority.
-        from dagger.mzj_base.core import Mode
+        # Run the pinned DAgger start body: recording must precede policy authority.
+        from dagger.control.core import Mode
         import time as real_time
-        native = SOURCE.parent / 'mzj_base/supervisor_node.py'
+        native = SOURCE.parent / 'control/supervisor_node.py'
         body = next(n for c in ast.parse(native.read_text()).body if isinstance(c, ast.ClassDef)
                     for n in c.body if isinstance(n, ast.FunctionDef) and n.name == '_on_set_session_enabled')
         body.returns = None

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Add submission receipts to the inspected MZJ Thor server, preserving legacy ACK/grippers.
+"""Add submission receipts to the inspected DAgger Thor server, preserving legacy ACK/grippers.
 Default: print a diff. --apply: back up both sources, then write; never restart a service.
 """
 import argparse
@@ -31,7 +31,7 @@ RECEIPT_METHOD = '''
                 or not np.array_equal(prefix, actions[:len(prefix)])
                 or payload.get("submitted_prefix_digest") != array_digest(prefix)):
             raise ProtocolError("Controller receipt must bind the exact submitted prefix")
-        # Preserve the MZJ command latch for accepted targets only. A discarded
+        # Preserve the DAgger command latch for accepted targets only. A discarded
         # prediction must never latch a release. Measured completion is not claimed.
         if self._gripper_phase == "place":
             self._gripper_released |= np.any(
@@ -95,7 +95,7 @@ def main():
         print("".join(difflib.unified_diff(source.splitlines(True), updated.splitlines(True),
                                         fromfile=name, tofile=name)), end="")
     if args.apply:
-        backup = args.repo / ".codex_backups" / ("mzj_controller_receipts_" + time.strftime("%Y%m%d_%H%M%S"))
+        backup = args.repo / ".codex_backups" / ("dagger_controller_receipts_" + time.strftime("%Y%m%d_%H%M%S"))
         backup.mkdir(parents=True, exist_ok=False)
         for path, _ in updates:
             shutil.copy2(path, backup / path.name)

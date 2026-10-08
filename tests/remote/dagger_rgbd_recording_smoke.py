@@ -1,6 +1,6 @@
 """Live RGB-D + synthetic signals, isolated domain211; never use for training.
 
-Exercises the real MZJ supervisor -> provenance topics -> collection recorder ->
+Exercises the real DAgger supervisor -> provenance topics -> collection recorder ->
 FIFO save/discard -> Parquet/videos. No controller, Thor, or motor publisher.
 """
 import json

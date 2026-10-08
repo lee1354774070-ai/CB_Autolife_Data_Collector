@@ -1,4 +1,4 @@
-"""Execute the pinned MZJ bridge plus adapter without ROS/HTTP/motor objects."""
+"""Execute the pinned DAgger bridge plus adapter without ROS/HTTP/motor objects."""
 import ast
 import __future__
 import json
@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock
 
-from dagger.mzj_base.groot_bridge_core import (
+from dagger.control.groot_bridge_core import (
     INFERENCE_MODES, array_digest_float32, bridge_generation_boundary,
     policy_state_from_q23, validated_actions)
 
@@ -20,7 +20,7 @@ def bridge_type():
     names = {'_on_control_state', '_generation_valid', '_execute', '_policy_payload',
              '_on_forward_ack', '_close_session', '_track_response_proposal',
              '_check_inference_latency', '_next_response'}
-    tree = ast.parse((ROOT / 'mzj_base/groot_policy_bridge.py').read_text())
+    tree = ast.parse((ROOT / 'control/groot_policy_bridge.py').read_text())
     cls = next(c for c in tree.body if isinstance(c, ast.ClassDef) and c.name == 'GrootPolicyBridge')
     cls.bases = []
     cls.body = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in names]
@@ -32,11 +32,11 @@ def bridge_type():
               policy_state_from_q23=policy_state_from_q23,
               String=lambda **kw: SimpleNamespace(**kw), compact=json.dumps)
     exec(compile(ast.fix_missing_locations(ast.Module(body=[cls, adapter], type_ignores=[])),
-                 'mzj_bridge_callbacks', 'exec', flags=__future__.annotations.compiler_flag), ns)
+                 'thor_bridge_callbacks', 'exec', flags=__future__.annotations.compiler_flag), ns)
     return ns['CollectorThorBridge']
 
 
-class MzjBridgeTest(unittest.TestCase):
+class ThorBridgeTest(unittest.TestCase):
     def setUp(self):
         self.node = node = bridge_type()()
         node._condition = threading.Condition()
@@ -111,7 +111,7 @@ class MzjBridgeTest(unittest.TestCase):
         packet = dict(proposal_id='p1', chunk_step=0, bridge_generation=1, accepted=False)
         self.node._on_forward_ack(SimpleNamespace(data=json.dumps(packet)))
         self.assertEqual(self.node._forward_acks, set())
-        packet.pop('accepted')  # MZJ positive-ACK format stays compatible.
+        packet.pop('accepted')  # DAgger positive-ACK format stays compatible.
         self.node._on_forward_ack(SimpleNamespace(data=json.dumps(packet)))
         self.assertEqual(self.node._forward_acks, {('p1', 0, 1)})
 

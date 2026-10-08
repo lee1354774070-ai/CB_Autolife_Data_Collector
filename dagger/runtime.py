@@ -15,7 +15,6 @@ def main():
     root = Path(os.environ["DAGGER_DEPENDENCY_ROOT"])
     sys.path[:0] = [os.environ.get("DAGGER_TOOLS_ROOT", str(Path(__file__).resolve().parents[2])),
                    str(Path(__file__).resolve().parents[1]),
-                   str(root / "autolife_hg_dagger_MZJ_300"),
                    os.environ.get("DAGGER_V4_RUNTIME_ROOT", str(root / "openarmx_teleop_vr_306_v4"))]
     import rclpy
     from rclpy.executors import MultiThreadedExecutor
@@ -37,7 +36,7 @@ def main():
                     or not health.get("controller_submission_receipts") or health.get("outcome_history_offsets")):
                 raise SystemExit("Update our Thor baseline/frame server: controller_submission receipts required")
         finally:
-            client.close_connections()
+            getattr(client, "close_connections", lambda: None)()
         node = rclpy.create_node("collector_dagger_preflight")
         try:
             from collections import Counter

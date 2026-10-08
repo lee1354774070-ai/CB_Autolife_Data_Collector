@@ -339,6 +339,7 @@ SUBTASKS_JSON="${SUBTASKS_JSON:-[]}"
 MODE_CONFIG="$(python3 "${SCRIPT_DIR}/collector_modes.py" --mode "${COLLECTOR_MODE:-}" \
     --vr-control "${VR_CONTROL}" --subtasks-json "${SUBTASKS_JSON}")"
 read -r COLLECTOR_MODE VR_CONTROL SUBTASK_COUNT <<< "${MODE_CONFIG}"
+printf 'AutoLife Collector | mode=%s | %s\n' "${COLLECTOR_MODE}" "${SCRIPT_DIR}"
 if [ "${COLLECTOR_MODE}" = "dagger" ]; then
     exec python3 "${SCRIPT_DIR}/dagger/run.py" "$@"
 fi

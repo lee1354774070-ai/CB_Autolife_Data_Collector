@@ -14,7 +14,7 @@ from robot_schema import parse_whole_body_state
 import json
 
 def main():
-    rclpy.init(); node=rclpy.create_node("mzj_readonly_inference_probe")
+    rclpy.init(); node=rclpy.create_node("dagger_readonly_inference_probe")
     latest=[None,0.]
     def joints(msg):
         try:
@@ -61,5 +61,5 @@ def main():
             print("DISCARD_CLOSE_PASS",seq,flush=True)
         print("NO_MOTION_PASS action_publishers=0 hardware_calls=0",flush=True)
     finally:
-        client.close_connections();node.destroy_node();rclpy.shutdown()
+        getattr(client, "close_connections", lambda: None)();node.destroy_node();rclpy.shutdown()
 if __name__=="__main__": main()

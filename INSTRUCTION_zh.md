@@ -161,7 +161,7 @@ GUI 副本工具保留原文件，把启动入口替换为我们的常驻 `--ser
 
 `COLLECTOR_MODE=dagger` 使用**新版增量 V4 控制栈**，不是原厂 VR 数采辅助程序。
 依赖机器人上的 `/home/ubuntu/ros2_ws/src/openarmx_teleop_vr_306_v4` 和
-`/home/ubuntu/ros2_ws/src/autolife_hg_dagger_MZJ_300`。关键源码和配置按 SHA-256 核对；
+本仓库的 `dagger/control/`、`dagger/assets/`。V4关键源码及打包资源按 SHA-256 核对；
 不同版本必须重新审查测试，没有跳过检查的开关。存在其他控制器、未知命令发布者，
 或在启动观察窗口内收到任何控制命令时，拒绝启动；仅允许已审查的原厂节点保留空闲发布端点。
 原厂的 `target_robot_eef_pose`、`target_robot_height_z` 是输出报告，不是控制输入；
@@ -173,16 +173,16 @@ V4 运行中的命令仲裁、心跳和安全限制继续生效。
 取消、故障或超时都会停止本次启动，不发布模型目标；等待不阻塞 ROS 按键回调。
 不能另外运行普通 Thor robot client，否则会形成双控制器。
 `runtime_copy.py` 在 `.runtime/` 创建按内容标识的 V4 副本，补丁只应用于副本；
-复用时再次核对文件哈希。同事的 V4/HG 原目录不改动。保留原版 mapper、IK 算法、
+复用时再次核对文件哈希。同事的 V4 原目录不改动。保留原版 mapper、IK 算法、
 限位和碰撞检查，不通过猜测参数或放宽保护来降低延迟。
 
 当前范围：300 机器人、ROS domain 0、21 维手臂+夹爪+头+上腰、三路 RGB，
 GR00T 的 `policy_only_baseline` / `policy_only_frame`。depth 可以录制，但不作为
 这个 RGB 模型的输入。尚未接入 PI0.5 或 EDVA/SOMA 的因果 Outcome 历史。
-`dagger/mzj_base/` 固定保存 MZJ 已跑通的 supervisor、GR00T bridge、FIFO 和状态机。
+`dagger/control/` 保存已验证的 supervisor、GR00T bridge、FIFO 和状态机。
 `SOURCE.json` 记录原始哈希与本次适配。外层复用这些实现，只增加集合版按键/回执、
 来源标签、过期 epoch 拦截、状态缓存和唯一控制器接管。GR00T 图像采集、21维映射和
-逐步转发沿用 MZJ；客户端不修改 Thor 返回动作，夹爪契约统一为10°到360°。
+逐步转发沿用 DAgger；客户端不修改 Thor 返回动作，夹爪契约统一为10°到360°。
 
 我们的 Thor server 新增 `/controller_ack`，仅供 baseline/frame：核对已提交给控制器的
 目标前缀和摘要，再关闭该 chunk；这**不是**硬件已发布或已到位的回执，也不能推进
@@ -253,8 +253,8 @@ V4 副本在成功发布硬件指令后，通过独立 `/collector_dagger/contro
 
 验证范围：隔离 ROS domain 下的真实 supervisor/FIFO 软件链路，硬件使用替身；
 LeRobot 0.6.0 合成数据的 Parquet/视频保存、续采和读取。以上均不等同于实机接管延迟、
-碰撞行为、实际音频/振动或闭环成功的验证。机器人上同事正在运行的程序只读检查，
-尚未替换或重启，仍需有人在场完成实机验收。
+碰撞行为、实际音频/振动或闭环成功的验证。2026-10-08用户已确认基本现场功能，
+正式版整理后的回归结果与后续验收项目统一记录在 `ROBOT300_TESTING_zh.md`。
 
 ## 子任务标注与实时性
 
@@ -283,7 +283,7 @@ VR 等待确认使用独立 worker，前 1 秒每 10 ms 检查一次回执，之
 
 声音通过原有 TTS topic 发送短文本“下一步”等，不等待播放结束，不逐次朗读长子任务文本。
 TTS 服务自身仍可能排队，现场需确认扬声器可听及反馈延迟。未找到厂商手柄振动发送协议，
-因此没有猜测 topic/消息或向运动通道发送反馈；拿到接口后才能接入振动。
+因此原厂单人模式不发送振动；DAgger网页仅在接管时振动，不向运动通道发送反馈。
 
 输出 `annotations/subtasks/episode_<六位编号>.json` 包含：
 
@@ -320,16 +320,15 @@ TTS 服务自身仍可能排队，现场需确认扬声器可听及反馈延迟�
 ## 验证
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python -m pytest -p no:cacheprovider -q tests
+python -B -m unittest discover -s tests -p 'test_*.py'
 bash -n start_lerobot_official_collect.sh
 # 可选：ROS 链路测试，独立话题和模拟 recorder，不运动、不实际播音。
-python tests/vr_ros_smoke.py
+ROS_DOMAIN_ID=211 python tests/vr_ros_smoke.py
 # 子任务手势测试，仍使用独立话题和模拟 recorder。
-python tests/vr_ros_smoke.py --subtasks
+ROS_DOMAIN_ID=211 python tests/vr_ros_smoke.py --subtasks
 ```
 
-核心回归测试仅供开发验证，启动器不会加载，不占采集 CPU。历史报告和一次性数据集/远程实验脚本
-已移除。SSE 测试需要网页环境中的 aiohttp，其余测试不依赖它。软件回归不代表实机验收或最低 CPU 保证。
+核心回归测试仅供开发验证，启动器不会加载，不占采集 CPU。历史验证记录放在 `docs/validation/`，远程诊断脚本在 `tests/remote/`。SSE 测试需要网页环境中的 aiohttp，其余测试不依赖它。软件回归不代表实机验收或最低 CPU 保证。
 
 机器人现场还应检查 ROS 发现、SHM 文件、相机源 FPS、编码器、CPU、磁盘吞吐和
 `sync_log.jsonl`，确认生产采集前没有异常 drop 或 episode invalidation。
