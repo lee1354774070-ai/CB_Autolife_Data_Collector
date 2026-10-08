@@ -1,0 +1,217 @@
+independent_arm_controller_306_v4:
+  ros__parameters:
+    topic_suffix: "0_300"
+    control_rate_hz: 100.0
+    dry_run: true
+    # Both optional body-follow features start disabled and are selected on the
+    # web enable card before entering hardware mode.
+    allow_waist_in_ik: false
+    waist_follow_profile: "forward_pitch_only"
+    waist_forward_assist_start_x_m: 0.28
+    waist_forward_assist_full_x_m: 0.52
+    # Measure from each new Grip/re-anchor pose. The arms use roughly 77% of
+    # their 26 cm forward range before the waist begins to supplement reach.
+    # Smoothstep blending then removes a visible onset or saturation step.
+    waist_forward_assist_start_extension_m: 0.20
+    waist_forward_assist_full_extension_m: 0.26
+    waist_forward_assist_max_lean_deg: 10.0
+    waist_forward_assist_upright_pitch_deg: 0.0
+    # Waist pitch may follow the live hand-reach target faster than the stopped
+    # body-height hold, while remaining bounded around measured feedback.
+    waist_forward_assist_command_lead_deg: 8.0
+    body_height_control_enabled: false
+    body_height_lowering_rate_m_sec: 0.10
+    body_height_command_timeout_sec: 0.25
+    # X/Y motion gets enough feedback lead for a real-time feel. Releasing the
+    # key smoothly tightens the window so ankle, knee and waist settle together.
+    body_height_hold_command_lead_deg: 2.0
+    body_height_motion_command_lead_deg: 6.0
+    body_height_command_lead_slew_deg_sec: 60.0
+    head_follow_enabled: false
+    # Disabled for operator-supervised VR teleoperation. Joint soft limits,
+    # Cartesian workspace limits and vendor hardware safeguards remain active.
+    enable_self_collision_check: false
+
+    # Vendor endpoints exist even while idle, so message-level arbitration is
+    # authoritative.  Do not run this package beside another 306 teleop stack.
+    reject_competing_publishers: false
+    enable_active_command_arbitration: true
+    external_command_quiet_sec: 1.0
+    own_command_echo_timeout_sec: 1.0
+    require_hardware_subscriber: true
+    require_gripper_subscriber: true
+    require_prepare_subscriber: false
+    hardware_session_mode: "sync"
+    sync_hold_only_enable: true
+    arm_enable_prepare_wait_seconds: 1.5
+    require_sync_session_service: true
+    sync_session_request_timeout_sec: 12.0
+    require_joint_enable_subscribers: true
+    output_guard_period_sec: 0.50
+
+    hardware_enable_hold_tolerance_deg: 3.0
+    # The vendor preparation callback may settle a few degrees from its first
+    # snapshot. Accept only after continuous stability; larger motion still
+    # fails closed immediately.
+    hardware_enable_hold_abort_tolerance_deg: 8.0
+    hardware_enable_stable_delta_deg: 0.20
+    hardware_enable_stable_seconds: 0.50
+    hardware_enable_settle_timeout_seconds: 6.0
+    arm_enable_hold_before_seconds: 0.4
+    arm_enable_clear_wait_seconds: 1.0
+    arm_enable_settle_seconds: 1.0
+    arm_enable_completion_timeout_seconds: 60.0
+    # Web enable holds measured joints and invokes the existing 306 arms-only
+    # ASYNC position preparation callback. It never invokes whole-body reset.
+    reset_before_hardware_enable: false
+    # After the guarded preparation, move to the same guarded 306 reset pose
+    # used by the X+A quick-reset gesture.
+    quick_reset_after_hardware_enable: true
+    full_reset_min_wait_sec: 3.0
+    full_reset_stable_sec: 1.0
+    full_reset_position_tolerance_deg: 3.0
+    full_reset_speed_tolerance_deg_sec: 2.0
+    vendor_pid_loop_shm_glob: "/dev/shm/pid_loop_state_*"
+
+    # Full VR launch overrides this to true.  Standalone IK dry-run may leave it
+    # false intentionally.
+    require_teleop_heartbeat: false
+    teleop_heartbeat_timeout_sec: 5.5
+    teleop_vr_input_max_age_sec: 0.80
+    feedback_timeout_sec: 0.35
+    # V3: allow a bounded IK slowdown near wrist singularities without
+    # entering HOLDING. Keep this fail-closed watchdog at or below 0.50 s.
+    target_timeout_sec: 0.30
+    tracking_error_limit_deg: 22.0
+
+    # Position targets use the guarded vendor SYNC motor worker. The independent
+    # controller predicts only the latest reference and owns the SYNC lease.
+    output_control_mode: "position"
+    velocity_servo_position_gain: 7.0
+    velocity_servo_feedforward_gain: 0.25
+    velocity_servo_limit_gain: 8.0
+    velocity_servo_max_velocity_deg_sec: 80.0
+    velocity_servo_max_acceleration_deg_sec2: 300.0
+    velocity_servo_max_jerk_deg_sec3: 2500.0
+    velocity_servo_goal_rate_filter_tau_sec: 0.05
+    velocity_servo_collision_horizon_sec: 0.12
+    hybrid_position_reference_enabled: true
+    hybrid_position_reference_lookahead_sec: 0.04
+    hybrid_position_output_lookahead_sec: 0.08
+
+    # Quest3 publishes the one-step Placo joint result directly.  Keep only
+    # the measured-pose lead guard and vendor SYNC position interpolation.
+    adaptive_position_feedforward_enabled: false
+    adaptive_position_min_lookahead_sec: 0.01
+    adaptive_position_max_lookahead_sec: 0.09
+    adaptive_position_lookahead_filter_tau_sec: 0.045
+    adaptive_position_velocity_floor_deg_sec: 5.0
+    adaptive_position_min_velocity_deg_sec: 90.0
+    # Reach the vendor SYNC response envelope earlier during intentional hand
+    # motion; the hardware worker still enforces its per-joint 90..180 deg/s
+    # limits and the controller keeps the bounded command-lead guard.
+    adaptive_position_error_low_deg: 1.0
+    adaptive_position_error_high_deg: 6.0
+    # Only the two shoulder axes receive this modest hard-cap increase.  The
+    # dynamic lead below still decides joint-by-joint how much is requested.
+    shoulder_sync_speed_cap_deg_sec: 105.0
+    # Vendor SYNC dynamics are now 105,105,120,150,180,180,180 deg/s;
+    # acceleration remains 12000 deg/s^2.
+    adaptive_position_max_acceleration_deg_sec2: 12000.0
+
+    direct_position_target_enabled: true
+    direct_position_max_command_lead_deg: 12.0
+    dynamic_command_lead_enabled: true
+    dynamic_command_lead_min_deg: 8.0
+    dynamic_command_lead_nominal_deg: 12.0
+    dynamic_command_lead_max_deg: 18.0
+    dynamic_command_lead_speed_low_deg_sec: 5.0
+    dynamic_command_lead_speed_high_deg_sec: 70.0
+    dynamic_command_lead_target_error_low_deg: 2.0
+    dynamic_command_lead_target_error_high_deg: 18.0
+    dynamic_command_lead_following_soft_deg: 10.0
+    dynamic_command_lead_following_hard_deg: 18.0
+    dynamic_command_lead_filter_tau_sec: 0.08
+    ik_target_velocity_filter_tau_sec: 0.04
+    ik_target_velocity_limit_deg_sec: 180.0
+
+    # 30% faster quick-reset profile for arms and neck.  Scale velocity,
+    # acceleration and jerk together so acceleration is not the bottleneck.
+    quick_reset_max_velocity_deg_sec: 23.4
+    quick_reset_max_acceleration_deg_sec2: 65.0
+    quick_reset_max_jerk_deg_sec3: 325.0
+    # Neck-only next speed tier.  Arms keep the limits above.
+    quick_reset_neck_max_velocity_deg_sec: 30.0
+    quick_reset_neck_max_acceleration_deg_sec2: 83.333
+    quick_reset_neck_max_jerk_deg_sec3: 416.667
+    arm_max_command_lead_deg: 20.0
+    waist_max_command_lead_deg: 5.0
+    # Faster head following without removing the bounded command/feedback gap.
+    neck_max_command_lead_deg: 8.0
+    quick_reset_max_command_lead_deg: 12.0
+    quick_reset_waist_max_command_lead_deg: 5.0
+    joint_limit_margin_deg: 2.0
+    max_velocity_deg_sec: 180.0
+    max_acceleration_deg_sec2: 12000.0
+
+    gripper_min_position: 10.0
+    gripper_max_position: 330.0
+    # Mapper already performs the only gripper smoothing/rate limiting.
+    gripper_max_step_per_input: 0.0
+    ik_max_iterations: 120
+    ik_position_tolerance_m: 0.004
+    ik_orientation_tolerance_rad: 0.035
+    ik_step_limit_rad: 0.10
+    ik_damping: 0.025
+    ik_centering_gain: 0.025
+    # Singular handling now comes from Placo manipulability and kinetic-energy
+    # regularization instead of V3's second Pinocchio solve.
+    ik_inward_fallback_enabled: false
+    # V3: bound the second-pass IK budget so latest-frame processing cannot
+    # fall behind the 90 Hz WebXR stream for several consecutive frames.
+    ik_fallback_max_iterations: 40
+    ik_fallback_orientation_tolerance_rad: 0.12
+    ik_fallback_orientation_weight: 0.28
+    ik_fallback_damping: 0.045
+    # Near full extension, accept only the closest safe near-straight solution
+    # when the unreachable Cartesian remainder is at most 12 mm.
+    ik_forward_reach_boundary_enabled: false
+    quest_placo_frame_weight: 1.0
+    quest_placo_manipulability_weight: 0.05
+    # Preserve the normal-workspace singularity bias, then relax it smoothly
+    # near a straight elbow so intentional forward reach is not resisted.
+    quest_placo_manipulability_min_weight: 0.008
+    quest_placo_manipulability_fade_start_elbow_deg: 50.0
+    quest_placo_manipulability_fade_full_elbow_deg: 25.0
+    quest_placo_kinetic_regularization: 0.000001
+    ik_forward_reach_boundary_position_tolerance_m: 0.012
+    ik_forward_reach_boundary_max_elbow_deg: 25.0
+    ik_forward_reach_boundary_max_singular_value: 0.02
+
+    input_target_topic: "/openarmx_teleop_vr_306_v4/eef_target"
+    input_gripper_topic: "/openarmx_teleop_vr_306_v4/gripper_target"
+    input_release_topic: "/openarmx_teleop_vr_306_v4/release_hold"
+    input_joint_target_topic: "/openarmx_teleop_vr_306_v4/joint_target"
+    input_body_height_topic: "/openarmx_teleop_vr_306_v4/body_height_command"
+    input_head_target_topic: "/openarmx_teleop_vr_306_v4/head_target"
+    head_target_timeout_sec: 0.60
+    preview_topic: "/openarmx_teleop_vr_306_v4/joint_target_preview"
+    status_topic: "/openarmx_teleop_vr_306_v4/status"
+    eef_feedback_topic: "/openarmx_teleop_vr_306_v4/eef_feedback"
+    teleop_heartbeat_topic: "/openarmx_teleop_vr_306_v4/teleop_heartbeat"
+
+    # Use the active vendor/system reset pose. X+A keeps measured ankle/knee,
+    # returns arms/waist/neck, and opens both grippers.
+    quick_reset_left_arm_joints: [0.0, 0.0, 0.0, 110.0, 0.0, 13.0, 0.0]
+    quick_reset_right_arm_joints: [0.0, 0.0, 0.0, -110.0, 0.0, -13.0, 0.0]
+    quick_reset_waist_joints: [0.0, 0.0]
+    quick_reset_neck_joints: [0.0, -20.0, 0.0]
+    quick_reset_open_grippers: true
+    quick_reset_gripper_open_position: 10.0
+    quick_reset_tolerance_deg: 1.0
+    quick_reset_timeout_sec: 20.0
+    # One continuous direct reset. Unsafe direct paths fail closed instead of
+    # adding an unexpected shoulder swing.
+    quick_reset_path_sample_count: 41
+    quick_reset_minimum_eef_separation_m: 0.24
+    quick_reset_minimum_path_duration_sec: 1.0

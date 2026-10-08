@@ -1,0 +1,128 @@
+independent_vr_mapper_306_v4:
+  ros__parameters:
+    topic_suffix: "0_300"
+    dry_run: true
+    # Low-latency profile: consume the latest WebXR sample at up to 90 Hz.
+    command_rate: 90.0
+    # Allow short Wi-Fi/WebSocket stalls without pausing both arms.
+    vr_timeout: 0.95
+    # 手柄短暂遮挡时先保持并自动重新锚定；超过 5 秒才关闭真机输出。
+    hardware_disable_vr_timeout: 5.0
+    # Keep each arm at its last valid target during brief WebXR hand-tracking loss.
+    controller_tracking_grace_period: 0.75
+    # Ignore one-frame WebXR squeeze glitches. A genuine release freezes the
+    # target immediately and is confirmed within 60 ms without re-anchoring.
+    grip_release_debounce_sec: 0.06
+    eef_feedback_timeout: 0.60
+    # Headset sleep is not an operator disable request. The mapper releases both
+    # clutch anchors and keeps the already-enabled controller in position hold;
+    # explicit UI disable or terminal shutdown still ends the session.
+    disable_on_vr_timeout: false
+    position_scale: 0.70
+    # Match human forward extension to robot arm extension without changing
+    # the proven lateral/vertical sensitivity.
+    forward_position_scale: 0.90
+    # The mapper now advances at the fixed 90 Hz control tick rather than only
+    # on bursty WebXR arrivals. This ~20 ms smoothing constant removes target
+    # steps while keeping hand response perceptually immediate.
+    filter_alpha: 0.48
+    max_position_step: 0.015
+    max_orientation_step_deg: 5.0
+    # Increase commanded EEF rotation by 18%; IK and motor joint limits remain
+    # authoritative, so this improves wrist travel without bypassing safety.
+    wrist_orientation_gain: 1.18
+    # ~/vr306nav enables this profile. It keeps the arm visually near full
+    # extension while retaining the geometric room required for wrist motion.
+    wrist_reach_reserve_enabled: false
+    wrist_reach_reserve_minimum_m: 0.015
+    wrist_reach_reserve_maximum_m: 0.070
+    wrist_reach_reserve_start_angle_deg: 0.0
+    wrist_reach_reserve_full_angle_deg: 70.0
+    # A 45 cm clutch sphere stopped a raised/forward hand before the configured
+    # Cartesian workspace.  The mapper now projects continuously at this wider
+    # boundary instead of dropping the command.
+    max_anchor_displacement: 0.70
+    # At 26 cm the robot reaches its physical forward shell with about 11 deg
+    # elbow bend. Larger human motion remains continuously held at that shell.
+    max_forward_displacement: 0.26
+    workspace_minimum: [-0.10, -0.75, 0.25]
+    workspace_maximum: [0.90, 0.75, 1.60]
+    # Allow each hand to cross the body centre by 22 cm.  The torso box and
+    # Joint soft limits and the absolute Cartesian workspace remain active.
+    left_y_minimum: -0.22
+    right_y_maximum: 0.22
+    forbidden_box_minimum: [-0.10, -0.16, 0.35]
+    forbidden_box_maximum: [0.30, 0.16, 1.25]
+    enable_gripper: true
+    gripper_open_position: 10.0
+    gripper_closed_position: 330.0
+    gripper_trigger_deadzone: 0.05
+    # Keep independent linear control for one hand. If both triggers start
+    # within 200 ms, share the stronger trigger until either is released so a
+    # simultaneous grasp closes both grippers together.
+    gripper_left_trigger_scale: 1.0
+    gripper_right_trigger_scale: 1.0
+    gripper_full_close_threshold: 0.88
+    gripper_dual_sync_enabled: true
+    gripper_dual_sync_activation: 0.15
+    gripper_dual_sync_window_sec: 0.20
+    gripper_dual_sync_max_difference: 0.40
+    # One responsive smoothing layer lives in the mapper; the controller's
+    # legacy second step limiter is disabled in controller.yaml.
+    gripper_filter_alpha: 0.78
+    gripper_max_step_per_cycle: 32.0
+    gripper_command_epsilon: 0.75
+    gripper_resend_interval: 0.15
+    quick_reset_enabled: true
+    quick_reset_hold_seconds: 1.0
+    # X+A must keep receiving fresh frames; stale cached button state can
+    # never finish the one-second reset gesture.
+    quick_reset_input_fresh_sec: 0.30
+    # Never let a lost ROS service response permanently block Grip processing
+    # or future X+A gestures. Late callbacks are rejected by request generation.
+    quick_reset_request_timeout_sec: 2.0
+    # The headset direction at enable becomes operator-forward, while that
+    # direction always maps to the calibrated robot neck neutral below. Short
+    # tracking outages hold this reference. A Quest reference-space jump holds
+    # the neck until the operator explicitly uses X+A or toggles head follow.
+    head_tracking_mode: "relative_neutral_quaternion"
+    head_neutral_joints_deg: [0.0, 0.0, 0.0]
+    # One sensitivity step above the previous profile. Gain increases angular
+    # response while the unchanged 1 deg/cycle guard still respects the
+    # vendor 90 deg/s neck SYNC envelope.
+    head_filter_alpha: 0.90
+    # 30% faster than the previous 1.25 deg/cycle profile.  The motor-side
+    # speed limit and controller's 8 degree measured-lead guard remain intact.
+    head_max_step_deg: [1.625, 1.625, 1.625]
+    head_axis_gain: [1.25, 1.25, 1.25]
+    # Keep true for normal ~/vr306. ~/vr306nav overrides this to false so
+    # tilting the operator's head cannot make the robot visibly tilt its head.
+    head_roll_follow_enabled: true
+    head_maximum_offset_deg: [18.0, 40.0, 55.0]
+    head_joint_minimum_deg: [-18.0, -40.0, -55.0]
+    head_joint_maximum_deg: [18.0, 25.0, 55.0]
+    # Suppress sub-degree HMD noise without a discontinuous on/off threshold.
+    head_deadband_deg: [0.20, 0.20, 0.20]
+    # A single larger jump is treated as Quest recenter/reference replacement,
+    # not a physical head motion. The mapper safely rebases without moving.
+    head_reference_jump_deg: 35.0
+    # WebRTC-to-WebSocket handover can exceed 300 ms. Position targets are safe
+    # to hold briefly, so use a bounded 600 ms freshness window.
+    head_input_timeout: 0.60
+    # Subtract the HMD's common room-space translation from both hand deltas.
+    # The operator can walk to a new position without pressing Meta/recenter;
+    # releasing and pressing Grip still re-anchors to measured robot FK.
+    operator_translation_compensation_enabled: true
+    # Capture headset yaw at every fresh Grip clutch. This makes controller
+    # forward follow the operator after turning around; X+A forces a new basis.
+    operator_yaw_compensation_enabled: true
+    # Desktop dual-arm mode is toggled in VR by holding both thumbstick buttons
+    # for one second. It ignores HMD translation and requires a stationary
+    # headset plus both tracked controllers before Grip can re-clutch.
+    desktop_mode_settle_seconds: 1.0
+    desktop_mode_head_stability_m: 0.015
+    desktop_mode_controller_stability_m: 0.035
+    desktop_mode_head_stability_deg: 3.0
+    desktop_mode_head_jump_m: 0.08
+    desktop_mode_head_jump_deg: 10.0
+    desktop_mode_controller_jump_m: 0.18

@@ -1,0 +1,285 @@
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  background: #05070a;
+  color: #eef4ff;
+}
+
+.launch-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 24px;
+  box-sizing: border-box;
+  background:
+    radial-gradient(circle at 50% 35%, rgba(49, 119, 181, 0.24), transparent 34%),
+    #05070a;
+  text-align: center;
+}
+
+.title {
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.brand-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 92px;
+  min-height: 48px;
+  padding: 0 18px;
+  border-radius: 6px;
+  background: #eef4ff;
+  color: #05070a;
+  font-size: 34px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.server-url {
+  max-width: min(92vw, 560px);
+  padding: 8px 12px;
+  border: 1px solid rgba(238, 244, 255, 0.22);
+  border-radius: 6px;
+  color: #b8c7d9;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.hardware-control {
+  width: min(88vw, 430px);
+  padding: 16px;
+  box-sizing: border-box;
+  border: 1px solid rgba(184, 199, 217, 0.2);
+  border-radius: 12px;
+  background: rgba(12, 18, 27, 0.9);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+}
+
+.hardware-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 24px;
+}
+
+.hardware-status-dot {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #687385;
+  box-shadow: 0 0 0 4px rgba(104, 115, 133, 0.14);
+}
+
+.hardware-control.is-off .hardware-status-dot {
+  background: #8792a2;
+}
+
+.hardware-control.is-busy .hardware-status-dot {
+  background: #f2b84b;
+  box-shadow: 0 0 0 4px rgba(242, 184, 75, 0.16);
+  animation: hardware-pulse 1s ease-in-out infinite;
+}
+
+.hardware-control.is-on .hardware-status-dot {
+  background: #3fd38c;
+  box-shadow: 0 0 0 4px rgba(63, 211, 140, 0.16);
+}
+
+.hardware-control.is-error .hardware-status-dot {
+  background: #ff6b73;
+  box-shadow: 0 0 0 4px rgba(255, 107, 115, 0.16);
+}
+
+.hardware-status-label {
+  font-size: 16px;
+  font-weight: 700;
+  color: #eef4ff;
+}
+
+.hardware-status-detail {
+  min-height: 34px;
+  margin: 8px 0 12px;
+  color: #9faec1;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.follow-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.follow-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(126, 160, 199, 0.2);
+  border-radius: 12px;
+  background: rgba(11, 19, 31, 0.62);
+  color: #e8f1ff;
+  text-align: left;
+  cursor: pointer;
+}
+
+.follow-option input {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  accent-color: #3fd38c;
+}
+
+.follow-option span {
+  display: grid;
+  gap: 2px;
+}
+
+.follow-option strong {
+  font-size: 14px;
+}
+
+.follow-option small {
+  color: #8fa0b5;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.follow-option:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+@media (max-width: 430px) {
+  .follow-options {
+    grid-template-columns: 1fr;
+  }
+}
+
+.hardware-toggle-button {
+  position: relative;
+  width: 100%;
+  min-height: 48px;
+  overflow: hidden;
+  border: 1px solid rgba(72, 172, 130, 0.5);
+  border-radius: 8px;
+  background: #17392e;
+  color: #effff8;
+  font-size: 16px;
+  font-weight: 750;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+}
+
+.hardware-toggle-button::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 0;
+  background: rgba(63, 211, 140, 0.3);
+}
+
+.hardware-toggle-button > span {
+  position: relative;
+  z-index: 1;
+}
+
+.hardware-toggle-button.is-holding::before {
+  width: 100%;
+  transition: width 1s linear;
+}
+
+.hardware-control.is-on .hardware-toggle-button,
+.hardware-control.is-busy .hardware-toggle-button.is-disable-action {
+  border-color: rgba(255, 107, 115, 0.55);
+  background: #4b2228;
+  color: #fff2f3;
+}
+
+.hardware-toggle-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.hardware-safety-hint {
+  margin-top: 10px;
+  color: #7f8da0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+@keyframes hardware-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+.start-button {
+  min-width: 160px;
+  min-height: 52px;
+  padding: 0 24px;
+  border: 0;
+  border-radius: 6px;
+  background: #2f8f68;
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.start-button:hover {
+  background: #36a878;
+}
+
+.start-button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.camera-mode-button {
+  min-height: 42px;
+  padding: 0 18px;
+  border: 1px solid rgba(96, 196, 255, 0.42);
+  border-radius: 6px;
+  background: #132b3b;
+  color: #d9f2ff;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.camera-mode-button.is-camera {
+  border-color: rgba(96, 255, 190, 0.62);
+  background: #14382f;
+  color: #eafff7;
+}
+
+.status-text {
+  min-height: 22px;
+  color: #b8c7d9;
+  font-size: 14px;
+}
+
+a-scene {
+  position: fixed;
+  inset: 0;
+}
