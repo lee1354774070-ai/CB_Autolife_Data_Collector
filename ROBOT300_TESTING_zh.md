@@ -1,158 +1,158 @@
-# Robot 300 集合版测试（2026-09-30）
+# Robot 300：MZJ 融合集合版测试
 
-## 当前保存点：2026-09-30 MZJ 融合进行中
+更新：2026-10-08。分支：`mzj/robot300-thor-compat`。
 
-用户要求下班前先保存，当前停止开发，**尚未完成最终验收，不作为真机发布版**。
-本地分支 `mzj/robot300-thor-compat`；本轮融合暂不推送。上一轮已推送版本仍为 `6f7300e`。
+## 版本与入口
 
-已实现：以 `dagger/mzj_base/` 固定快照作为 supervisor/GR00T/FIFO/状态机基础，
-集合版外层保留统一 A 开始、B 保存、X 仅复位、Y 仅丢弃，来源标记、epoch 拦截、
-附加客户端、异步 trace/状态缓存。控制器/mapper/人工夹爪范围统一10..360°，
-实测反馈容差上限改为365°，保留模型动作与 proposal digest 一致。
-原 MZJ/V4 目录未修改；原待保存测试条已按用户授权丢弃并退出。
+使用 MZJ 已跑通的 supervisor、状态机、GR00T bridge 和 FIFO 作为基础，保留集合版
+的来源标记、保存回执、附加终端、统一 ABXY 和头显反馈。
+已合入同事主线 `4055b75` 的 V4 遥操快照；其73个非文档文件与原运行副本一致，
+控制器补齐 MZJ 复位张爪的权限检查后，74个非文档文件全部一致。
+增量映射、平滑、IK和位姿配置未重复重写。
 
-已完成的本轮验证（均无真机动作）：
-- 185项 Python 单元测试通过。
-- 隔离 domain211：MZJ supervisor + FIFO、多轮 B/Y/X、迟到动作、保存阻塞、
-  单人采集、分段采集和附加终端检查通过。
-- 原生 V4 gripper 回调：360°可达、不裁剪，361°拒绝；复位张开仅在新鲜复位状态允许。
-- 完整 DAGGER_PUBLISH=0 + WITH_DEPTH=1 启动通过：DISARMED、DRY_RUN、idle，
-  硬件发布端点0、观测电机指令0、网页可访问；测试子进程已正常退出。
-- 实际 MZJ bridge 读取300相机/关节，Thor baseline 两轮40x21只读推理通过，
-  耗时876.4/603.8ms，首帧双夹爪360°，digest/discard/close通过，无policy动作发布。
+300 代码目录：
+`/home/ubuntu/collector_validation/20260930_github_dryrun/collector`
 
-待继续：
-1. 复测最后两处小补丁：反馈上限365°、保留OpenCV单线程；验证 trace 初始化失败能解锁启动状态。
-2. 完成真实RGB-D保存/续采/丢弃/LeRobot读取（关节和动作使用合成信号，domain211，不能训练）。
-   脚本 `tests/remote/mzj_rgbd_recording_smoke.py` 已保存，但首次在 import 阶段被
-   Conda OpenSSL 动态库路径挡住，**尚未进入录制**；应使用与启动器一致的
-   `interpreter_environment`，不要把它误判为录制器故障，也不要混入真实数据目录。
-3. 补测完整快速扳机 -> mapper -> MZJ pickup，最终审阅README/界面说明一致性。
-4. 完成回归和代码审查后，使用 MkicksX 身份推送，再通知用户进行有人在场的真机验收。
+两个入口不要混用：
 
-日志（300本机）：`/tmp/mzj_merge_unit.log`、`/tmp/mzj_merge_ros.log`、
-`/tmp/mzj_merge_vr.log`、`/tmp/mzj_merge_subtasks.log`、`/tmp/mzj_merge_attach.log`、
-`/tmp/mzj_merge_stack_test.log`、`/tmp/mzj_merge_stack_child.log`、
-`/tmp/mzj_pinned_readonly.log`、`/tmp/mzj_rgbd_test.log`。
-全身复位/夹爪实体动作、头显实际振动、带真机控制的持续CPU负载尚需现场验收。
-ARM服务保持active，未清错或重启。dashboard/action_player在本轮前已经退出，本轮没有更改其状态。
+| 场景 | 入口与说明 |
+|---|---|
+| 本文的融合 DAgger | `start_mzj300_dagger.sh`；8447；A/B/X/Y；从启动推理开始录制 |
+| 独立 V4 遥操 | 包内 `full_vr_teleop.launch.py`；通常8446；保留原包手势，包括 X+A；不等于 DAgger |
 
-以下为此前版本的操作说明和历史验证记录；以本节状态为准。
+GitHub 的 `teleop_snapshot/README_zh.md` 明确快照用于发布和审查；集合版仍由
+`COLLECTOR_MODE=dagger` 入口校验依赖、生成运行副本。不要把
+`DAGGER_DEPENDENCY_ROOT` 指向已打补丁的快照，也不要同时启动原包 launch 和 DAgger。
+原 MZJ 和共享 V4 源码未覆盖。
 
-## 版本与测试范围
+## 本次验证结果
 
-目录：/home/ubuntu/collector_validation/20260930_github_dryrun/collector
-分支：mzj/robot300-thor-compat
+全部为无真机动作测试；实体夹爪、全身复位、头显实际振动和持续运行负载仍待现场验收。
 
-已通过：174 项 Python 单元测试；隔离 ROS domain 211 的单人、分段、
-DAgger supervisor/FIFO/接管和附加客户端测试。硬件调用均为 0。
-此前实测 Thor 8777 baseline 的两轮只读推理、digest 校验、discard/close 通过。
-这些结果不代表真机运动、视频质量或整套运行负载已经验收。
+- 185项 Python 测试；另有 Node 头显反馈检查，只有接管触发振动。
+- 隔离 domain211：快速扳机可到360°、360°反馈有效、361°指令拒绝；接管后旧动作被拒绝；
+  保存阻塞不阻塞控制回调；保存结果不明时保留请求并禁止复位；trace启动失败可正确结束并重试。
+- 单人采集、分段采集、附加终端验证通过；附加终端退出不终止宿主。
+- 真正 RGB-D SHM/FIFO/视频写盘：保存100帧（62帧人工训练标记）及35帧纯模型段，
+  丢弃第三条35帧；每条首/中/末帧可由 LeRobot 加载，纯模型训练标记为0，无录制失效。
+  **关节和动作是合成测试信号，不能用于训练。** 文件在
+  `/home/ubuntu/collector_validation/20260930_github_dryrun/data/mzj_merged_rgbd_synthetic_20261008_02/dataset`。
+- 完整 `DAGGER_PUBLISH=0`、深度开启：DISARMED / DRY_RUN / idle，
+  控制器硬件发布端点0、观测电机指令0、网页及说明可访问，随后正常退出。
+- Thor baseline、phase_aware、40×21动作、digest/discard/close验证通过，无policy动作发布。
+  当天无线连接曾导致2.2～6.5秒超时；重连后又出现过4秒峰值。
+  重连并临时关闭两端Wi-Fi省电后，连续6轮约320～1203毫秒通过。
+  2秒动作时效限制未放宽；这不代表无线网络已长期稳定，重连/重启后应再次只读检查。
+- ARM服务未清错、未停止、未重启。测试期间暂退的dashboard/action_player已恢复。
+  控制中心关节模块在确认未使能、无任务、5秒无指令后退出，主界面保留。
 
-本次完整 DAGGER_PUBLISH=0 启动检查已通过：
-control=DISARMED、controller=DRY_RUN/dry_run=true/hardware_enabled=false、
-policy=idle、控制器硬件发布端点为 0、观测电机指令为 0、网页与新说明可访问。
-Thor 容器内 9 项夹爪阶段/摘要/提交回执测试通过。
-检查曾被控制中心的 /whole_body_joint_bridge 拦截；经授权观察5秒无指令后，
-正常退出了该关节控制模块，保留控制中心主界面，未放宽发布者检查。
-测试结束已恢复 dashboard/action_player，最终三项服务均 active；
-期间 dashboard 曾因 DDS participant index 无空位暂时失败，最终已恢复。
-ARM 服务全程未停止或重启。以上允许进入有人在场的真机验收，不等于真机已验收。
+日志在300的 `/tmp/mzj_20261008_*.log`，重启可能清除。
 
-## 先关闭其他控制入口
+## 先退旧，再启动新程序
 
-关闭旧 MZJ 采集及全身关节控制台，确认没有待保存数据或播放任务。
-同一时间只能运行一套控制程序。遇到 unknown_publishers/Command conflict 时，
-先检查报出的节点归属，不直接 kill 全部 Python/ROS，也不修改白名单。
+1. 保存或丢弃旧任务并确认回执，正常退出旧8444/8446/8447遥操或采集程序。
+2. 在控制中心停止“关节控制”模块，主界面可以保留。
+3. 若原厂dashboard/action_player仍占用控制端点，确认没有使用者或播放任务后：
 
-原厂 dashboard/action_player 若仍占用控制端点，确认没有使用者和播放任务后：
-  systemctl --user stop dashboard-backend.service
-  sudo systemctl stop void-cog-h5.service
+```bash
+systemctl --user stop dashboard-backend.service
+sudo systemctl stop void-cog-h5.service
+```
 
-不要清错、停止或重启 arm-control-service。
+**不要停止、重启或清错 `arm-control-service.service`。**
+遇到冲突先核对报出的进程；不批量kill Python/ROS，不修改发布者白名单。
 
-## 无动作启动检查
+## 无动作检查
 
-在 300 的新终端执行：
+在300新终端中：
 
-  cd /home/ubuntu/collector_validation/20260930_github_dryrun/collector
-  source /home/ubuntu/ros2_ws/src/autolife_hg_dagger_MZJ_300/scripts/source_hg_ros_env.sh
-  set +u
-  DAGGER_PUBLISH=0 bash start_mzj300_dagger.sh mzj_buttons_dryrun --check
+```bash
+cd /home/ubuntu/collector_validation/20260930_github_dryrun/collector
+source /home/ubuntu/ros2_ws/src/autolife_hg_dagger_MZJ_300/scripts/source_hg_ros_env.sh
+set +u
+DAGGER_PUBLISH=0 bash start_mzj300_dagger.sh mzj_fusion_dryrun --check
+```
 
-检查通过后：
+先验证相机、关节和Thor只读推理（只discard，不执行）：
 
-  DAGGER_PUBLISH=0 bash start_mzj300_dagger.sh mzj_buttons_dryrun
+```bash
+PYTHONPATH="$PWD:${PYTHONPATH:-}" /usr/bin/python3 tests/remote/mzj_pinned_readonly.py
+```
 
-头显打开 https://192.168.8.122:8447 ，允许本机证书，刷新页面。
-确认说明为 A 开始、B 保存、X 仅复位、Y 仅丢弃。
-进入/重连 VR 应保持待命，不自动开始推理。
-本模式不授权机器人动作，不能用它验收抓取、机械复位或真实动作训练数据。
-终端按 Q（或 Ctrl+C）退出，然后再启动真机模式。
+应出现两轮 `PINNED_MZJ_DISCARD_CLOSE_PASS` 和 `PINNED_MZJ_NO_MOTION_PASS`。
+若出现超时、相机不同步或服务错误，先解决再进入真机模式，不提高时效上限掩盖问题。
+
+然后启动完整待命界面：
+
+```bash
+DAGGER_PUBLISH=0 bash start_mzj300_dagger.sh mzj_fusion_dryrun
+```
+
+头显打开 `https://192.168.8.122:8447`，刷新到新说明。进入/重连应保持待命。
+本模式用于启动和页面检查，不能验收真实动作或产生可训练的动作数据。
+终端 Q 或 Ctrl+C 正常退出，再启动下面的真机模式。
 
 ## 有人在场的真机验收
 
-必须先通过上面的检查，并确认运动空间和物理急停可用。
-使用独立测试任务名，不与旧 schema 数据混写：
+确认运动空间和物理急停可用，使用独立任务名，不与旧schema混写：
 
-  DAGGER_PUBLISH=1 TASK_TEXT='Pick the laundry bag.' WITH_DEPTH=1     bash start_mzj300_dagger.sh mzj_buttons_live_01
+```bash
+DAGGER_PUBLISH=1 \
+TASK_TEXT='Pick the laundry bag.' \
+WITH_DEPTH=1 \
+bash start_mzj300_dagger.sh mzj_fusion_live_01
+```
 
-默认输出 /home/ubuntu/nas/dagger/mzj_buttons_live_01。
-nas 是普通目录名，不要求挂载网络存储。
-此 baseline 固定 WITH_HEAD=1、WITH_UPPER_WAIST=1、WITH_WAIST=0，对应21维。
-夹爪阶段模式只接受经过验证的两个完整任务文本：
-- Pick the laundry bag.
-- Place the laundry bag in the upper compartment of the delivery robot.
-其他 prompt 不应被默默套用夹爪规则。
+输出：`/home/ubuntu/nas/dagger/mzj_fusion_live_01/dataset`。
+`nas` 是普通目录名。当前baseline固定头部+上腰，对应21维；深度可用 `WITH_DEPTH=0` 关闭，
+但改变schema时要换任务目录。phase_aware仅接受以下完整任务文本：
 
-1. 待命检查：进入头显后机器人不自动运动；松开双握持键，A 开始推理及录制。
-2. 接管：任意 GL/GR 接管，模型不得继续夺回控制；分别测试双臂与扳机夹爪。
-   松开保持，再握继续增量遥操。
-3. X 保护：录制中按 X 应提示先保存/丢弃；不得丢数据，不应开始机械复位。
-4. B 保存：等明确成功回执，不以“保存中”或文件夹存在判断成功。
-   保存不自动复位、不自动开始下一条。保存不明时不得 X 强行复位。
-5. X 全身复位：保存成功后按 X，松开握持键，验证身体复位及夹爪打开。
-   等完成，再 A 开始第二条。
-6. Y 丢弃：新录一条后 Y，应收到丢弃回执，不机械复位，保存条目数不增加。
-7. 再按 X 复位、A 开始，重复至少三轮，检查无旧 chunk、无残留会话错误。
-8. 浏览器聚焦后测试 Shift+A/B/X/Y；头显面键功能应一致。
-9. 保存一条含模型与人工阶段的数据，核对帧数、视频可解码、时间戳、
-   policy/expert/hold 标签及训练 mask，确认无相机同步失效提示。
-10. B 保存成功后终端 Q 退出；确认 8447 和本次子进程退出。Y 不是退出键。
+- `Pick the laundry bag.`
+- `Place the laundry bag in the upper compartment of the delivery robot.`
 
-单人遥操：保持原来的 GL+GR 组合条件，点按并松开 A/B/X/Y。
-分段模式：B 短按标记，B 长按提前保存，最后标记自动保存。
-兼容参数 VR_A_LONG_PRESS_SEC 名称保留，实际控制 B 长按阈值。
+| 操作 | 期望结果 |
+|---|---|
+| 进入/重连头显 | 待命，不自动推理、不自动录制 |
+| 空闲时 X | 全身复位并打开夹爪；不开始下一条 |
+| A | 先确认录制就绪，再允许模型；无倒计时 |
+| 任意 GL/GR | 立即选择人工权限；仅此时振动，不等待HTTP结束 |
+| 松开再握 | 松开保持，再握从实测位姿继续增量控制；不自动交还模型 |
+| 快速/慢速扳机 | 都能完整开合；双手分别测，检查有无截断或异动 |
+| 头/上腰跟随 | 人工接管后按开关生效；模型控制时不被人覆盖 |
+| 录制中 X | 拒绝并提示先B/Y；不丢数据、不机械复位 |
+| B | 保存整条轨迹，等待明确成功；不自动复位、不自动开始 |
+| Y | 丢弃本条，等待回执；不复位、不退出 |
+| 保存/丢弃确认后 X | 全身复位且夹爪张开，完成后等待A |
+| 浏览器聚焦后 Shift+A/B/X/Y | 与面键同义；无需握持键组合 |
+| 急停/输入失联/录制失效 | 停止输出并在头显显示原因；不得默默继续录坏数据 |
+| 终端 Q / Ctrl+C | 正常退出自己的子进程、结束文件写入；Y不是退出 |
 
-## 结束后恢复原厂界面（如本次曾暂退）
+至少完成“模型→接管→B→X→A”“模型→Y→X→A”各一轮，并累计重复3轮。
+保存不明时B/Y只核对原请求结果，不重复执行；不要强行复位或直接kill。
+B可保存纯模型数据，其 `dagger.train_mask` 全为0；无接管且不想保留时用Y。
 
-  systemctl --user start dashboard-backend.service
-  sudo systemctl start void-cog-h5.service
+数据验收：核对保存回执、episode数、三路RGB和深度、每条首/中/末帧可加载，
+检查21维action/state、单调时间戳、接管标记和 `dagger.train_mask`。
+模型及保持段mask应为0，人工段只有来源与时间戳满足条件才为1。
+现场持续录制再观察CPU、夹爪和录制失效提示；本次短时软件测试不能替代负载验收。
 
-再检查 is-active 和日志；start 命令成功不等于界面已健康。
-若出现 Failed to find a free participant index，先检查多开的 ROS 程序，
-不要通过重启 ARM 解决。
+## 单人/分段与终端按键
 
-## 回滚
+单人VR保留 GL+GR 组合条件，再点按并松开面键：A开始，B保存，X仅复位，Y仅丢弃。
+分段模式B短按标记、最后标记自动保存，B长按提前保存；
+`VR_A_LONG_PRESS_SEC` 为兼容旧参数名，实际控制B长按阈值。
 
-本次改动在独立 Git 分支，未覆盖原 MZJ 源码。需要回滚时先退出集合版，
-再用原入口；禁止两套并行。Thor 连续夹爪模式由
-MZJ_GRIPPER_PHASE_AWARE=0 bash tools/start_mzj_thor_baseline.sh 显式选择，
-该命令会重启自己的 Thor 服务，须在没有活动会话时执行。
+DAgger终端保留原键位：C开始、A保存、X/D丢弃、R复位、Q退出。
+`DAGGER_BACKEND=attach` 中Q只断开终端，不关闭宿主。
 
-## 2026-09-30 深度读取与振动修正
+## 结束与回滚
 
-mzj_buttons_live_01 两次已进入录制，随后因 depth 匹配偏差 68.2/73.8 ms
-超过30 ms而作废，保存0条。不能将这两条当作可训练数据。
+先B保存或Y丢弃并确认，再Q退出。若需要重新使用原厂控制入口：
 
-集合版 recorder 现先复制全部 SHM 帧，再做 JPEG 解码；读取竞争时仅重试一次，
-两次均验证 metadata 一致性。保留真实源时间戳、30 ms同步限制、深度和逐帧去重。
-修正前15秒探测深度读竞争拒绝257次、最大帧间隔924.7 ms。
-修正后45秒只读探测深度2645帧、最大间隔34.3 ms；对1345个参考帧做
-各图像仅用一次的时间戳配对，各相机均0次超过30 ms，depth最大偏差16.6 ms。
-该检查不包含模型运行及实际写盘编码压力，仍需现场录制验收。
+```bash
+systemctl --user start dashboard-backend.service
+sudo systemctl start void-cog-h5.service
+```
 
-176项Python测试通过；node --test tests/test_feedback.js通过。
-头显只有takeover事件振动，其余事件继续显示文字，重复事件不重复振动。
-重启集合版并刷新8447页面后生效。建议新任务名 mzj_depth_fix_01，
-先短录一条，B保存并确认成功，再检查数据；不要仅凭开始提示判断整条有效。
+在控制中心重新启动“关节控制”模块。核对服务健康和端口释放，不以start命令返回代替确认。
+回滚时先退出融合版，再使用原MZJ入口；原源码未覆盖，禁止同时启动两套。

@@ -1,5 +1,7 @@
 # LeRobot 数据采集工具
 
+机器人300的 MZJ 融合版本、先退旧再启动流程及验收步骤见 [ROBOT300_TESTING_zh.md](ROBOT300_TESTING_zh.md)。
+
 本工具将 Autolife 机器人的同步 state、action、RGB 和可选 depth 写入官方
 `LeRobotDataset`。正常采集只需要一个终端。
 
