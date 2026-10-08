@@ -1,0 +1,18 @@
+This package is an adaptation of openarmx_teleop_vr-6.0_basic.
+
+The WebXR browser client is derived from the earlier Telegrip/LeRobot WebXR
+assets, Copyright 2024 The Hugging Face team, under Apache License 2.0.
+
+Original OpenArmX project and UDP bridge:
+Copyright (c) 2026 Chengdu Changshu Robot Co., Ltd.
+https://www.openarmx.com
+Licensed under CC BY-NC-SA 4.0.
+
+The unavailable OpenArmX binary IK/driver is not redistributed. Robot-306
+safety gates, collision checks and motor-topic adaptation are implemented by
+Autolife Robotics and combined here under the same CC BY-NC-SA 4.0 terms.
+
+The incremental Cartesian target and Placo QP IK design in V4 is adapted from
+Quest3-Teleoperation, Copyright (c) 2025 XR Robotics, under the MIT License.
+The original MIT copyright and permission notice is retained in
+THIRD_PARTY_LICENSES.md.

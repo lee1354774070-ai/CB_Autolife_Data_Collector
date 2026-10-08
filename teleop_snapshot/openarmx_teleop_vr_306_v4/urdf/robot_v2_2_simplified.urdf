@@ -1,0 +1,1281 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="robot_v2_2_simplified">
+  <link
+    name="Link_Zero_Point">
+  </link>
+  <joint
+    name="Joint_Ground_Vehicle_Base"
+    type="fixed">
+    <origin
+      xyz="0 -0.06845 0.2863"
+      rpy="0 -1.5708 1.5708" />
+    <parent
+      link="Link_Zero_Point" />
+    <child
+      link="Link_Ground_Vehicle" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="Link_Ground_Vehicle">
+    <inertial>
+      <origin
+        xyz="-0.16666 0.0027218 -0.064922"
+        rpy="0 0 0" />
+      <mass
+        value="27" />
+      <inertia
+        ixx="0.092816"
+        ixy="-0.0003649"
+        ixz="-2.3766E-06"
+        iyy="0.054691"
+        iyz="-1.6874E-05"
+        izz="0.069925" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Ground_Vehicle.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Ground_Vehicle.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="Link_Ankle_to_Knee">
+    <inertial>
+      <origin
+        xyz="0.17268 3.8366E-05 -0.077005"
+        rpy="0 0 0" />
+      <mass
+        value="9.2977" />
+      <inertia
+        ixx="0.031223"
+        ixy="-0.00026"
+        ixz="0.003734"
+        iyy="0.2692"
+        iyz="-0.00029"
+        izz="0.25831" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Ankle_to_Knee.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Ankle_to_Knee.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_Ankle"
+    type="revolute">
+    <origin
+      xyz="0 0 0"
+      rpy="0 0 0" />
+    <parent
+      link="Link_Ground_Vehicle" />
+    <child
+      link="Link_Ankle_to_Knee" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-1.48353"
+      upper="1.48353"
+      effort="207"
+      velocity="1.884956" />
+  </joint>
+  <link
+    name="Link_Knee_to_Waist_Pitch">
+    <inertial>
+      <origin
+        xyz="0.18794 0.00527 -0.068726"
+        rpy="0 0 0" />
+      <mass
+        value="2.26667" />
+      <inertia
+        ixx="0.017697"
+        ixy="0.000647"
+        ixz="8.5E-05"
+        iyy="0.052164"
+        iyz="6E-06"
+        izz="0.038188" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Knee_to_Waist_Pitch.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Knee_to_Waist_Pitch.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_Knee"
+    type="revolute">
+    <origin
+      xyz="0.3495 0 0"
+      rpy="0 0 0" />
+    <parent
+      link="Link_Ankle_to_Knee" />
+    <child
+      link="Link_Knee_to_Waist_Pitch" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-2.70526"
+      upper="2.70526"
+      effort="207"
+      velocity="1.884956" />
+  </joint>
+  <link
+    name="Link_Waist_Pitch_to_Waist_Yaw">
+    <inertial>
+      <origin
+        xyz="0.0054658 -0.00017152 -0.058569"
+        rpy="0 0 0" />
+      <mass
+        value="3.04338" />
+      <inertia
+        ixx="0.007507"
+        ixy="3.93E-06"
+        ixz="-0.00012"
+        iyy="0.008016"
+        iyz="2.69E-06"
+        izz="0.004875" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Waist_Pitch_to_Waist_Yaw.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Waist_Pitch_to_Waist_Yaw.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_Waist_Pitch"
+    type="revolute">
+    <origin
+      xyz="0.3705 0 -0.0006"
+      rpy="0 0 0" />
+    <parent
+      link="Link_Knee_to_Waist_Pitch" />
+    <child
+      link="Link_Waist_Pitch_to_Waist_Yaw" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-1.39626"
+      upper="2.6"
+      effort="108"
+      velocity="1.884956" />
+  </joint>
+  <link
+    name="Link_Waist_Yaw_to_Shoulder_Inner">
+    <inertial>
+      <origin
+        xyz="0.0044963 0.00025279 -0.17815"
+        rpy="0 0 0" />
+      <mass
+        value="6.96536" />
+      <inertia
+        ixx="0.13838"
+        ixy="2.4E-05"
+        ixz="0.001719"
+        iyy="0.110648"
+        iyz="0.000184"
+        izz="0.054762" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Waist_Yaw_to_Shoulder_Inner.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Waist_Yaw_to_Shoulder_Inner.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_Waist_Yaw"
+    type="revolute">
+    <origin
+      xyz="0.06793 0 -0.0685"
+      rpy="1.5708 0 -1.5708" />
+    <parent
+      link="Link_Waist_Pitch_to_Waist_Yaw" />
+    <child
+      link="Link_Waist_Yaw_to_Shoulder_Inner" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.141"
+      upper="3.141"
+      effort="108"
+      velocity="1.884956" />
+  </joint>
+  <link
+    name="Link_Left_Shoulder_Inner_to_Shoulder_Outer">
+    <inertial>
+      <origin
+        xyz="0.0020013 -0.00086282 0.043933"
+        rpy="0 0 0" />
+      <mass
+        value="0.38517" />
+      <inertia
+        ixx="0.000633"
+        ixy="1.19E-06"
+        ixz="1.62E-05"
+        iyy="0.001"
+        iyz="4.41E-06"
+        izz="0.000699" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Left_Shoulder_Inner_to_Shoulder_Outer.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Left_Shoulder_Inner_to_Shoulder_Outer.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_Left_Shoulder_Inner"
+    type="revolute">
+    <origin
+      xyz="0 -0.14269 -0.27507"
+      rpy="1.5708 0 0" />
+    <parent
+      link="Link_Waist_Yaw_to_Shoulder_Inner" />
+    <child
+      link="Link_Left_Shoulder_Inner_to_Shoulder_Outer" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-2.932"
+      upper="2.932"
+      effort="97"
+      velocity="4.18879" />
+  </joint>
+  <link
+    name="Link_Left_Shoulder_Outer_to_UpperArm">
+    <inertial>
+      <origin
+        xyz="0.055228 0.0026872 -0.035515"
+        rpy="0 0 0" />
+      <mass
+        value="1.81401" />
+      <inertia
+        ixx="0.001495"
+        ixy="0.000196"
+        ixz="0.00019"
+        iyy="0.005679"
+        iyz="-5.8E-06"
+        izz="0.00585" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Left_Shoulder_Outer_to_UpperArm.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Left_Shoulder_Outer_to_UpperArm.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_Left_Shoulder_Outer"
+    type="revolute">
+    <origin
+      xyz="0.036 0 0.081"
+      rpy="1.5708 0 1.5708" />
+    <parent
+      link="Link_Left_Shoulder_Inner_to_Shoulder_Outer" />
+    <child
+      link="Link_Left_Shoulder_Outer_to_UpperArm" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.1415"
+      upper="0.3141"
+      effort="97"
+      velocity="4.18879" />
+  </joint>
+  <link
+    name="Link_Left_UpperArm_to_Elbow">
+    <inertial>
+      <origin
+        xyz="0.010425 0.0018897 0.14817"
+        rpy="0 0 0" />
+      <mass
+        value="1.16454" />
+      <inertia
+        ixx="0.005555"
+        ixy="4.55E-05"
+        ixz="0.000755"
+        iyy="0.005834"
+        iyz="0.000183"
+        izz="0.001025" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Left_UpperArm_to_Elbow.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Left_UpperArm_to_Elbow.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_Left_UpperArm"
+    type="revolute">
+    <origin
+      xyz="0.12925 0.0044999 -0.036"
+      rpy="1.5708 -1.5708 1.5708" />
+    <parent
+      link="Link_Left_Shoulder_Outer_to_UpperArm" />
+    <child
+      link="Link_Left_UpperArm_to_Elbow" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-2.915"
+      upper="2.915"
+      effort="97"
+      velocity="4.18879" />
+  </joint>
+  <link
+    name="Link_Left_Elbow_to_Forearm">
+    <inertial>
+      <origin
+        xyz="0.074433 -0.023657 -0.033651"
+        rpy="0 0 0" />
+      <mass
+        value="0.71152" />
+      <inertia
+        ixx="0.000627"
+        ixy="-7.9E-05"
+        ixz="-0.00013"
+        iyy="0.001365"
+        iyz="1.96E-05"
+        izz="0.001303" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Left_Elbow_to_Forearm.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Left_Elbow_to_Forearm.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_Left_Elbow"
+    type="revolute">
+    <origin
+      xyz="0.025 0.036125 0.20735"
+      rpy="-3.1416 -1.5706 1.5708" />
+    <parent
+      link="Link_Left_UpperArm_to_Elbow" />
+    <child
+      link="Link_Left_Elbow_to_Forearm" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="2.618"
+      effort="97"
+      velocity="4.18879" />
+  </joint>
+  <link
+    name="Link_Left_Forearm_to_Wrist_Upper">
+    <inertial>
+      <origin
+        xyz="0.0087568 -2.1901E-07 0.025031"
+        rpy="0 0 0" />
+      <mass
+        value="0.17972" />
+      <inertia
+        ixx="0.000152"
+        ixy="3.5E-09"
+        ixz="3.29E-05"
+        iyy="0.000257"
+        iyz="1.77E-09"
+        izz="0.000226" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Left_Forearm_to_Wrist_Upper.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Left_Forearm_to_Wrist_Upper.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_Left_Forearm"
+    type="revolute">
+    <origin
+      xyz="0.13094 -0.025 -0.036094"
+      rpy="1.5708 0 1.5708" />
+    <parent
+      link="Link_Left_Elbow_to_Forearm" />
+    <child
+      link="Link_Left_Forearm_to_Wrist_Upper" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-2.9496"
+      upper="2.9496"
+      effort="27"
+      velocity="3.769911" />
+  </joint>
+  <link
+    name="Link_Left_Wrist_Upper_to_Wrist_Lower">
+    <inertial>
+      <origin
+        xyz="0.027679 0.0025321 -0.031109"
+        rpy="0 0 0" />
+      <mass
+        value="0.89687" />
+      <inertia
+        ixx="0.000504"
+        ixy="5.8E-05"
+        ixz="-6.2E-05"
+        iyy="0.00125"
+        iyz="9.34E-06"
+        izz="0.001249" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Left_Wrist_Upper_to_Wrist_Lower.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Left_Wrist_Upper_to_Wrist_Lower.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_Left_Wrist_Upper"
+    type="revolute">
+    <origin
+      xyz="0.03035 0 0.05335"
+      rpy="0 -1.5708 3.1416" />
+    <parent
+      link="Link_Left_Forearm_to_Wrist_Upper" />
+    <child
+      link="Link_Left_Wrist_Upper_to_Wrist_Lower" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-1.396"
+      upper="1.396"
+      effort="27"
+      velocity="3.769911" />
+  </joint>
+  <link
+    name="Link_Left_Wrist_Lower_to_Gripper">
+    <inertial>
+      <origin
+        xyz="0.10979 -0.00017429 -0.02724"
+        rpy="0 0 0" />
+      <mass
+        value="0.8863" />
+      <inertia
+        ixx="0.000433"
+        ixy="-8.4E-08"
+        ixz="-0.00012"
+        iyy="0.000967"
+        iyz="8.56E-08"
+        izz="0.000813" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Left_Wrist_Lower_Single_Gripper.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Left_Wrist_Lower_Single_Gripper.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_Left_Wrist_Lower"
+    type="revolute">
+    <origin
+      xyz="0.059178 0.03035 -0.030393"
+      rpy="-1.5708 0.00072703 -1.4019E-05" />
+    <parent
+      link="Link_Left_Wrist_Upper_to_Wrist_Lower" />
+    <child
+      link="Link_Left_Wrist_Lower_to_Gripper" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.4486"
+      upper="1.4486"
+      effort="27"
+      velocity="3.769911" />
+  </joint>
+  <link
+    name="Link_Right_Shoulder_Inner_to_Shoulder_Outer">
+    <inertial>
+      <origin
+        xyz="0.0020083 0.00084722 0.043929"
+        rpy="0 0 0" />
+      <mass
+        value="0.38513" />
+      <inertia
+        ixx="0.000633"
+        ixy="-1.1E-06"
+        ixz="1.62E-05"
+        iyy="0.001"
+        iyz="-4E-06"
+        izz="0.000699" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Right_Shoulder_Inner_to_Shoulder_Outer.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Right_Shoulder_Inner_to_Shoulder_Outer.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_Right_Shoulder_Inner"
+    type="revolute">
+    <origin
+      xyz="0 0.1426 -0.27507"
+      rpy="-1.5708 0 0" />
+    <parent
+      link="Link_Waist_Yaw_to_Shoulder_Inner" />
+    <child
+      link="Link_Right_Shoulder_Inner_to_Shoulder_Outer" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-2.932"
+      upper="2.932"
+      effort="97"
+      velocity="4.188791" />
+  </joint>
+  <link
+    name="Link_Right_Shoulder_Outer_to_UpperArm">
+    <inertial>
+      <origin
+        xyz="0.055229 -0.0026942 -0.035513"
+        rpy="0 0 0" />
+      <mass
+        value="1.81394" />
+      <inertia
+        ixx="0.001495"
+        ixy="-0.0002"
+        ixz="0.00019"
+        iyy="0.005679"
+        iyz="5.89E-06"
+        izz="0.00585" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Right_Shoulder_Outer_to_UpperArm.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Right_Shoulder_Outer_to_UpperArm.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_Right_Shoulder_Outer"
+    type="revolute">
+    <origin
+      xyz="0.036 0 0.081"
+      rpy="-1.5708 0 -1.5708" />
+    <parent
+      link="Link_Right_Shoulder_Inner_to_Shoulder_Outer" />
+    <child
+      link="Link_Right_Shoulder_Outer_to_UpperArm" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-0.3141"
+      upper="3.1415"
+      effort="97"
+      velocity="4.188791" />
+  </joint>
+  <link
+    name="Link_Right_UpperArm_to_Elbow">
+    <inertial>
+      <origin
+        xyz="0.010425 -0.0018943 0.14817"
+        rpy="0 0 0" />
+      <mass
+        value="1.16452" />
+      <inertia
+        ixx="0.005555"
+        ixy="-4.6E-05"
+        ixz="0.000755"
+        iyy="0.005834"
+        iyz="-0.00018"
+        izz="0.001025" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Right_UpperArm_to_Elbow.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Right_UpperArm_to_Elbow.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_Right_UpperArm"
+    type="revolute">
+    <origin
+      xyz="0.12925 -0.0045 -0.036"
+      rpy="1.5708 -1.5708 1.5708" />
+    <parent
+      link="Link_Right_Shoulder_Outer_to_UpperArm" />
+    <child
+      link="Link_Right_UpperArm_to_Elbow" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-2.915"
+      upper="2.915"
+      effort="97"
+      velocity="4.188791" />
+  </joint>
+  <link
+    name="Link_Right_Elbow_to_Forearm">
+    <inertial>
+      <origin
+        xyz="0.07444 0.023652 -0.033684"
+        rpy="0 0 0" />
+      <mass
+        value="0.71152" />
+      <inertia
+        ixx="0.000627"
+        ixy="7.91E-05"
+        ixz="-0.00013"
+        iyy="0.001365"
+        iyz="-2E-05"
+        izz="0.001303" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Right_Elbow_to_Forearm.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Right_Elbow_to_Forearm.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_Right_Elbow"
+    type="revolute">
+    <origin
+      xyz="0.025 -0.036125 0.20735"
+      rpy="0 -1.5708 1.5708" />
+    <parent
+      link="Link_Right_UpperArm_to_Elbow" />
+    <child
+      link="Link_Right_Elbow_to_Forearm" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-2.618"
+      upper="0"
+      effort="97"
+      velocity="4.188791" />
+  </joint>
+  <link
+    name="Link_Right_Forearm_to_Wrist_Upper">
+    <inertial>
+      <origin
+        xyz="0.0087568 -2.1884E-07 0.025031"
+        rpy="0 0 0" />
+      <mass
+        value="0.17972" />
+      <inertia
+        ixx="0.000152"
+        ixy="3.5E-09"
+        ixz="3.29E-05"
+        iyy="0.000257"
+        iyz="1.77E-09"
+        izz="0.000226" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Right_Forearm_to_Wrist_Upper.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Right_Forearm_to_Wrist_Upper.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_Right_Forearm"
+    type="revolute">
+    <origin
+      xyz="0.13095 0.025 -0.036125"
+      rpy="-1.5708 0 -1.5708" />
+    <parent
+      link="Link_Right_Elbow_to_Forearm" />
+    <child
+      link="Link_Right_Forearm_to_Wrist_Upper" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-2.9496"
+      upper="2.9496"
+      effort="27"
+      velocity="3.7699111" />
+  </joint>
+  <link
+    name="Link_Right_Wrist_Upper_to_Wrist_Lower">
+    <inertial>
+      <origin
+        xyz="0.027702 0.002532 -0.031165"
+        rpy="0 0 0" />
+      <mass
+        value="0.89687" />
+      <inertia
+        ixx="0.000504"
+        ixy="5.8E-05"
+        ixz="-6.2E-05"
+        iyy="0.00125"
+        iyz="9.34E-06"
+        izz="0.001249" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Right_Wrist_Upper_to_Wrist_Lower.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Right_Wrist_Upper_to_Wrist_Lower.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_Right_Wrist_Upper"
+    type="revolute">
+    <origin
+      xyz="0.03035 0 0.05335"
+      rpy="0 -1.5708 3.1416" />
+    <parent
+      link="Link_Right_Forearm_to_Wrist_Upper" />
+    <child
+      link="Link_Right_Wrist_Upper_to_Wrist_Lower" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-1.396"
+      upper="1.396"
+      effort="27"
+      velocity="3.7699111" />
+  </joint>
+  <link
+    name="Link_Right_Wrist_Lower_to_Gripper">
+    <inertial>
+      <origin
+        xyz="0.10979 -9.4456E-05 -0.027241"
+        rpy="0 0 0" />
+      <mass
+        value="0.8863" />
+      <inertia
+        ixx="0.000433"
+        ixy="-8.4E-08"
+        ixz="-0.00012"
+        iyy="0.000967"
+        iyz="8.56E-08"
+        izz="0.000813" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Right_Wrist_Lower_Single_Gripper.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Right_Wrist_Lower_Single_Gripper.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_Right_Wrist_Lower"
+    type="revolute">
+    <origin
+      xyz="0.0592 0.03035 -0.03035"
+      rpy="-1.5708 0 0" />
+    <parent
+      link="Link_Right_Wrist_Upper_to_Wrist_Lower" />
+    <child
+      link="Link_Right_Wrist_Lower_to_Gripper" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.4486"
+      upper="1.4486"
+      effort="27"
+      velocity="3.7699111" />
+  </joint>
+  <link
+    name="Link_Neck_Roll_to_Neck_Pitch">
+    <inertial>
+      <origin
+        xyz="-2.6629E-05 -0.0020463 -0.035504"
+        rpy="0 0 0" />
+      <mass
+        value="0.37698" />
+      <inertia
+        ixx="0.000182"
+        ixy="4.4E-07"
+        ixz="1.93E-07"
+        iyy="0.000153"
+        iyz="5.8E-08"
+        izz="0.000176" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Neck_Roll_to_Neck_Pitch.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Neck_Roll_to_Neck_Pitch.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_Neck_Roll"
+    type="revolute">
+    <origin
+      xyz="-0.045134 0.00013407 -0.3851"
+      rpy="3.1415 1.5708 0" />
+    <parent
+      link="Link_Waist_Yaw_to_Shoulder_Inner" />
+    <child
+      link="Link_Neck_Roll_to_Neck_Pitch" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-0.349066"
+      upper="0.349066"
+      effort="7"
+      velocity="12.566371" />
+  </joint>
+  <link
+    name="Link_Neck_Pitch_to_Neck_Yaw">
+    <inertial>
+      <origin
+        xyz="0.030982 6.3131E-05 -0.029796"
+        rpy="0 0 0" />
+      <mass
+        value="0.07737" />
+      <inertia
+        ixx="5.12E-05"
+        ixy="3.4E-08"
+        ixz="4.94E-06"
+        iyy="7.21E-05"
+        iyz="4.14E-08"
+        izz="3.69E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Neck_Pitch_to_Neck_Yaw.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Neck_Pitch_to_Neck_Yaw.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_Neck_Pitch"
+    type="revolute">
+    <origin
+      xyz="0 0.0265 -0.0362"
+      rpy="-1.5708 0 0" />
+    <parent
+      link="Link_Neck_Roll_to_Neck_Pitch" />
+    <child
+      link="Link_Neck_Pitch_to_Neck_Yaw" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-0.7854"
+      upper="0.5236"
+      effort="7"
+      velocity="12.566371" />
+  </joint>
+  <link
+    name="Link_Neck_Yaw_to_Head">
+    <inertial>
+      <origin
+        xyz="0.01581 0.0010581 -0.068665"
+        rpy="0 0 0" />
+      <mass
+        value="0.92973" />
+      <inertia
+        ixx="0.003331"
+        ixy="-4E-06"
+        ixz="3.65E-05"
+        iyy="0.003674"
+        iyz="1.4E-05"
+        izz="0.002773" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Neck_Yaw_to_Head.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes/robot_v2_2/Link_Neck_Yaw_to_Head.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_Neck_Yaw"
+    type="revolute">
+    <origin
+      xyz="0.0531 0 -0.0265"
+      rpy="-1.5708 -8.1943E-05 1.5708" />
+    <parent
+      link="Link_Neck_Pitch_to_Neck_Yaw" />
+    <child
+      link="Link_Neck_Yaw_to_Head" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-1.0472"
+      upper="1.0472"
+      effort="7"
+      velocity="12.566371" />
+  </joint>
+</robot>

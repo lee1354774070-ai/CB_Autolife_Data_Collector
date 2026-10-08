@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Autolife 306 V4 Independent VR Teleoperation</title>
+    <meta name="description" content="Autolife 306 V4 independent VR arm teleoperation">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="vendor/aframe.min.js"></script>
+    <script src="vr_app.js?v=autolife-306-v2-independent-teleop-29" defer></script>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main id="launchPanel" class="launch-panel">
+      <div class="brand-logo">AUTOLIFE</div>
+      <div class="title">306 V4 独立双臂遥操</div>
+      <div id="serverUrl" class="server-url">loading...</div>
+      <section id="hardwareControl" class="hardware-control" aria-live="polite">
+        <div class="hardware-status-row">
+          <span id="hardwareStatusDot" class="hardware-status-dot"></span>
+          <span id="hardwareStatusLabel" class="hardware-status-label">真机遥操状态读取中</span>
+        </div>
+        <div id="hardwareStatusDetail" class="hardware-status-detail">
+          正在等待遥操节点状态……
+        </div>
+        <div class="follow-options">
+        <label class="follow-option" for="waistFollowToggle">
+          <input id="waistFollowToggle" type="checkbox" disabled>
+          <span>
+            <strong>腰部跟随</strong>
+            <small>不勾选时，腰部在复位姿态保持固定</small>
+          </span>
+        </label>
+        <label class="follow-option" for="headFollowToggle">
+          <input id="headFollowToggle" type="checkbox" disabled>
+          <span>
+            <strong>头部跟随</strong>
+            <small>以使能时头显方向为零点，相对控制机器人头颈</small>
+          </span>
+        </label>
+        </div>
+        <button id="hardwareToggleButton" class="hardware-toggle-button" type="button" disabled>
+          按住 1 秒，到达默认姿态后使能
+        </button>
+        <div class="hardware-safety-hint">
+          长按后会安全进入 SYNC，再限速到达与 X+A 相同的系统默认姿态。请确认机器人周围无人、无障碍物。
+        </div>
+        <div class="hardware-safety-hint">
+          桌面双臂模式：同时长按左右摇杆按键 1 秒切换。切换后先放稳头显和双手柄，提示就绪后松开并重新按腰键接管。
+        </div>
+      </section>
+      <button id="startVrButton" class="start-button" type="button">进入 VR 遥操</button>
+      <button id="cameraModeButton" class="camera-mode-button" type="button">
+        图像模式：头显透视（按 B 查看相机）
+      </button>
+      <div id="statusText" class="status-text">正在准备...</div>
+    </main>
+
+    <a-scene
+      vr-mode-ui="enabled: false"
+      webxr="referenceSpaceType: local-floor; optionalFeatures: local-floor, bounded-floor"
+      renderer="antialias: true; colorManagement: true"
+      background="color: #05070A">
+      <a-entity webxr-passthrough="referenceSpaceType: local-floor"></a-entity>
+      <a-entity id="cameraRig" position="0 1.55 -2.0"></a-entity>
+
+      <a-entity id="leftHand" oculus-touch-controls="hand: left"></a-entity>
+      <a-entity id="rightHand" oculus-touch-controls="hand: right"></a-entity>
+
+      <a-entity light="type: ambient; intensity: 1.0"></a-entity>
+    </a-scene>
+  </body>
+</html>

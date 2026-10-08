@@ -25,6 +25,16 @@ def check_controller_copy(root):
     with tempfile.TemporaryDirectory(prefix="dagger_controller_copy_") as directory:
         runtime = prepare_copy(root, Path(directory))
         source = runtime / 'openarmx_teleop_vr_306_v4/controller_node.py'
+        snapshot = Path(__file__).resolve().parents[1] / 'teleop_snapshot/openarmx_teleop_vr_306_v4'
+        checked = 0
+        for published in snapshot.rglob('*'):
+            if published.is_file() and published.suffix != '.md' and not any(
+                    part.startswith('.') or part == '__pycache__' for part in published.relative_to(snapshot).parts):
+                relative = published.relative_to(snapshot)
+                assert published.read_bytes() == (runtime / relative).read_bytes(), relative
+                checked += 1
+        assert checked > 0, 'teleoperation source snapshot missing'
+        print(f'TELEOP_SNAPSHOT_RUNTIME_MATCH files={checked}')
         tree = ast.parse(source.read_text())
         names = {'_on_target', '_on_release_hold', '_on_follow_authority',
                  '_collector_target_allowed', '_follow_authority_allowed', '_on_gripper'}

@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>openarmx_teleop_vr_306_v4</name>
+  <version>0.4.0</version>
+  <description>Quest3-middle Placo QP VR arm teleoperation for Autolife robot 306.</description>
+  <maintainer email="ubuntu@example.com">Autolife Robotics</maintainer>
+  <license>CC-BY-NC-SA-4.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+  <depend>rclpy</depend>
+  <depend>rcl_interfaces</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>ament_index_python</depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>rmw_cyclonedds_cpp</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-aiohttp</exec_depend>
+  <exec_depend>openssl</exec_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
