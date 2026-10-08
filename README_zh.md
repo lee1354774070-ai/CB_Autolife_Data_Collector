@@ -211,7 +211,7 @@ CAMERA_ONLY=1 bash start_lerobot_official_collect.sh camera_test
 | `COLLECTOR_MODE` | 按旧参数推导，通常为 `keyboard` | `keyboard`、`vr`、`subtask`、`dagger`。 |
 | `TASK_TEXT` | task name | 写入每帧的自然语言任务。 |
 | `SUBTASKS_JSON` | `[]` | 有序子任务文本数组；空数组关闭子任务标注。 |
-| `VR_A_LONG_PRESS_SEC` | `1.0` | 子任务模式下 A 长按保存阈值，单位秒，范围 0.2 至 10。 |
+| `VR_A_LONG_PRESS_SEC` | `1.0` | 子任务模式下 B 长按保存阈值（兼容旧参数名），单位秒，范围 0.2 至 10。 |
 | `COLLECT_FPS` | `30` | 数据集帧率。 |
 | `VR_CONTROL` | `0` | 开启带组合键保护和语音反馈的 VR 单人数采。 |
 | `WITH_HEAD` | `0` | 追加 3 个头部关节。 |

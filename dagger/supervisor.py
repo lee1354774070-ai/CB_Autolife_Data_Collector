@@ -245,6 +245,10 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
         try:
             self._trace.barrier()
         except Exception as exc:
+            try:
+                self._trace.finish("collector_start_failed", 0, str(exc))
+            except Exception as cleanup_exc:
+                self.get_logger().error(f"trial trace cleanup failed: {cleanup_exc}")
             with self._lock:
                 # No recorder command has been sent at this point.
                 self._intervention_id = ""

@@ -103,15 +103,18 @@ def main():
     import pyarrow as pa
     data = pa.concat_tables(tables).to_pandas()
     for episode, rows in data.groupby('episode_index'):
-        mask = np.array([int(x[0]) for x in rows['dagger.train_mask']])
-        source = np.array([int(x[0]) for x in rows['dagger.control_source']])
+        mask = np.array([int(np.asarray(x).item()) for x in rows['dagger.train_mask']])
+        source = np.array([int(np.asarray(x).item()) for x in rows['dagger.control_source']])
         assert np.all(mask[source != 1] == 0)
         assert (mask.sum() > 0) if episode == 0 else (mask.sum() == 0)
         assert all(len(x) == 21 for x in rows['action'])
         print('RGBD_PARQUET_PASS', json.dumps(dict(episode=int(episode), frames=len(rows), expert_frames=int(mask.sum()))), flush=True)
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
     dataset = LeRobotDataset(args.repo_id, root=args.output_dir, video_backend='pyav')
-    for index in sorted({0, len(data)//2, len(data)-1}):
+    indices = set()
+    for _, rows in data.groupby('episode_index'):
+        indices.update((int(rows.index[0]), int(rows.index[len(rows)//2]), int(rows.index[-1])))
+    for index in sorted(indices):
         row = dataset[index]
         assert row['action'].shape == (21,)
         assert all(key in row for key in ('observation.images.hand_left', 'observation.images.hand_right',

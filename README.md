@@ -224,7 +224,7 @@ CAMERA_ONLY=1 bash start_lerobot_official_collect.sh camera_test
 | `COLLECTOR_MODE` | Derived from legacy settings, usually `keyboard` | `keyboard`, `vr`, `subtask`, `dagger`. |
 | `TASK_TEXT` | task name | Language instruction stored with each frame. |
 | `SUBTASKS_JSON` | `[]` | Ordered subtask texts; an empty array disables annotation. |
-| `VR_A_LONG_PRESS_SEC` | `1.0` | A hold threshold for early save in subtask mode; 0.2 through 10 seconds. |
+| `VR_A_LONG_PRESS_SEC` | `1.0` | B hold threshold for early save in subtask mode (legacy parameter name); 0.2 through 10 seconds. |
 | `COLLECT_FPS` | `30` | Dataset row rate. |
 | `VR_CONTROL` | `0` | Enable guarded VR episode controls and voice feedback. |
 | `WITH_HEAD` | `0` | Append 3 neck joints. |

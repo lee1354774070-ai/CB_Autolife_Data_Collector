@@ -137,6 +137,7 @@ def main():
         worker.start()
         rclpy.init(args=["--ros-args", "-p", f"trace_root:={base / 'trace'}",
                         "-p", f"rgb_collector_fifo:={fifo}", "-p", f"rgbd_collector_fifo:={fifo}"])
+        from rclpy.parameter import Parameter
         from dagger.mapper import CollectorVrMapper
         mapper = CollectorVrMapper()
         try:
@@ -147,7 +148,16 @@ def main():
             target = json.loads(mapper._eef_target_pub.publisher.publish.call_args.args[0].data)
             assert target['authority_epoch'] == 2
             assert target['collector_session_id'] == 'mapper-test'
-            print('REAL_V4_MAPPER_WRAPPER_PASS hardware_publishers=0')
+            mapper.set_parameters([Parameter('gripper_closed_position', value=360.0),
+                                   Parameter('gripper_filter_alpha', value=1.0),
+                                   Parameter('gripper_max_step_per_cycle', value=350.0)])
+            mapper._gripper_pub.publisher = Mock()
+            mapper._publish_grippers({'left': 0., 'right': 0.}, time.monotonic(), force=True)
+            mapper._publish_grippers({'left': 1., 'right': 1.}, time.monotonic(), force=True)
+            full_trigger = json.loads(mapper._gripper_pub.publisher.publish.call_args.args[0].data)
+            assert full_trigger['left_gripper_target_joints_position'] == [360.]
+            assert full_trigger['right_gripper_target_joints_position'] == [360.]
+            print('REAL_V4_MAPPER_WRAPPER_PASS fast_trigger=360 hardware_publishers=0')
         finally:
             mapper.destroy_node()
         node = CollectorDaggerSupervisor()
@@ -174,6 +184,16 @@ def main():
                 "rightController": right if right is not None else {"gripActive": False}})))
 
         try:
+            with patch.object(node._trace, 'barrier', side_effect=TimeoutError('synthetic trace failure')):
+                click("A")
+                wait_idle()
+            assert not node._session_start_pending and not node._intervention_id
+            assert not commands and not enable_calls
+            assert node._machine.mode.value == 'DISARMED'
+            node._trace.barrier()
+            manifests = list((base / 'trace').rglob('manifest.json'))
+            assert len(manifests) == 1
+            assert json.loads(manifests[0].read_text())['status'] == 'collector_start_failed'
             click("A")
             wait_idle()
             assert commands == ["start"], commands
@@ -216,6 +236,11 @@ def main():
             node._selected_joint_pub.reset_mock()
             node._selected_release_pub = Mock()
             node._selected_eef_pub = Mock()
+            node._on_joint_feedback(String(data=json.dumps({
+                'left_gripper_state': {'position': [360.]}, 'right_gripper_state': {'position': [360.]}})))
+            assert node._measured_grippers == [360., 360.]
+            node._on_joint_feedback(String(data=json.dumps({
+                'left_gripper_state': {'position': [10.]}, 'right_gripper_state': {'position': [10.]}})))
             started = time.monotonic()
             vr(gripActive=True)
             takeover_ms = (time.monotonic() - started) * 1000
@@ -236,6 +261,16 @@ def main():
             node._selected_eef_pub.publish.assert_not_called()
             node._on_expert_eef(String(data=json.dumps(expert)))
             node._selected_eef_pub.publish.assert_called_once()
+            full_trigger.update(collector_session_id=node._session_id, authority_epoch=epoch)
+            for _ in range(14):
+                node._on_expert_gripper(String(data=json.dumps(full_trigger)))
+                node._publish_expert_gripper_locked(time.monotonic_ns())
+                time.sleep(.035)
+            command = json.loads(node._selected_gripper_pub.publish.call_args.args[0].data)
+            assert command['left_gripper_target_joints_position'] == [360.]
+            assert command['right_gripper_target_joints_position'] == [360.]
+            assert node._expert_gripper_pickup_pending == [False, False]
+            print('MZJ_FAST_TRIGGER_PICKUP_PASS target=360 feedback_360_accepted=true')
             vr(gripActive=True)
             assert node._machine.authority_epoch == epoch, "Held Grip retriggered takeover"
             vr(gripActive=False, yButton=False)
