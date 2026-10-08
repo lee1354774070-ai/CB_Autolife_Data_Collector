@@ -178,8 +178,13 @@ DAgger终端保留原键位：C开始、A保存、X/D丢弃、R复位、Q退出�
 
 普通键盘、单人VR和子任务采集默认使用**原厂遥操**，不需要打开8446。
 原厂遥操保持运行；DAgger须先保存/丢弃并退出，避免控制器同时运行。
-使用已经部署的集合版绝对路径；`/home/ubuntu/lerobot_data_collector` 是旧版，
-不识别 `COLLECTOR_MODE`。新终端不要依赖此前导出的变量：
+优先使用下面的集合版绝对路径。2026-10-08已为300上的旧入口
+`/home/ubuntu/lerobot_data_collector/start_lerobot_official_collect.sh` 增加转发：
+显式设置 `COLLECTOR_MODE` 时执行本集合版，终端会显示 `Unified collector mode=...`；
+未设置时保留旧程序。原文件及无动作入口检查保存在300的
+`/home/ubuntu/collector_validation/20261008_collector_entry_srnt0wl6/`。
+运行中的旧进程仍需先保存/丢弃并正常退出；已有普通数据不能直接追加子任务字段，
+启用子任务时请换新任务名。新终端不要依赖此前导出的变量：
 
 ```bash
 source /home/ubuntu/ros2_ws/src/autolife_hg_dagger_MZJ_300/scripts/source_hg_ros_env.sh
