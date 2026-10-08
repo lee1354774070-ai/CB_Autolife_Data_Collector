@@ -54,7 +54,8 @@ def check_controller_copy(root):
                                       right_gripper=[40.], leg_waist=[0., 0., 0., 0.]),
             _feedback_time=time.monotonic(), _reset_active=False, _enable_pending=False,
             _estop_latched=False, _limiter=object(),
-            get_parameter=lambda key: SimpleNamespace(value=.5),
+            get_parameter=lambda key: SimpleNamespace(value={'feedback_timeout_sec': .5,
+                'gripper_min_position': 10., 'gripper_max_position': 360.}[key]),
             _begin_fresh_teleop_session_locked=Mock(), _hold_sides_locked=Mock(),
             _apply_clutch_envelope_locked=Mock())
         message = lambda value: SimpleNamespace(data=json.dumps(value))

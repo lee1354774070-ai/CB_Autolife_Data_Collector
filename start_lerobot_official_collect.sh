@@ -593,8 +593,10 @@ RECORDER_ARGS=(
     "${RECORDER_CAMERA_ARGS[@]}"
     "${RECORDER_FEATURE_ARGS[@]}"
 )
+RECORDER_PREFIX=()
 if [ "${_COLLECTOR_DAGGER_RECORDING:-0}" = "1" ]; then
-    RECORDER_ARGS+=(--dagger --action-arm-topic /hg_dagger/collector/arm_action
+    RECORDER_PREFIX=(bash "${SCRIPT_DIR}/dagger/run_recorder_isolated.sh")
+    RECORDER_ARGS+=(--image-writer-threads "${IMAGE_WRITER_THREADS:-2}" --dagger --action-arm-topic /hg_dagger/collector/arm_action
         --action-gripper-topic /hg_dagger/collector/gripper_action)
 fi
 if [ -n "${SYNC_REFERENCE_CAMERA:-}" ]; then
@@ -628,7 +630,7 @@ if [ "${STREAMING_ENCODING:-0}" = "1" ]; then
     RECORDER_ARGS+=(--streaming-encoding)
 fi
 
-nohup env CYCLONEDDS_URI="${COLLECT_CYCLONEDDS_URI}" LD_LIBRARY_PATH="${LEROBOT_ENV_LIB}:${ROS_LD_LIBRARY_PATH}" PYTHONPATH="${ROS_PYTHONPATH}" "${LEROBOT_PY}" "${RECORDER_ARGS[@]}" > "${LOG_PREFIX}.record_lerobot_official.log" 2>&1 &
+nohup env CYCLONEDDS_URI="${COLLECT_CYCLONEDDS_URI}" LD_LIBRARY_PATH="${LEROBOT_ENV_LIB}:${ROS_LD_LIBRARY_PATH}" PYTHONPATH="${ROS_PYTHONPATH}" "${RECORDER_PREFIX[@]}" "${LEROBOT_PY}" "${RECORDER_ARGS[@]}" > "${LOG_PREFIX}.record_lerobot_official.log" 2>&1 &
 RECORDER_PID=$!
 echo "recorder ${RECORDER_PID} ${LOG_PREFIX}.record_lerobot_official.log" >> "${PIDFILE}"
 echo "${DATASET_ROOT}" > "${CURRENT_OUTPUT}"

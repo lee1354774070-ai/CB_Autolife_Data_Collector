@@ -904,7 +904,7 @@ class OfficialLeRobotRecorder(Node):
                 LeRobotDataset.resume,
                 repo_id=self.args.repo_id,
                 root=output_dir,
-                image_writer_threads=self.args.image_writer_threads,
+                image_writer_threads=0 if self.dagger is not None else self.args.image_writer_threads,
                 vcodec=self.args.vcodec,
                 rgb_encoder=rgb_encoder,
                 depth_encoder=depth_encoder,
@@ -938,7 +938,7 @@ class OfficialLeRobotRecorder(Node):
                                           self.dagger is not None),
                 robot_type=self.args.robot_type,
                 use_videos=True,
-                image_writer_threads=self.args.image_writer_threads,
+                image_writer_threads=0 if self.dagger is not None else self.args.image_writer_threads,
                 vcodec=self.args.vcodec,
                 rgb_encoder=rgb_encoder,
                 depth_encoder=depth_encoder,
@@ -949,6 +949,16 @@ class OfficialLeRobotRecorder(Node):
                 video_files_size_in_mb=self.args.video_files_size_in_mb,
                 data_files_size_in_mb=self.args.data_files_size_in_mb,
             )
+
+        if self.dagger is not None:
+            # Reuse MZJ's bounded, lossless staging writer on create AND resume.
+            # Compression runs after authority is revoked, when saving video.
+            from dagger.capture_image_writer import CaptureImageWriter
+            self.dataset.writer.image_writer = CaptureImageWriter(
+                num_threads=self.args.image_writer_threads)
+            self.get_logger().info(
+                "MZJ capture: lossless uncompressed PNG, raw uint16 depth, "
+                f"{self.args.image_writer_threads} writer threads, queue limit 64")
 
         # Resolve the anchor only after resume/create establishes the exact
         # camera feature set that will actually be written to this dataset.
@@ -2066,6 +2076,16 @@ def main() -> None:
     # The ROS recorder is single-threaded; avoid a second OpenCV worker pool
     # competing with LeRobot image writers and the robot's control processes.
     cv2.setNumThreads(1)
+    if args.dagger:
+        import torch
+        import pyarrow as pa
+        torch.set_num_threads(1)
+        torch.set_num_interop_threads(1)
+        pa.set_cpu_count(1)
+        pa.set_io_thread_count(1)
+        print(f"Recorder resources: cpus={sorted(os.sched_getaffinity(0))}, "
+              f"nice={os.getpriority(os.PRIO_PROCESS, 0)}, torch_threads=1, arrow_threads=1",
+              flush=True)
     rclpy.init()
     node = OfficialLeRobotRecorder(args)
     executor = SingleThreadedExecutor()

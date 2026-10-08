@@ -26,7 +26,8 @@ class ControllerHandoffTest(unittest.TestCase):
                                       left_gripper=[30.], right_gripper=[40.]),
             _feedback_time=time.monotonic(), _reset_active=False,
             _enable_pending=False, _estop_latched=False,
-            get_parameter=lambda name: SimpleNamespace(value=.5),
+            get_parameter=lambda name: SimpleNamespace(value={'feedback_timeout_sec': .5,
+                'gripper_min_position': 10., 'gripper_max_position': 360.}[name]),
             _begin_fresh_teleop_session_locked=Mock())
         self.packet = {'session_id': 'trial', 'authority_epoch': 6}
 
@@ -42,6 +43,14 @@ class ControllerHandoffTest(unittest.TestCase):
         self.node._follow_authority_mode = 'EXPERT_ACTIVE'
         self.assertTrue(apply_authority(self.node, self.packet, 'EXPERT_ACTIVE'))
         self.node._begin_fresh_teleop_session_locked.assert_called_once()
+
+    def test_feedback_overshoot_cannot_become_an_out_of_range_hold(self):
+        self.node._feedback.left_gripper = [365.16]
+        self.node._feedback.right_gripper = [-3.78]
+        self.assertTrue(apply_authority(self.node, self.packet, 'EXPERT_READY'))
+        self.assertEqual(self.node._gripper_targets, {'left': 360., 'right': 10.})
+        self.assertEqual(self.node._feedback.left_gripper, [365.16])
+        self.assertEqual(self.node._feedback.right_gripper, [-3.78])
 
     def test_stale_state_never_restores_policy_authority(self):
         self.assertFalse(apply_authority(self.node, {**self.packet, 'authority_epoch': 4}, 'POLICY_ACTIVE'))

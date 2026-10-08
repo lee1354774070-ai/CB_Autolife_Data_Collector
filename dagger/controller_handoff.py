@@ -56,9 +56,14 @@ def apply_authority(controller, payload, mode):
         # state machine. Replace all outstanding policy goals, including waist,
         # neck and grippers, with measured values in this same critical section.
         controller._begin_fresh_teleop_session_locked(controller._feedback.as_dict())
+        # Encoder overshoot is an observation, not a legal motor target.
+        # Match the MZJ pickup clamp; policy actions/digests remain untouched.
+        minimum = float(controller.get_parameter('gripper_min_position').value)
+        maximum = float(controller.get_parameter('gripper_max_position').value)
         controller._gripper_targets = {
-            'left': float(controller._feedback.left_gripper[0]),
-            'right': float(controller._feedback.right_gripper[0]),
+            side: min(maximum, max(minimum, float(measured[0])))
+            for side, measured in (('left', controller._feedback.left_gripper),
+                                   ('right', controller._feedback.right_gripper))
         }
         controller._gripper_dirty = {'left': True, 'right': True}
         controller._collector_body_origin_epoch = -1
