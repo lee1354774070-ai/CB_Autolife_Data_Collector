@@ -174,6 +174,62 @@ B可保存纯模型数据，其 `dagger.train_mask` 全为0；无接管且不想
 DAgger终端保留原键位：C开始、A保存、X/D丢弃、R复位、Q退出。
 `DAGGER_BACKEND=attach` 中Q只断开终端，不关闭宿主。
 
+## 普通数采、单人VR和子任务现场验收
+
+DAgger验收不代表其他模式已验收。三种录制模式都不启动模型或遥操控制器；
+先结束DAgger，单独启动已有V4遥操（8446），再运行下面的采集脚本。
+原厂dashboard/action_player和其他关节控制入口保持关闭，ARM与相机服务保持运行。
+
+终端1启动已安装的300遥操入口（启动后需在网页手动使能；使能可能执行准备姿态复位）：
+
+```bash
+/home/ubuntu/.local/bin/autolife-vr-teleop-300
+```
+
+终端2先准备环境，并关闭旧遥操组合键复位。确认参数返回成功后再进入网页操作：
+
+```bash
+cd /home/ubuntu/collector_validation/20260930_github_dryrun/collector
+source /home/ubuntu/ros2_ws/src/autolife_hg_dagger_MZJ_300/scripts/source_hg_ros_env.sh
+set +u
+ros2 param set /independent_vr_mapper_306_v4 quick_reset_enabled false
+unset COLLECTOR_MODE VR_CONTROL SUBTASKS_JSON
+export OUTPUT_BASE_DIR=/home/ubuntu/nas/collector_test
+export TASK_TEXT='Pick the laundry bag.'
+export WITH_HEAD=1 WITH_UPPER_WAIST=1 WITH_WAIST=0 WITH_DEPTH=1
+export START_HAND_PRODUCER=0 ACTION_MODE=status_target
+export VR_INPUT_TOPIC=/openarmx_teleop_vr_306_v4/vr_input
+```
+
+先在8446网页手动使能，测试左右臂增量、松握再握、快慢扳机、头腰开关。
+下面一次只运行一个采集模式，每种结束用终端Q退出，遥操本身仍由终端1管理。
+
+| 模式 | 采集启动命令 | 现场流程和通过标准 |
+|---|---|---|
+| 普通键盘数采 | `COLLECTOR_MODE=keyboard bash start_lerobot_official_collect.sh keyboard_01` | Enter开始，遥操5～10秒后S保存；再Enter录制后D丢弃；再保存一条，Q退出。应有2条保存，丢弃不增加条目。 |
+| 单人VR | `COLLECTOR_MODE=vr bash start_lerobot_official_collect.sh vr_01` | 全程按住GL+GR，再短按并松开面键。A倒计时3秒开始，B保存，Y丢弃，X仅复位。录制中X应拒绝；空闲X后按提示松开双Grip，复位完成需网页重新使能。倒计时中B/Y应取消。 |
+| 子任务 | 见下方 | A开始，第一/二次短B标记并继续录制，第三次短B自动保存。第二条长B至少1秒再松开，应提前保存并标记待审核。Y丢弃后下一条从第一个子任务开始。 |
+
+```bash
+COLLECTOR_MODE=subtask VR_A_LONG_PRESS_SEC=1.0 \
+SUBTASKS_JSON='["右手抓起袋子","移动袋子","放下袋子"]' \
+bash start_lerobot_official_collect.sh subtask_01
+```
+
+单人和子任务模式的A/B/X/Y均需GL+GR组合，面键松开时双Grip仍需按住。
+网页实际发送面键0/1，2026-10-08已修复采集端只接受bool的兼容遗漏；非法值仍拒绝。
+191项单元测试和V4格式的单人/分段隔离ROS链路通过，未代替现场动作、声音、视频验收。
+原独立V4网页不自动加载集合版头显提示扩展，先以采集终端和语音回执验收，勿把旧网页提示当作新按键规则。
+
+同模式、同参数、同任务名正常退出后重新启动，保存一条，应接着编号，旧数据仍在。
+深度开关、关节维度、action模式或子任务标注开关改变时必须换任务目录。
+分段数据额外核对`subtask_index`及`dataset/annotations/subtasks/episode_000000.json`；
+完整条目0/1/2段连续覆盖，提前保存的未确认尾段为-1，`needs_review=true`。
+这几种普通示教不使用DAgger的`dagger.train_mask`。
+
+本轮低CPU写入器/CPU绑定仅作用于DAgger，其他模式的长时录制负载尚需单独验收。
+先做每条5～10秒的功能测试，再做连续多条；记录失败或夹爪异常即停止本轮并保留日志。
+
 ## 结束与回滚
 
 先B保存或Y丢弃并确认，再Q退出。若需要重新使用原厂控制入口：

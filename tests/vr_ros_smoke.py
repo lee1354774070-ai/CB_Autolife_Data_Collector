@@ -25,6 +25,7 @@ from std_srvs.srv import SetBool, Trigger
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--subtasks', action='store_true', help='Test short-B marks, final autosave and long-B early save.')
+    parser.add_argument('--v4-input', action='store_true', help='Use actual V4 numeric face-button packets.')
     args = parser.parse_args()
     rclpy.init()
     node = rclpy.create_node('collector_vr_transport_test')
@@ -79,6 +80,14 @@ def main():
             confirmed = 0
 
             def packet(faces=(), grips=True):
+                if args.v4_input:
+                    data = {'leftController': {'gripActive': grips, 'xButton': 0, 'yButton': 0},
+                            'rightController': {'gripActive': grips, 'aButton': 0, 'bButton': 0}}
+                    for hand, index in faces:
+                        name = 'leftController' if hand == 'l' else 'rightController'
+                        field = ('xButton', 'yButton') if hand == 'l' else ('aButton', 'bButton')
+                        data[name][field[index - 4]] = 1
+                    return String(data=json.dumps(data))
                 data = {h: {'b': [{'p': False} for _ in range(6)]} for h in ('l', 'r')}
                 for hand in data:
                     data[hand]['b'][1]['p'] = grips

@@ -73,6 +73,33 @@ class GestureTest(unittest.TestCase):
                 decode_controls(text)
         self.assertEqual(decode_controls(payload(('r', 5))), (True, {('r', 5)}))
 
+    def test_v4_webxr_numeric_faces_reach_all_four_gestures(self):
+        packet = {
+            'leftController': {'gripActive': True, 'xButton': 0, 'yButton': 0},
+            'rightController': {'gripActive': True, 'aButton': 0, 'bButton': 0},
+        }
+        for hand, face, expected in (
+                ('rightController', 'aButton', 'start'), ('rightController', 'bButton', 'save'),
+                ('leftController', 'xButton', 'reset'), ('leftController', 'yButton', 'discard')):
+            gestures = ButtonGestures()
+            self.assertIsNone(gestures.update(*decode_controls(json.dumps(packet)), 1))
+            packet[hand][face] = 1
+            self.assertIsNone(gestures.update(*decode_controls(json.dumps(packet)), 2))
+            packet[hand][face] = 0
+            self.assertEqual(gestures.update(*decode_controls(json.dumps(packet)), 3), expected)
+
+    def test_v4_rejects_missing_or_nonbinary_values(self):
+        for value in (None, 'false', '1', 1.0, 0.5, -1, 2, [], {}):
+            packet = {
+                'leftController': {'gripActive': True, 'xButton': 0, 'yButton': 0},
+                'rightController': {'gripActive': True, 'aButton': value, 'bButton': 0},
+            }
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                decode_controls(json.dumps(packet))
+        del packet['rightController']['aButton']
+        with self.assertRaises(ValueError):
+            decode_controls(json.dumps(packet))
+
     def test_y_packet_bounce_does_not_quit(self):
         gestures = ButtonGestures()
         gestures.update(True, set(), 1)

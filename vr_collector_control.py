@@ -40,7 +40,10 @@ def _decode_controls(data):
         faces = set()
         for hand, packet, names in zip(("l", "r"), hands, (("xButton", "yButton"), ("aButton", "bButton"))):
             for name in ("gripActive", *names):
-                if type(packet.get(name)) is not bool:
+                # V4 WebXR serializes face buttons as 0/1, Grips as bool.
+                # Accept only those wire values; strings/floats are not presses.
+                value = packet.get(name)
+                if type(value) not in (bool, int) or value not in (0, 1):
                     raise ValueError("Incomplete V4 button packet")
             faces.update((hand, i) for i, name in zip((4, 5), names) if packet[name])
         return all(packet["gripActive"] for packet in hands), faces
