@@ -325,6 +325,13 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(self.session.state, 'unknown')
         self.assertFalse(self.sent)
 
+    def test_failed_workspace_is_invalid_but_uncertain_publication_is_unknown(self):
+        for uncertain, state in ((False, 'invalid'), (True, 'unknown')):
+            receipt = self.receipt('save', stamp=100 + int(uncertain), message='save failed: full disk')
+            receipt.update(success=False, episode_invalid=True, publication_uncertain=uncertain)
+            self.session.accept_status(receipt)
+            self.assertEqual(self.session.state, state)
+
     def test_factory_reset_is_reported_without_motion_or_latching_unknown(self):
         self.session.reset_supported = False
         self.session.command('reset', 1)

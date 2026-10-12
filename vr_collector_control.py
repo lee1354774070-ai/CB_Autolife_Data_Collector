@@ -309,10 +309,12 @@ class VrSession:
                 self.speak("当前没有待处理数据，可以按A开始下一条")
                 self.feedback("cancel")
                 return
-            if message.startswith(("save failed:", "discard failed:")):
+            if status.get("publication_uncertain"):
                 self.state = "unknown"
             elif status.get("episode_invalid"):
                 self.state = "invalid"
+            elif message.startswith(("save failed:", "discard failed:")):
+                self.state = "unknown"
             elif status.get("recording"):
                 self.state = "recording"
             self.speak("操作未完成，请检查采集终端")

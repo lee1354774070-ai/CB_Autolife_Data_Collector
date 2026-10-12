@@ -12,6 +12,8 @@ This document describes implementation constraints. Daily commands belong in
 | `dagger/` | Version-checked V4/HG adapter, exclusive stack launcher, Thor session fencing, VR feedback and asynchronous diagnostic traces. |
 | `dagger_labels.py` | Validates causal action origins and builds per-frame DAgger training masks. |
 | `record_lerobot_official.py` | Buffers ROS/SHM signals, synchronizes a dataset row, and owns `LeRobotDataset`. |
+| `episode_storage.py` | Enforces capture budgets, owns the dataset lock, and publishes finalized episodes with a recovery journal. |
+| `dagger/capture_image_writer.py` | Shared bounded asynchronous image writer; propagates worker failures in every mode. |
 | `robot_schema.py` | Owns joint names, canonical policy order, physical q23 conversion, and command parsing. |
 | `camera_config.py` | Owns camera names, SHM paths, ROS topics, and shared defaults. |
 | `shm_camera.py` | Reads stable legacy/SHM2 metadata/image pairs and decodes JPEG, native color or uint16 depth. |
@@ -110,6 +112,61 @@ Resuming a dataset requires the same FPS, camera features, depth mode, joint
 schema, and action mode. LeRobot may split videos into multiple files; metadata
 indexes them, so they must not be concatenated.
 
+## Storage isolation and limits
+
+All modes require LeRobot 0.6+ with `DatasetWriter` and `LeRobotDataset.resume`.
+The official dataset is read-only to the active writer: only its metadata is
+copied into `.collector-work`. Historical data/video files are not copied or
+opened for append. Empty datasets use `create`, since they have no tasks Parquet
+to resume. Each episode gets a fresh writer and new data/video file indices.
+
+Publication drains image workers, encodes videos sequentially, closes Parquet
+writers, and completes subtask sidecars inside the workspace. `EpisodeStore`
+fsyncs staged files/directories, writes a prepared journal, links new output files
+without replacing existing ones, preserves old metadata, installs new metadata,
+then records the commit. A failure before that commit restores old metadata and
+removes only matching newly linked files. Unresolved recovery stops the session.
+A completed commit is not undone or reported failed because cleanup or preparation
+of the next episode failed. The brief metadata replacement window is not a
+concurrent-reader transaction: do not train/edit this root during recording.
+
+Disk checks run on a background thread every 0.5 s. Frame admission uses cached
+free bytes minus newly admitted bytes; a snapshot older than 2 s fails closed.
+The defaults are 2 GiB minimum free space plus an extra raw-episode reserve,
+8 GiB cumulative estimated raw image bytes/overhead per episode, and 600 s per
+episode. The first limit reached invalidates the episode. These are estimates,
+not a filesystem quota or a promise of 600 s at any resolution. Images consume
+most of the budget; other processes can still exhaust space between checks.
+
+The image writer bounds all cameras together to 64 unfinished jobs and 256 MiB
+of retained raw input bytes. Worker conversion buffers, camera FIFOs, LeRobot
+numeric columns and encoders are additional memory. It never silently drops a
+queued frame. DAgger keeps uncompressed temporary PNGs; other modes use light
+PNG compression. Both paths propagate disk/codec errors, including delayed worker
+errors behind a slow first job. Capture checks are nonblocking; save/discard
+explicitly join workers before publishing/deleting files.
+
+An error invalidates the current episode even if only part of its first frame
+was submitted. Invalid data cannot be saved; explicit discard closes workers and
+removes only its workspace. No automatic save retry occurs. Confirmed invalid
+DAgger failures allow Y discard; ambiguous results retain their request ID and
+remain blocked. Diagnostic/receipt write failure cannot undo a committed episode
+or manufacture a success acknowledgement. RAM invalidation still works when disk
+space is exhausted, but file-based notifications can be unavailable.
+
+An advisory lock allows one cooperating collector per dataset. A prepared journal
+is rolled back on restart; a committed journal is cleaned without replay. Other
+interrupted work is renamed `.collector-interrupted-<timestamp>` for inspection,
+not counted as saved, and never deleted automatically. These leftovers still use
+disk space. Do not remove journals/workspaces while a collector runs. Storage must
+support same-filesystem hard links, rename, flock and fsync; unsupported mounts
+fail rather than weaken the protocol. This protects against tested software I/O
+failures; it is not a guarantee against hardware failure or all power-loss cases.
+
+`BATCH_ENCODING_SIZE=1` and `STREAMING_ENCODING=0` are required. File-size options
+do not merge separate episode files. Historical datasets remain unchanged until
+a new episode is successfully published.
+
 ## VR control protocol
 
 `COLLECTOR_MODE=vr` or `subtask` enables the following controls. Unset mode
@@ -121,7 +178,8 @@ implementation of DAgger using the new incremental teleoperation**.
 `/control_topic_<domain>_<robot>` (`std_msgs/String` JSON); `l/r.b[1].p` are grips,
 indices 4/5 are X/Y on the left and A/B on the right. It publishes speech
 requests to `/topic_tts_<domain>_<robot>` and structured events to `/collector/feedback`.
-X uses the guarded V4 reset services via `vr_reset.py`, never raw joint targets.
+Factory X reset is currently unavailable and reports that limitation; DAgger X
+uses the guarded V4 reset services, never guessed raw joint targets.
 It does not infer ASYNC/HOME/SYNC or alter the factory teleoperation mode.
 
 Gestures require neutral, a single face press, and release with both grips held.
@@ -156,10 +214,9 @@ human-readable logs. Save of invalid data receives a discard acknowledgement
 and is announced as discarded. A timeout means unknown outcome, not failure to
 execute: never resend automatically. Check the recorder before restarting.
 
-Discard waits for LeRobot's image writer, then also removes the current unsaved
-episode's temporary video images. This covers LeRobot 0.6.0's image-only cleanup;
-saved videos and other episodes are not touched. A previous uncertain save still
-blocks discard, so this cleanup cannot erase evidence of a partially completed save.
+Discard joins all image workers and removes only `.collector-work`; partially
+submitted first frames are included. An unresolved publication journal blocks
+discard and requires recovery before proceeding.
 
 Launcher shutdown stops its own VR helper before recorder finalization. Helper
 failure stops the session through normal cleanup. No SDK service is restarted,
@@ -318,7 +375,7 @@ the episode. Subtask IDs are **episode-local** plan ordinals, not global task
 IDs and not new state/action dimensions. Resolve their texts via each episode's
 sidecar before combining labels across different plans.
 
-A uses monotonic hold duration and fires only on release, never both a short
+B uses monotonic hold duration and fires only on release, never both a short
 mark and a long save. Grip loss, mixed buttons, malformed input and stream gaps
 cancel the gesture. Receipts reset unfinished gestures across state transitions.
 The existing FIFO delivers `mark_subtask` to the same recorder thread as
@@ -362,13 +419,11 @@ An unfinished plan requires review even with no unlabelled tail. A missed press
 can incorrectly merge real actions into a confirmed span; the collector cannot
 infer this semantic error. Review all boundaries when cleaning such episodes.
 
-Before LeRobot saves, write a `.pending.json` recovery marker; rename it only
-after save succeeds. A save failure stops the session with no automatic retry
-of a potentially mutated buffer. Pending markers block resume until data/video/
-metadata/annotation consistency is inspected. Do not blindly delete them. This
-is not a cross-file transaction or a power-loss recovery guarantee. Discard
-publishes no sidecar. Annotation-incomplete episodes may be saved; synchronization-
-invalid episodes still must be discarded.
+Before LeRobot saves, write a `.pending.json` marker inside the private workspace;
+rename it after finalization, and publish it with the episode. Failed-save markers
+stay private and disappear only on explicit discard. Legacy pending markers in
+the official dataset still block resume for manual inspection. Discard publishes
+no sidecar. Annotation-incomplete episodes may be saved; invalid episodes cannot.
 
 Changing the annotation switch requires a new dataset root. Plans may change
 between annotated episodes because each sidecar stores its own plan. Standard

@@ -30,7 +30,6 @@ import inspect
 import json
 import os
 import re
-import shutil
 import signal
 import socket
 import threading
@@ -77,6 +76,7 @@ from dagger_labels import (
     validate_features as validate_dagger_features,
 )
 from cli_help import show_requested_parameter_help
+from episode_storage import EpisodeStore, StorageBudget, StorageLimitError
 from subtask_annotations import (
     SUBTASK_FEATURE, SubtaskAnnotations, check_pending_annotations, parse_subtasks, prepare_annotation,
 )
@@ -312,7 +312,6 @@ def make_depth_encoder(args: argparse.Namespace) -> Any | None:
     if DepthEncoderConfig is None:
         raise RuntimeError(
             "Depth recording requires LeRobot >= 0.6 with DepthEncoderConfig. "
-            "RGB-only recording remains compatible with older LeRobot versions."
         )
     return DepthEncoderConfig(
         vcodec=args.depth_vcodec,
@@ -330,9 +329,11 @@ class OfficialLeRobotRecorder(Node):
         self.subtasks = SubtaskAnnotations(args.subtasks)
         self.dagger = DaggerLabels(args.sync_signal_buffer_size) if getattr(args, "dagger", False) else None
         self.dagger_progress_future = None
-        # A failed save can already have mutated LeRobot's buffer/metadata.
-        # Never retry it implicitly during shutdown or accept a new episode.
+        # Only an unresolved publication latches the session. Ordinary write
+        # failures invalidate the private workspace, which can be discarded.
         self.save_failed = False
+        self.episode_store = None
+        self.storage_budget = None
         # Mid-episode acknowledgements may live on NAS. Keep their file I/O off
         # the frame/ROS thread; one outstanding receipt also bounds the queue.
         self.mark_status_writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="subtask_receipt")
@@ -723,6 +724,7 @@ class OfficialLeRobotRecorder(Node):
             "success": success,
             "recording": self.is_recording,
             "episode_invalid": self.episode_invalid,
+            "publication_uncertain": self.save_failed,
             "request_id": request_id,
             "task": self.args.task_name,
             "episode_index": episode_index,
@@ -751,7 +753,14 @@ class OfficialLeRobotRecorder(Node):
         if event == "mark_subtask":
             self.mark_status_future = self.mark_status_writer.submit(write_json_atomic, status_path, payload)
         else:
-            write_json_atomic(status_path, payload)
+            try:
+                write_json_atomic(status_path, payload)
+            except OSError as exc:
+                # Do not undo a committed save or crash on a full status mount.
+                # The client must see an unknown result, never a false success.
+                self.get_logger().error(f"command receipt unavailable ({event}): {exc}")
+                if self.is_recording:
+                    self._invalidate_episode('receipt_write_failed', time.time(), detail=str(exc))
 
     def _validate_resume_schema(self, info: dict[str, Any]) -> None:
         """Reject changes that LeRobot cannot append to an existing dataset.
@@ -837,6 +846,8 @@ class OfficialLeRobotRecorder(Node):
             )
 
     def create_dataset(self) -> None:
+        if not callable(getattr(LeRobotDataset, 'resume', None)):
+            raise RuntimeError('Transactional episode saving requires LeRobot >= 0.6 with DatasetWriter/resume.')
         active = {name: self.latest_images[name] for name in self.args.cameras if name in self.latest_images}
         if len(active) < self.args.min_cameras:
             missing = sorted(set(self.args.cameras).difference(active))
@@ -863,25 +874,25 @@ class OfficialLeRobotRecorder(Node):
         rgb_encoder = make_rgb_encoder(self.args)
         depth_encoder = make_depth_encoder(self.args)
         output_dir = Path(self.args.output_dir)
+        self.episode_store = EpisodeStore(output_dir)
+        recovered = self.episode_store.recover()
+        if recovered is not None:
+            self.get_logger().warn(f"interrupted unsaved workspace retained for inspection: {recovered}")
         check_pending_annotations(output_dir)
         info_path = output_dir / "meta" / "info.json"
-        should_recreate_empty_shell = False
         existing_info = None
 
         if info_path.exists():
             existing_info = json.loads(info_path.read_text(encoding="utf-8"))
-            total_episodes = int(existing_info.get("total_episodes", 0))
-            total_frames = int(existing_info.get("total_frames", 0))
-            has_data_files = any((output_dir / "data").rglob("*.parquet")) if (output_dir / "data").exists() else False
-            has_video_files = any((output_dir / "videos").rglob("*.mp4")) if (output_dir / "videos").exists() else False
-            should_recreate_empty_shell = (
-                total_episodes == 0
-                and total_frames == 0
-                and not has_data_files
-                and not has_video_files
-            )
 
-        if info_path.exists() and not should_recreate_empty_shell:
+        self._dataset_options = dict(
+            repo_id=self.args.repo_id, image_writer_threads=0,
+            vcodec=self.args.vcodec, rgb_encoder=rgb_encoder, depth_encoder=depth_encoder,
+            batch_encoding_size=1, streaming_encoding=False,
+            encoder_queue_maxsize=self.args.encoder_queue_maxsize,
+            encoder_threads=self.args.encoder_threads,
+        )
+        if info_path.exists():
             self._validate_resume_schema(existing_info)
             # Preserve feature insertion order. Sorting here could silently
             # change the default reference camera between create and resume.
@@ -900,27 +911,12 @@ class OfficialLeRobotRecorder(Node):
                 and shape[0] in (1, 3)
                 and shape[-1] not in (1, 3)
             }
-            self.dataset = call_lerobot_dataset(
-                LeRobotDataset.resume,
-                repo_id=self.args.repo_id,
-                root=output_dir,
-                image_writer_threads=0 if self.dagger is not None else self.args.image_writer_threads,
-                vcodec=self.args.vcodec,
-                rgb_encoder=rgb_encoder,
-                depth_encoder=depth_encoder,
-                batch_encoding_size=self.args.batch_encoding_size,
-                streaming_encoding=self.args.streaming_encoding,
-                encoder_queue_maxsize=self.args.encoder_queue_maxsize,
-                encoder_threads=self.args.encoder_threads,
-            )
             self.saved_episodes = int(existing_info.get("total_episodes", 0))
             self.frames_written = int(existing_info.get("total_frames", 0))
             self.get_logger().info(f"resuming dataset with {self.saved_episodes} saved episode(s)")
         else:
             if output_dir.exists():
-                if should_recreate_empty_shell:
-                    shutil.rmtree(output_dir)
-                elif any(output_dir.iterdir()):
+                if any(output_dir.iterdir()):
                     raise RuntimeError(
                         f"Dataset root exists but is not a valid LeRobot dataset: {output_dir}. "
                         "If this is a broken partial run, move it away or delete it first."
@@ -931,34 +927,24 @@ class OfficialLeRobotRecorder(Node):
             self.active_cameras = list(active)
             self.dataset = call_lerobot_dataset(
                 LeRobotDataset.create,
-                repo_id=self.args.repo_id,
                 root=output_dir,
                 fps=int(self.args.fps),
                 features=dataset_features(active, self.schema.names, action_names, self.subtasks.enabled,
                                           self.dagger is not None),
                 robot_type=self.args.robot_type,
                 use_videos=True,
-                image_writer_threads=0 if self.dagger is not None else self.args.image_writer_threads,
-                vcodec=self.args.vcodec,
-                rgb_encoder=rgb_encoder,
-                depth_encoder=depth_encoder,
-                batch_encoding_size=self.args.batch_encoding_size,
-                streaming_encoding=self.args.streaming_encoding,
-                encoder_queue_maxsize=self.args.encoder_queue_maxsize,
-                encoder_threads=self.args.encoder_threads,
                 video_files_size_in_mb=self.args.video_files_size_in_mb,
                 data_files_size_in_mb=self.args.data_files_size_in_mb,
+                **self._dataset_options,
             )
 
-        if self.dagger is not None:
-            # Reuse DAgger's bounded, lossless staging writer on create AND resume.
-            # Compression runs after authority is revoked, when saving video.
-            from dagger.capture_image_writer import CaptureImageWriter
-            self.dataset.writer.image_writer = CaptureImageWriter(
-                num_threads=self.args.image_writer_threads)
-            self.get_logger().info(
-                "DAgger capture: lossless uncompressed PNG, raw uint16 depth, "
-                f"{self.args.image_writer_threads} writer threads, queue limit 64")
+            self.dataset.finalize()  # Publish only the initial, empty schema.
+            self.dataset = None
+
+        self.storage_budget = StorageBudget(
+            output_dir, min_free_gb=self.args.min_free_disk_gb,
+            max_temp_gb=self.args.max_episode_temp_gb, max_seconds=self.args.max_episode_seconds)
+        self._open_episode_dataset()
 
         # Resolve the anchor only after resume/create establishes the exact
         # camera feature set that will actually be written to this dataset.
@@ -988,9 +974,55 @@ class OfficialLeRobotRecorder(Node):
             f"max delta: {self.args.max_sync_delta_sec * 1000:.1f} ms"
         )
         self.get_logger().info(f"dataset root: {self.args.output_dir}")
+        self.get_logger().info(
+            f"storage guards: free>={self.args.min_free_disk_gb:g} GiB + encoding reserve, "
+            f"episode<={self.args.max_episode_temp_gb:g} GiB/{self.args.max_episode_seconds:g} s, "
+            f"image queue<={self.args.image_writer_max_pending} jobs/{self.args.image_writer_max_mb:g} MiB"
+        )
         self.get_logger().info("waiting for 'start' command to begin episode recording")
         if self.dagger is not None:
             self._write_command_status("ready", True, None, message="DAgger recorder initialized; no episode started")
+
+    def _open_episode_dataset(self) -> None:
+        from dagger.capture_image_writer import CaptureImageWriter
+        root = self.episode_store.prepare()
+        info = json.loads((Path(self.args.output_dir) / 'meta/info.json').read_text())
+        if info['total_episodes']:
+            self.dataset = call_lerobot_dataset(LeRobotDataset.resume, root=root, **self._dataset_options)
+        else:
+            self.dataset = call_lerobot_dataset(
+                LeRobotDataset.create, root=root, fps=info['fps'], features=info['features'],
+                robot_type=info.get('robot_type'), use_videos=True,
+                video_files_size_in_mb=self.args.video_files_size_in_mb,
+                data_files_size_in_mb=self.args.data_files_size_in_mb,
+                **self._dataset_options)
+        self.dataset.writer.image_writer = CaptureImageWriter(
+            self.args.image_writer_threads, self.args.image_writer_max_pending,
+            self.args.image_writer_max_mb, low_cpu=self.dagger is not None)
+
+    def _close_episode_dataset(self) -> None:
+        """Join writes before deleting a workspace, including a failed first row."""
+        if self.dataset is None:
+            return
+        if self.dagger_progress_future is not None:
+            try:
+                self.dagger_progress_future.result()
+            except Exception as exc:
+                self.get_logger().warn(f"temporary progress receipt failed: {exc}")
+            self.dagger_progress_future = None
+        writer = self.dataset.writer
+        image_writer = writer.image_writer
+        if image_writer is not None:
+            try:
+                image_writer.stop()
+            except Exception as exc:
+                self.get_logger().warn(f"discarding failed temporary image work: {exc}")
+            finally:
+                writer.image_writer = None
+        # Finalization can flush failed-save metadata, but ONLY in the private
+        # workspace. Never remove it until all writers are closed.
+        self.dataset.finalize()
+        self.dataset = None
 
     def _held_signal(
         self,
@@ -1097,28 +1129,26 @@ class OfficialLeRobotRecorder(Node):
         self.episode_invalid_reason = reason
         self.is_recording = False
         self._release_motion_lock()
-        self._log_sync(
-            {
+        event = {
                 "event": "episode_invalidated",
                 "reason": reason,
                 "buffered_frames": self.current_episode_frames,
                 "wall_time": now,
                 **details,
             }
-        )
+        # Disk-full must not throw again while reporting the original failure.
+        # RAM state is authoritative; DAgger also detects a stale progress file.
+        try:
+            self._log_sync(event)
+        except OSError as exc:
+            self.get_logger().error(f"could not append invalidation log: {exc}")
         if self.args.episode_event_file:
-            event_path = Path(self.args.episode_event_file)
-            write_json_atomic(
-                event_path,
-                {
-                    "event": "episode_invalidated",
-                    "reason": reason,
-                    "buffered_frames": self.current_episode_frames,
-                    "wall_time": now,
-                },
-            )
+            try:
+                write_json_atomic(Path(self.args.episode_event_file), event)
+            except OSError as exc:
+                self.get_logger().error(f"could not write invalidation event: {exc}")
         self.get_logger().error(
-            f"episode invalidated by synchronization failure: {reason}; "
+            f"EPISODE INVALID: {reason}; "
             "press S or D to discard it before starting again"
         )
 
@@ -1169,6 +1199,20 @@ class OfficialLeRobotRecorder(Node):
     def _record_tick(self) -> None:
         if self.stop_requested or self.dataset is None or not self.is_recording:
             return
+        try:
+            self.dataset.writer.image_writer.check()
+            if self.dagger_progress_future is not None and self.dagger_progress_future.done():
+                self.dagger_progress_future.result()
+                self.dagger_progress_future = None
+            self.storage_budget.check()
+            self._record_frame()
+        except Exception as exc:
+            # add_frame may have queued some cameras before failing. Nothing
+            # in this workspace has been published to the saved dataset.
+            reason = str(exc) if isinstance(exc, StorageLimitError) else 'capture_write_failed'
+            self._invalidate_episode(reason, time.time(), detail=str(exc))
+
+    def _record_frame(self) -> None:
         now = time.time()
         dagger = getattr(self, "dagger", None)
         if dagger is not None and not dagger.ready:
@@ -1388,6 +1432,7 @@ class OfficialLeRobotRecorder(Node):
                 self._invalidate_episode("missing_dagger_provenance", now, detail=str(exc))
                 return
             frame.update({key: np.array([value], dtype=np.int64) for key, value in labels.items()})
+        self.storage_budget.admit(frame)
         self.dataset.add_frame(frame)
         if dagger is not None:
             dagger.expert_frames += labels["dagger.train_mask"]
@@ -1433,11 +1478,23 @@ class OfficialLeRobotRecorder(Node):
     def _log_sync(self, event: dict[str, Any]) -> None:
         if self.sync_log is None:
             return
-        self.sync_log.write(json.dumps(event, ensure_ascii=False) + "\n")
+        try:
+            self.sync_log.write(json.dumps(event, ensure_ascii=False) + "\n")
+        except OSError as exc:
+            self.get_logger().error(f"sync diagnostic log unavailable: {exc}")
+            try:
+                self.sync_log.close()
+            except OSError:
+                pass
+            self.sync_log = None
+            if self.is_recording:
+                self._invalidate_episode('sync_log_write_failed', time.time(), detail=str(exc))
 
     def has_pending_episode(self) -> bool:
         if self.dataset is None:
             return False
+        if self.episode_invalid:
+            return True  # A failed save may already have popped buffer['size'].
         return self.dataset.has_pending_frames()
 
     def _reset_episode_state(self) -> None:
@@ -1448,6 +1505,8 @@ class OfficialLeRobotRecorder(Node):
         self.episode_invalid = False
         self.episode_invalid_reason = None
         self.last_episode_anchor_stamp_sec = None
+        if self.storage_budget is not None:
+            self.storage_budget.started = None
         self.reported_image_overflows.clear()
         self.subtasks.reset()
         if getattr(self, "dagger", None) is not None:
@@ -1503,6 +1562,13 @@ class OfficialLeRobotRecorder(Node):
             self.get_logger().warn(rejection)
             self._write_command_status("start", False, request_id, message=rejection)
             return False
+        self._reset_episode_state()
+        try:
+            self.storage_budget.start()
+        except (OSError, RuntimeError) as exc:
+            self._release_motion_lock()
+            self._write_command_status('start', False, request_id, message=f"storage unavailable: {exc}")
+            return False
         episode_index = self.saved_episodes
         # Warmup frames are useful for dataset creation but belong before the
         # operator's start command. Clear them so a full warmup FIFO is not
@@ -1513,7 +1579,6 @@ class OfficialLeRobotRecorder(Node):
             else None
         )
         self._clear_warmup_images()
-        self._reset_episode_state()
         self.is_recording = True
         # Do not use an image captured before the operator pressed Enter. The
         # next timer tick waits for a strictly newer reference-camera frame.
@@ -1591,26 +1656,38 @@ class OfficialLeRobotRecorder(Node):
         self.get_logger().info(
             f"saving episode {episode_index} with {episode_frames} frame(s) ({reason})"
         )
+        self.is_recording = False
         try:
+            if self.dagger_progress_future is not None:
+                self.dagger_progress_future.result()
+                self.dagger_progress_future = None
+            self.dataset.writer.image_writer.wait_until_done()
+            self.storage_budget.refresh()
+            self.storage_budget.check(saving=True)
             annotation_paths = None
             if self.subtasks.enabled:
                 manifest = self.subtasks.manifest(
                     episode_index, self.args.task_name, episode_frames, self.args.fps, reason,
                 )
                 self.subtasks.apply_to_buffer(self.dataset, episode_frames)
-                annotation_paths = prepare_annotation(Path(self.args.output_dir), manifest)
+                annotation_paths = prepare_annotation(self.episode_store.work, manifest)
                 subtask_status.update(complete=manifest["annotation_complete"],
                                       needs_review=manifest["needs_review"],
-                                      annotation_file=str(annotation_paths[1]))
-            self.dataset.save_episode()
+                                      annotation_file=str(Path(self.args.output_dir) /
+                                                          annotation_paths[1].relative_to(self.episode_store.work)))
+            self.dataset.save_episode(parallel_encoding=False)
+            self.dataset.finalize()
             if annotation_paths is not None:
                 os.replace(*annotation_paths)
+            self.episode_store.commit(episode_index)
         except Exception as exc:
-            self.save_failed = True
-            self.stop_requested = True
-            self.is_recording = False
-            self._release_motion_lock()
             self.get_logger().error(f"failed to save episode {episode_index}: {exc}")
+            self._invalidate_episode('episode_save_failed', time.time(), detail=str(exc))
+            # An unresolved publication journal cannot be retried/discarded in
+            # this process. Restart recovers it before opening the dataset.
+            if self.episode_store.journal.exists():
+                self.save_failed = True
+                self.stop_requested = True
             self._write_command_status(
                 "save",
                 False,
@@ -1635,6 +1712,15 @@ class OfficialLeRobotRecorder(Node):
         )
         self._reset_episode_state()
         self._release_motion_lock()
+        # Commit succeeded. Failure to prepare the NEXT workspace must not turn
+        # this episode into an apparent failed save or trigger duplicate saves.
+        self.dataset = None
+        if not self.stop_requested:
+            try:
+                self._open_episode_dataset()
+            except Exception as exc:
+                self.stop_requested = True
+                self.get_logger().error(f"episode saved; next workspace unavailable: {exc}")
         self._write_command_status(
             "save",
             True,
@@ -1669,39 +1755,17 @@ class OfficialLeRobotRecorder(Node):
         self.get_logger().warn(
             f"discarding current episode buffer with {discarded_frames} frame(s) ({reason})"
         )
-        if has_buffered_frames:
-            try:
-                # LeRobot 0.6.0 clears image features but leaves PNGs used to
-                # encode video features. Resolve only this unsaved episode's
-                # temporary directories before the buffer is reset. The public
-                # clear call joins image writers before we remove leftovers.
-                writer = getattr(self.dataset, "writer", self.dataset)
-                image_dir = getattr(writer, "_get_image_file_dir", None)
-                video_dirs = []
-                if callable(image_dir):
-                    images_root = (Path(self.args.output_dir) / "images").resolve()
-                    episode_name = f"episode-{self.saved_episodes:06d}"
-                    for key in self.dataset.meta.video_keys:
-                        directory = Path(image_dir(self.saved_episodes, key)).resolve()
-                        if directory.relative_to(images_root).parts != (key, episode_name):
-                            raise RuntimeError(f"Unexpected temporary video directory: {directory}")
-                        video_dirs.append(directory)
-                self.dataset.clear_episode_buffer(delete_images=True)
-                for directory in video_dirs:
-                    if directory.is_dir():
-                        shutil.rmtree(directory)
-            except Exception as exc:
-                self.is_recording = False
-                self._release_motion_lock()
-                self.get_logger().error(f"failed to discard current episode: {exc}")
-                self._write_command_status(
-                    "discard",
-                    False,
-                    request_id,
-                    frames=discarded_frames,
-                    message=f"discard failed: {exc}",
-                )
-                return False
+        try:
+            # Includes a partially submitted first frame with frame_count=0.
+            self._close_episode_dataset()
+            self.episode_store.discard()
+        except Exception as exc:
+            self.is_recording = False
+            self._release_motion_lock()
+            self._invalidate_episode('episode_discard_failed', time.time(), detail=str(exc))
+            self._write_command_status('discard', False, request_id, frames=discarded_frames,
+                                       message=f"discard failed: {exc}")
+            return False
         self.frames_written -= discarded_frames
         self.session_frames_written -= discarded_frames
         self.discarded_episodes += 1
@@ -1718,6 +1782,12 @@ class OfficialLeRobotRecorder(Node):
         )
         self._reset_episode_state()
         self._release_motion_lock()
+        if not self.stop_requested:
+            try:
+                self._open_episode_dataset()
+            except Exception as exc:
+                self.stop_requested = True
+                self.get_logger().error(f"episode discarded; next workspace unavailable: {exc}")
         self._write_command_status(
             "discard",
             True,
@@ -1739,9 +1809,7 @@ class OfficialLeRobotRecorder(Node):
                 try:
                     self.mark_status_future.result()
                 except Exception as exc:
-                    self.get_logger().error(f"subtask acknowledgement failed: {exc}; stopping session")
-                    self.stop_requested = True
-                    return
+                    self._invalidate_episode('receipt_write_failed', time.time(), detail=str(exc))
                 self.mark_status_future = None
             try:
                 command_line = self.control_queue.get_nowait()
@@ -1767,23 +1835,33 @@ class OfficialLeRobotRecorder(Node):
     def finish(self) -> None:
         self.stop_requested = True
         self.mark_status_writer.shutdown(wait=True)
-        if self.dataset is not None and not self.save_failed:
-            if self.episode_invalid:
-                self.discard_current_episode("shutdown:invalid_episode")
-            elif getattr(self, "dagger", None) is not None and self.is_recording:
-                self.discard_current_episode("shutdown:unconfirmed_dagger_trial")
-            elif self.has_pending_episode() and self.current_episode_frames > 0:
-                self.save_current_episode("shutdown")
-        if self.dataset is not None:
-            self.dataset.finalize()
-        if self.sync_log is not None:
-            self.sync_log.flush()
-            self.sync_log.close()
-            self.sync_log = None
-        self._release_motion_lock()
-        if self.motion_lock_handle is not None:
-            self.motion_lock_handle.close()
-            self.motion_lock_handle = None
+        try:
+            if self.dataset is not None and not self.save_failed:
+                if self.episode_invalid:
+                    self.discard_current_episode("shutdown:invalid_episode")
+                elif getattr(self, "dagger", None) is not None and self.is_recording:
+                    self.discard_current_episode("shutdown:unconfirmed_dagger_trial")
+                elif self.has_pending_episode() and self.current_episode_frames > 0:
+                    self.save_current_episode("shutdown")
+            self._close_episode_dataset()
+            if (self.episode_store is not None and not self.save_failed and not self.episode_invalid
+                    and not self.episode_store.journal.exists()):
+                self.episode_store.discard()
+        finally:
+            if self.storage_budget is not None:
+                self.storage_budget.close()
+            if self.episode_store is not None:
+                self.episode_store.close()
+            if self.sync_log is not None:
+                try:
+                    self.sync_log.close()
+                except OSError as exc:
+                    self.get_logger().error(f"sync log close failed: {exc}")
+                self.sync_log = None
+            self._release_motion_lock()
+            if self.motion_lock_handle is not None:
+                self.motion_lock_handle.close()
+                self.motion_lock_handle = None
 
 
 def parse_camera_args(items: list[str], defaults: dict[str, str], camera_type: str) -> dict[str, str]:
@@ -1989,6 +2067,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--action-eef-topic", default=ACTION_EEF_TOPIC, help="ROS2 JSON topic for end-effector pose targets when --action-mode=eef.")
     parser.add_argument("--action-height-topic", default=ACTION_HEIGHT_TOPIC, help="ROS2 JSON topic for robot height targets when --action-mode=eef.")
     parser.add_argument("--image-writer-threads", type=int, default=4, help="Number of background image-writer threads used by LeRobot.")
+    parser.add_argument('--image-writer-max-pending', type=int, default=64,
+                        help='Maximum unfinished image jobs shared by all cameras; overflow invalidates the episode.')
+    parser.add_argument('--image-writer-max-mb', type=float, default=256,
+                        help='Maximum raw image MiB in unfinished write jobs; overflow invalidates the episode.')
+    parser.add_argument('--min-free-disk-gb', type=float, default=2,
+                        help='Minimum free GiB, in addition to one raw episode estimate reserved for saving.')
+    parser.add_argument('--max-episode-temp-gb', type=float, default=8,
+                        help='Maximum raw-image-plus-overhead GiB admitted per episode; reaching it invalidates, never drops frames.')
+    parser.add_argument('--max-episode-seconds', type=float, default=600,
+                        help='Maximum wall duration after start, including waits. Exceeding it invalidates the episode.')
     parser.add_argument("--vcodec", default="h264", help="RGB video codec passed to LeRobot; h264 favors speed, libsvtav1 favors smaller files.")
     parser.add_argument("--video-crf", type=float, default=None, help="Optional RGB video CRF/quality value.")
     parser.add_argument("--video-preset", default=None, help="Optional RGB video encoder preset.")
@@ -2003,8 +2091,8 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Enable logarithmic depth quantization; use --no-depth-use-log for linear depth quantization.",
     )
-    parser.add_argument("--batch-encoding-size", type=int, default=1, help="Number of frames submitted together to the video encoder.")
-    parser.add_argument("--streaming-encoding", action="store_true", help="Encode videos while recording when supported; reduces finalization work but increases runtime load.")
+    parser.add_argument("--batch-encoding-size", type=int, default=1, help="Episodes per encoding batch; only 1 is supported by transactional saving.")
+    parser.add_argument("--streaming-encoding", action="store_true", help="Legacy option: rejected because transactional episode saving requires non-streaming encoding.")
     parser.add_argument("--encoder-queue-maxsize", type=int, default=30, help="Maximum pending frame batches in the asynchronous encoder queue.")
     parser.add_argument("--encoder-threads", type=int, default=None, help="Optional number of encoder worker threads; unset lets LeRobot choose.")
     parser.add_argument("--video-files-size-in-mb", type=int, default=None, help="Optional maximum size of each video file before LeRobot starts a new segment.")
@@ -2020,31 +2108,36 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional JSON event file used to notify the launcher about saved, discarded, or invalid episodes.",
     )
-    show_requested_parameter_help(parser)
     parser.add_argument("--dagger", action="store_true", help="Record causal HG-DAgger action provenance; requires joint proxy topics.")
     parser.add_argument("--dagger-start-timeout-sec", type=float, default=30.0,
                         help="Maximum wait for the first DAgger action/label barrier, before accepting any frame.")
+    show_requested_parameter_help(parser)
     args = parser.parse_args()
+    if args.streaming_encoding or args.batch_encoding_size != 1:
+        parser.error('transactional saving requires --batch-encoding-size=1 and no --streaming-encoding')
+    if args.image_writer_threads < 0 or args.image_writer_max_pending < 1:
+        parser.error('image writer threads must be nonnegative and queue capacity positive')
+    if any(not np.isfinite(v) or v <= 0 for v in (
+            args.image_writer_max_mb, args.min_free_disk_gb, args.max_episode_temp_gb, args.max_episode_seconds)):
+        parser.error('storage/memory/duration limits must be finite and positive')
     args.subtasks = args.subtasks_json
     if args.dagger and (args.action_mode != "joint" or args.fallback_action_to_state or args.subtasks):
         parser.error("DAgger requires --action-mode joint, no state fallback, and no subtask plan")
     if not np.isfinite(args.dagger_start_timeout_sec) or args.dagger_start_timeout_sec <= 0:
         parser.error("--dagger-start-timeout-sec must be finite and positive")
+    timing_limits = (args.image_poll_fps, args.state_warmup_sec, args.camera_warmup_sec,
+                     args.max_sync_delta_sec, args.max_image_age_sec, args.max_state_age_sec,
+                     args.max_state_interpolation_gap_sec, args.max_action_hold_sec)
+    if any(not np.isfinite(value) or value <= 0 for value in timing_limits):
+        parser.error('camera rates, warmup and synchronization limits must be finite and positive')
+    if args.duration is not None and (not np.isfinite(args.duration) or args.duration <= 0):
+        parser.error('--duration must be finite and positive')
+    if any(not np.isfinite(value) for value in (args.depth_min, args.depth_max, args.depth_shift)):
+        parser.error('depth range and shift must be finite')
     if args.depth_min < 0 or args.depth_max <= args.depth_min:
         parser.error("depth range must satisfy 0 <= --depth-min < --depth-max")
-    if args.fps <= 0 or args.min_cameras < 1 or args.image_poll_fps <= 0:
+    if args.fps <= 0 or args.min_cameras < 1:
         parser.error("--fps and --min-cameras must be positive")
-    if args.state_warmup_sec <= 0 or args.camera_warmup_sec <= 0:
-        parser.error("state and camera warmup timeouts must be positive")
-    if (
-        args.max_sync_delta_sec <= 0
-        or args.max_image_age_sec <= 0
-        or args.max_state_age_sec <= 0
-        or args.max_state_interpolation_gap_sec <= 0
-    ):
-        parser.error("synchronization delta and freshness limits must be positive")
-    if args.max_action_hold_sec <= 0:
-        parser.error("--max-action-hold-sec must be positive")
     if not 0 < args.max_frame_interval_error_ratio < 1:
         parser.error("--max-frame-interval-error-ratio must be between 0 and 1")
     if args.sync_image_buffer_size < 2 or args.sync_signal_buffer_size < 2:
@@ -2142,10 +2235,12 @@ def main() -> None:
             executor.spin_once(timeout_sec=0.05)
             node.process_control_commands()
     finally:
-        node.finish()
-        executor.remove_node(node)
-        node.destroy_node()
-        rclpy.shutdown()
+        try:
+            node.finish()
+        finally:
+            executor.remove_node(node)
+            node.destroy_node()
+            rclpy.shutdown()
     print(f"frames_written={node.frames_written}")
     print(f"record_ticks_waited={node.record_ticks_waited}")
     print(f"episodes_invalidated={node.episodes_invalidated}")

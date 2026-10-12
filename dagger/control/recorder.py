@@ -107,6 +107,8 @@ class CollectorCommandResult:
     episode_index: Optional[int] = None
     frames: int = 0
     expert_frames: int = 0
+    episode_invalid: bool = False
+    publication_uncertain: bool = True
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -118,6 +120,8 @@ class CollectorCommandResult:
             "episode_index": self.episode_index,
             "frames": self.frames,
             "expert_frames": self.expert_frames,
+            "episode_invalid": self.episode_invalid,
+            "publication_uncertain": self.publication_uncertain,
         }
 
 
@@ -221,6 +225,8 @@ class CollectorFifo:
                     int(episode_index) if episode_index is not None else None,
                     int(payload.get("frames", 0) or 0),
                     int(payload.get("expert_frames", 0) or 0),
+                    payload.get("episode_invalid") is True,
+                    payload.get("publication_uncertain") is not False,
                 )
             time.sleep(0.02)
         return CollectorCommandResult(

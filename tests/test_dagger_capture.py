@@ -67,7 +67,45 @@ class CaptureTest(unittest.TestCase):
             writer.save_image(None, 'one.png')
             with self.assertRaisesRegex(OSError, 'disk full'):
                 writer.wait_until_done()
-            writer.stop()
+            with self.assertRaisesRegex(OSError, 'disk full'):
+                writer.stop()
+
+    def test_byte_limit_and_out_of_order_failure_never_block_capture(self):
+        entered, release = threading.Event(), threading.Event()
+        def work(image, path):
+            if path == 'slow':
+                entered.set()
+                if not release.wait(3):
+                    raise TimeoutError('test writer blocked')
+            else:
+                raise OSError('second image failed')
+        with patch.object(module, 'write_capture_image', work):
+            writer = module.CaptureImageWriter(2, max_pending_mb=.001)
+            try:
+                writer.save_image(np.zeros(600, dtype=np.uint8), 'slow')
+                self.assertTrue(entered.wait(1))
+                with self.assertRaisesRegex(RuntimeError, 'memory limit'):
+                    writer.save_image(np.zeros(600, dtype=np.uint8), 'overflow')
+                writer.save_image(np.zeros(10, dtype=np.uint8), 'error')
+                future = writer._pending[-1][0]
+                with self.assertRaises(OSError):
+                    future.result(timeout=1)
+                with self.assertRaisesRegex(OSError, 'second image'):
+                    writer.check()
+                self.assertFalse(release.is_set())
+            finally:
+                release.set()
+                with self.assertRaises(OSError):
+                    writer.stop()
+
+    def test_compressed_writer_propagates_errors_instead_of_only_logging(self):
+        with tempfile.TemporaryDirectory() as directory:
+            writer = module.CaptureImageWriter(1, low_cpu=False)
+            writer.save_image(np.zeros((4, 4, 3), dtype=np.uint8), Path(directory) / 'missing/frame.png')
+            with self.assertRaises(OSError):
+                writer.wait_until_done()
+            with self.assertRaises(OSError):
+                writer.stop()
 
 
 @unittest.skipUnless(hasattr(os, 'sched_getaffinity') and shutil.which('taskset'), 'Linux affinity required')

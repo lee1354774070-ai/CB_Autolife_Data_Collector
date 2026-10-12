@@ -1459,6 +1459,13 @@ class HgDaggerSupervisor(Node):
             result is not None and result.acknowledged and result.success
         )
         if not collector_ok:
+            if (result is not None and result.acknowledged and result.episode_invalid
+                    and not result.publication_uncertain):
+                # A known failed workspace is not an ambiguous save. Keep the
+                # trial open, but let the next explicit Y discard it. Never
+                # retry save here or reset while data is still unresolved.
+                self._pending_collector_result = None
+                raise RuntimeError("collector episode invalid; press Y to discard before starting again")
             self._pending_collector_result = result
             raise RuntimeError("collector result unresolved; trial retained for reconciliation/recovery")
         self._pending_collector_result = None

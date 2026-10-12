@@ -138,6 +138,24 @@ show_help() {
                 echo "Usage: SYNC_IMAGE_BUFFER_SIZE=16 bash start_lerobot_official_collect.sh task_name"
                 echo "Per-camera image FIFO capacity. Overflow invalidates the active episode. Default: 16"
                 ;;
+            MIN_FREE_DISK_GB|MAX_EPISODE_TEMP_GB|MAX_EPISODE_SECONDS|IMAGE_WRITER_MAX_PENDING|IMAGE_WRITER_MAX_MB)
+                echo "Storage protection (all modes): ${parameter}"
+                echo "Usage: ${parameter}=VALUE bash start_lerobot_official_collect.sh task_name"
+                case "${parameter}" in
+                    MIN_FREE_DISK_GB) echo "Default: 2 GiB free-space floor, plus one raw episode estimate for encoding." ;;
+                    MAX_EPISODE_TEMP_GB) echo "Default: 8 GiB conservative raw-image/overhead budget per episode; not a disk quota." ;;
+                    MAX_EPISODE_SECONDS) echo "Default: 600 seconds after start, including camera waits. Not an auto-save timer." ;;
+                    IMAGE_WRITER_MAX_PENDING) echo "Default: 64 unfinished image jobs, shared by all cameras; separate from image FIFOs." ;;
+                    IMAGE_WRITER_MAX_MB) echo "Default: 256 MiB raw inputs held by unfinished jobs; not total process RAM." ;;
+                esac
+                echo "Limits must be positive. Reaching them invalidates the current episode; no frame dropping."
+                echo "Discard the invalid episode, resolve storage pressure, then start again."
+                return 0
+                ;;
+            IMAGE_WRITER_THREADS)
+                echo "Usage: IMAGE_WRITER_THREADS=2 bash start_lerobot_official_collect.sh task_name"
+                echo "Background image-writing threads. Default: 4; DAgger: 2. Zero writes synchronously and may stall capture."
+                ;;
             SYNC_SIGNAL_BUFFER_SIZE)
                 echo "SYNC_SIGNAL_BUFFER_SIZE"
                 echo "Usage: SYNC_SIGNAL_BUFFER_SIZE=64 bash start_lerobot_official_collect.sh task_name"
@@ -184,6 +202,7 @@ show_help() {
                 echo "${parameter}"
                 echo "Usage: ${parameter}=<value> bash start_lerobot_official_collect.sh task_name"
                 echo "Video encoding or file-segmentation option forwarded to the LeRobot recorder. Default: unset unless documented in record_lerobot_official.py --help."
+                echo "Transactional saves require BATCH_ENCODING_SIZE=1 and STREAMING_ENCODING=0. Episodes use new files; size settings cannot merge episodes."
                 ;;
             ROBOT_PY|LEROBOT_PY)
                 echo "${parameter}"
@@ -261,6 +280,12 @@ Common parameters:
   SYNC_REFERENCE_CAMERA      Timestamp anchor camera. Default: hand_left
   MAX_SYNC_DELTA_SEC         Maximum sync error in seconds. Default: 0.03
   SYNC_IMAGE_BUFFER_SIZE     Image FIFO capacity per camera. Default: 16
+  MIN_FREE_DISK_GB           Free GiB floor plus estimated encoding reserve. Default: 2
+  MAX_EPISODE_TEMP_GB        Per-episode raw-image/overhead GiB budget. Default: 8
+  MAX_EPISODE_SECONDS        Per-episode wall duration limit. Default: 600
+  IMAGE_WRITER_MAX_PENDING   Shared unfinished image job capacity. Default: 64
+  IMAGE_WRITER_MAX_MB        Raw image MiB held by unfinished jobs. Default: 256
+  IMAGE_WRITER_THREADS       Image workers. Default: 4 (DAgger: 2); 0 is synchronous.
   SYNC_SIGNAL_BUFFER_SIZE    State/action buffer capacity. Default: 64
   MIN_CAMERAS                Minimum valid cameras. Default: all selected cameras
   ACTION_MODE                status_target, joint, or eef. Default: status_target
@@ -277,13 +302,13 @@ Common parameters:
   DEPTH_VCODEC               Depth video codec. Default: hevc
   DEPTH_MIN/MAX/SHIFT        Depth quantizer range and shift. Defaults: 0.05/10.0/3.5
   DEPTH_USE_LOG              Logarithmic depth quantization. Default: 1
-  BATCH_ENCODING_SIZE        Frames per encoder batch. Default: 1
+  BATCH_ENCODING_SIZE        Episodes per encoding batch. Must remain 1.
   ENCODER_QUEUE_MAXSIZE      Maximum pending encoder batches. Default: 30
   ENCODER_THREADS            Encoder worker threads. Default: unset
   VIDEO_CRF/PRESET/GOP       Optional RGB encoding controls. Default: unset
   VIDEO_FILES_SIZE_IN_MB     Optional video segment size. Default: unset
   DATA_FILES_SIZE_IN_MB      Optional Parquet segment size. Default: unset
-  STREAMING_ENCODING         Encode videos during capture. Default: 0
+  STREAMING_ENCODING         Must remain 0 for transactional saves.
   START_HAND_PRODUCER        Start hand-camera producer. Default: 1 unless devices are busy
   CAMERA_ONLY                Single-camera link test mode. Default: 0
   FALLBACK_ACTION_TO_STATE   Use state as action for link tests. Default: 0
@@ -576,6 +601,12 @@ RECORDER_ARGS=(
     --max-frame-interval-error-ratio "${MAX_FRAME_INTERVAL_ERROR_RATIO:-0.45}"
     --sync-image-buffer-size "${SYNC_IMAGE_BUFFER_SIZE:-16}"
     --sync-signal-buffer-size "${SYNC_SIGNAL_BUFFER_SIZE:-64}"
+    --min-free-disk-gb "${MIN_FREE_DISK_GB:-2}"
+    --max-episode-temp-gb "${MAX_EPISODE_TEMP_GB:-8}"
+    --max-episode-seconds "${MAX_EPISODE_SECONDS:-600}"
+    --image-writer-max-pending "${IMAGE_WRITER_MAX_PENDING:-64}"
+    --image-writer-max-mb "${IMAGE_WRITER_MAX_MB:-256}"
+    --image-writer-threads "${IMAGE_WRITER_THREADS:-4}"
     --action-mode "${ACTION_MODE:-status_target}"
     --vcodec "${COLLECT_VCODEC:-h264}"
     --depth-vcodec "${DEPTH_VCODEC:-hevc}"

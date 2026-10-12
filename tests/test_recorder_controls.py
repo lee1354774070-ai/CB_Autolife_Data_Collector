@@ -21,6 +21,7 @@ from unittest.mock import Mock, patch
 from queue import SimpleQueue, Empty
 from subtask_annotations import SubtaskAnnotations, check_pending_annotations, prepare_annotation
 from dagger_labels import validate_features as validate_dagger_features
+from episode_storage import StorageLimitError
 
 
 SOURCE = Path(__file__).resolve().parents[1] / 'record_lerobot_official.py'
@@ -28,13 +29,14 @@ tree = ast.parse(SOURCE.read_text())
 methods = [item for cls in tree.body if isinstance(cls, ast.ClassDef)
            for item in cls.body if isinstance(item, ast.FunctionDef)
            and item.name in {'start_episode', '_reset_episode_state', 'mark_subtask',
-                             'save_current_episode', 'discard_current_episode', 'finish', '_clear_warmup_images'}]
+                             'save_current_episode', 'discard_current_episode', 'finish', '_clear_warmup_images',
+                             '_invalidate_episode', '_record_tick'}]
 methods.extend(item for cls in tree.body if isinstance(cls, ast.ClassDef)
                for item in cls.body if isinstance(item, ast.FunctionDef)
                and item.name in {'_write_command_status', 'process_control_commands', '_validate_resume_schema', '_poll_shm_images'})
 namespace = {'time': time, 'Path': Path, 'os': os, 'prepare_annotation': prepare_annotation,
              'Any': Any, 'Empty': Empty, 'validate_dagger_features': validate_dagger_features,
-             'shutil': shutil}
+             'shutil': shutil, 'StorageLimitError': StorageLimitError}
 exec(compile(ast.Module(body=methods, type_ignores=[]), str(SOURCE), 'exec'), namespace)
 
 
@@ -124,8 +126,10 @@ class RecorderControlsTest(unittest.TestCase):
         node.dataset = object()
         node.subtasks = SubtaskAnnotations(())
         node.save_failed = False
+        node.storage_budget = Mock()
         node.is_recording = False
         node.episode_invalid = False
+        node.episodes_invalidated = 0
         node.current_episode_frames = 0
         node.saved_episodes = 3
         node.session_frames_written = 42
@@ -161,6 +165,29 @@ class RecorderControlsTest(unittest.TestCase):
         node._write_command_status.assert_called_once_with(
             'start', True, 'request-1', episode_index=3, message='episode started')
 
+    def test_start_keeps_storage_duration_timer_armed(self):
+        node = self.recorder()
+        node.storage_budget.start.side_effect = lambda: setattr(node.storage_budget, 'started', 123)
+        self.assertTrue(namespace['start_episode'](node, 'test'))
+        self.assertEqual(node.storage_budget.started, 123)
+
+    def test_disk_guard_rejects_start_and_releases_motion_lock(self):
+        node = self.recorder()
+        node.storage_budget.start.side_effect = StorageLimitError('disk_reserve_low')
+        self.assertFalse(namespace['start_episode'](node, 'test'))
+        self.assertFalse(node.is_recording)
+        node._release_motion_lock.assert_called_once()
+
+    def test_diagnostic_disk_failure_does_not_prevent_invalidation(self):
+        node = self.recorder()
+        node.args = SimpleNamespace(episode_event_file='event.json')
+        node._log_sync.side_effect = OSError('full log disk')
+        with patch.dict(namespace, write_json_atomic=Mock(side_effect=OSError('full event disk'))):
+            namespace['_invalidate_episode'](node, 'disk_reserve_low', 1)
+        self.assertTrue(node.episode_invalid)
+        self.assertFalse(node.is_recording)
+        self.assertEqual(node.episodes_invalidated, 1)
+
     def test_each_rejected_start_is_acknowledged_without_clearing_frames(self):
         for field, value in [('dataset', None), ('is_recording', True), ('episode_invalid', True), ('current_episode_frames', 5)]:
             with self.subTest(field=field):
@@ -178,7 +205,7 @@ class RecorderControlsTest(unittest.TestCase):
 
     def annotation_recorder(self, root):
         node = self.recorder()
-        node.args = SimpleNamespace(task_name='put towel in basket', fps=30, output_dir=root)
+        node.args = SimpleNamespace(task_name='put towel in basket', fps=30, output_dir=root, episode_event_file=None)
         node.subtasks = SubtaskAnnotations(('pick', 'handover', 'place'))
         node.is_recording = True
         node.stop_requested = False
@@ -186,6 +213,23 @@ class RecorderControlsTest(unittest.TestCase):
         node.frames_written = 3
         node.has_pending_episode.return_value = True
         node.dataset = Mock()
+        node._saved_dataset = node.dataset
+        work = Path(root) / '.collector-work'
+        work.mkdir(exist_ok=True)
+        def clear_work():
+            if work.exists():
+                shutil.rmtree(work)
+        def publish(_):
+            if (work / 'annotations').exists():
+                shutil.copytree(work / 'annotations', Path(root) / 'annotations', dirs_exist_ok=True)
+            clear_work()
+        node.episode_store = SimpleNamespace(work=work, journal=Path(root) / '.collector-commit.json',
+                                            commit=Mock(side_effect=publish), discard=Mock(side_effect=clear_work), close=Mock())
+        def open_workspace():
+            work.mkdir(exist_ok=True)
+            node.dataset = node._saved_dataset
+        node._open_episode_dataset.side_effect = open_workspace
+        node._invalidate_episode = lambda *a, **kw: namespace['_invalidate_episode'](node, *a, **kw)
         node.dataset.meta.video_keys = []
         node.dataset.writer.episode_buffer = {'size': 3, 'subtask_index': [-1] * 3}
         node.task_episode_counts = Counter()
@@ -205,7 +249,7 @@ class RecorderControlsTest(unittest.TestCase):
             for count in (1, 2, 3):
                 node.current_episode_frames = count
                 self.assertTrue(namespace['mark_subtask'](node, f'mark-{count}'))
-            node.dataset.save_episode.assert_called_once_with()
+            node.dataset.save_episode.assert_called_once_with(parallel_encoding=False)
             self.assertEqual(node.saved_episodes, 4)
             self.assertEqual(node.subtasks.ends, [])
             self.assertFalse(node.is_recording)
@@ -235,22 +279,22 @@ class RecorderControlsTest(unittest.TestCase):
             self.assertFalse(receipt['complete'])
             self.assertTrue(receipt['needs_review'])
 
-    def test_failed_save_leaves_marker_and_never_retries_or_discards(self):
+    def test_failed_save_invalidates_workspace_without_touching_saved_metadata(self):
         with tempfile.TemporaryDirectory() as root:
             node = self.annotation_recorder(root)
             node.dataset.save_episode.side_effect = RuntimeError('disk failure')
             self.assertFalse(node.save_current_episode('save', 'failed'))
-            self.assertTrue(node.save_failed)
-            self.assertTrue(node.stop_requested)
+            self.assertFalse(node.save_failed)
+            self.assertFalse(node.stop_requested)
+            self.assertTrue(node.episode_invalid)
             self.assertEqual(node.saved_episodes, 3)
+            check_pending_annotations(Path(root))
             with self.assertRaisesRegex(RuntimeError, 'Unfinished episode save'):
-                check_pending_annotations(Path(root))
-            self.assertFalse(node.save_current_episode('retry'))
-            self.assertFalse(node.discard_current_episode('discard'))
-            namespace['finish'](node)
-            node.dataset.save_episode.assert_called_once()
-            node.dataset.clear_episode_buffer.assert_not_called()
+                check_pending_annotations(node.episode_store.work)
             self.assertFalse(namespace['start_episode'](node, 'retry'))
+            self.assertTrue(node.discard_current_episode('discard'))
+            node.dataset.save_episode.assert_called_once()
+            self.assertFalse(node.episode_invalid)
 
     def test_discard_resets_annotation_without_publishing_manifest(self):
         with tempfile.TemporaryDirectory() as root:
@@ -265,39 +309,36 @@ class RecorderControlsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             node = self.annotation_recorder(root)
             key = 'observation.images.rgbd_head_depth'
-            pending = Path(root) / 'images' / key / 'episode-000003'
-            saved = pending.with_name('episode-000002')
+            pending = node.episode_store.work / 'images' / key / 'episode-000003'
+            saved = Path(root) / 'images' / key / 'episode-000002'
             for directory in (pending, saved):
                 directory.mkdir(parents=True)
                 (directory / 'frame-000000.png').write_bytes(b'frame')
-            node.dataset.meta.video_keys = [key]
-            node.dataset.writer._get_image_file_dir.return_value = pending
-            # Simulate an asynchronous image finishing in the public clear's
-            # writer join. Cleanup before that join would leave this file.
-            node.dataset.clear_episode_buffer.side_effect = lambda **kw: (pending / 'last.png').write_bytes(b'late')
+            # Simulate a late write during the mandatory writer join.
+            node._close_episode_dataset.side_effect = lambda: (pending / 'last.png').write_bytes(b'late')
             self.assertTrue(node.discard_current_episode('discard'))
             self.assertFalse(pending.exists())
             self.assertTrue((saved / 'frame-000000.png').is_file())
 
-    def test_discard_refuses_unexpected_video_directory(self):
+    def test_first_frame_partial_failure_is_invalid_and_discardable(self):
         with tempfile.TemporaryDirectory() as root:
-            for destination in (Path(root) / 'videos', Path(root) / 'images/cam/episode-000002'):
-                node = self.annotation_recorder(root)
-                destination.mkdir(parents=True, exist_ok=True)
-                node.dataset.meta.video_keys = ['cam']
-                node.dataset.writer._get_image_file_dir.return_value = destination
-                self.assertFalse(node.discard_current_episode('discard'))
-                node.dataset.clear_episode_buffer.assert_not_called()
-                self.assertTrue(destination.is_dir())
+            node = self.annotation_recorder(root)
+            node.current_episode_frames = 0
+            node._record_frame.side_effect = OSError('disk full after first camera')
+            namespace['_record_tick'](node)
+            self.assertTrue(node.episode_invalid)
+            self.assertFalse(node.is_recording)
+            self.assertFalse(node.stop_requested)
+            self.assertTrue(node.discard_current_episode('discard'))
+            node._close_episode_dataset.assert_called_once()
+            node.episode_store.discard.assert_called_once()
 
     def test_failed_public_discard_keeps_video_images(self):
         with tempfile.TemporaryDirectory() as root:
             node = self.annotation_recorder(root)
-            pending = Path(root) / 'images/cam/episode-000003'
+            pending = node.episode_store.work / 'images/cam/episode-000003'
             pending.mkdir(parents=True)
-            node.dataset.meta.video_keys = ['cam']
-            node.dataset.writer._get_image_file_dir.return_value = pending
-            node.dataset.clear_episode_buffer.side_effect = RuntimeError('writer failed')
+            node._close_episode_dataset.side_effect = RuntimeError('writer cannot close')
             self.assertFalse(node.discard_current_episode('discard'))
             self.assertTrue(pending.is_dir())
 

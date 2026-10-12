@@ -211,6 +211,40 @@ DAgger 已保留低CPU录制：录制进程CPU绑定、线程池限制、有限�
 这会增加临时磁盘占用；其他采集模式的长时间高负载表现需要分别验证。
 不会通过放宽时间同步阈值或静默漏帧掩盖录制异常。
 
+### 暂存上限与写入失败
+
+四种模式共用以下保护，参数均要求大于0；容量单位按 GiB / MiB 计算：
+
+| 参数 | 默认值 | 作用 |
+|---|---:|---|
+| `MIN_FREE_DISK_GB` | 2 | 最低磁盘保留空间；还额外预留一份当前条目估算大小供编码使用 |
+| `MAX_EPISODE_TEMP_GB` | 8 | 单条 episode 原始图像字节加开销的累计预算，不是整组数据集上限 |
+| `MAX_EPISODE_SECONDS` | 600 | 单条录制时长上限；可能先达到容量或磁盘限制 |
+| `IMAGE_WRITER_MAX_PENDING` | 64 | 所有相机共用的未完成写图任务数上限，不是每路FIFO长度 |
+| `IMAGE_WRITER_MAX_MB` | 256 | 写图队列持有的原始图像内存预算，不是进程总内存上限 |
+
+```bash
+MAX_EPISODE_TEMP_GB=12 MIN_FREE_DISK_GB=4 MAX_EPISODE_SECONDS=300 \
+TASK_TEXT="Put the towel in the basket." \
+bash start_lerobot_official_collect.sh towel_in_basket
+```
+
+超限、队列满、写图或保存失败时，当前条目标记为 `EPISODE INVALID` 并停止接收新帧，
+不覆盖已保存的 Parquet、视频或条目元数据，不自动重试保存，也不自动删除历史数据。
+先处理磁盘/存储问题，再用键盘 **D** 或手柄 **Y** 丢弃当前条目，确认成功后重新开始。
+无法恢复的保存日志会要求退出重启，不能绕过检查。
+
+需要 **LeRobot 0.6+ 的 DatasetWriter/resume 接口**。每条数据先写进
+`dataset/.collector-work/`，完成视频编码和文件关闭后才发布到正式目录。
+因此新 episode 使用新 Parquet/视频文件，不再追加写入上条文件；LeRobot 通过元数据读取，
+无需拼接视频。`BATCH_ENCODING_SIZE` 必须为1，`STREAMING_ENCODING` 必须为0。
+同一数据根目录不能同时启动两个采集器，也不要同时编辑/训练正在发布的数据集。
+
+异常退出后，重启会先恢复保存日志；未提交的暂存保留为
+`.collector-interrupted-<时间戳>`，不计为已保存数据。确认不需要恢复且采集已退出后可手动清理，
+不能在运行中删除 `.collector-work` 或 `.collector-commit.json`。
+预算是保守估算而非系统磁盘配额；其他进程仍可能抢占空间，真实写入异常会再次触发保护。
+
 | 常用参数 | 作用 |
 |---|---|
 | `OUTPUT_BASE_DIR` / `TASK_TEXT` | 保存位置 / 整体任务文本 |
@@ -227,10 +261,12 @@ DAgger 已保留低CPU录制：录制进程CPU绑定、线程池限制、有限�
 
 ## 7. 验证与源码导航
 
+- [本次存储保护测试与边界](docs/validation/20261012_storage_guards.md)：220项本地测试、四种模式合成数据验证；不等同于真机验收。
 - [300测试与验收流程](ROBOT300_TESTING_zh.md)：四种模式、通过标准、停止和回滚。
 - [实现说明](INSTRUCTION_zh.md) / [Technical details](INSTRUCTION.md)：同步、数据字段、生命周期和协议边界。
 - [VR反馈接入](VR_FEEDBACK.md)：网页扩展、状态事件与接管振动。
 - `collector_modes.py` / `start_lerobot_official_collect.sh`：统一模式和录制生命周期。
+- `episode_storage.py`：容量预算、单写入者锁、暂存发布和异常恢复；测试不接触用户数据。
 - `vr_collector_control.py` / `subtask_annotations.py`：组合键、语音、阶段标注。
 - `dagger/control/`：已验证的控制、录制协议和GR00T桥接基础；`dagger/assets/`：随版本发布的配置、网页。
 - `dagger/supervisor.py` / `controller_handoff.py`：集合版权限、保存回执和接管适配。

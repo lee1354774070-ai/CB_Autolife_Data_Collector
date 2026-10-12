@@ -43,7 +43,8 @@ class CollectorModeTest(unittest.TestCase):
             output = Path(directory) / "must_not_exist"
             for mode, plan in (("dagger", "[]"), ("subtask", "[]"), ("keyboard", "[1]")):
                 env = dict(os.environ, COLLECTOR_MODE=mode, SUBTASKS_JSON=plan,
-                           VR_CONTROL="", OUTPUT_BASE_DIR=str(output), DAGGER_SERVER_URL="")
+                           VR_CONTROL="", OUTPUT_BASE_DIR=str(output), DAGGER_SERVER_URL="",
+                           ROBOT_ID="300", ROS_DOMAIN_ID="0")
                 result = subprocess.run(["bash", str(self.launcher), "test"], env=env,
                                         text=True, capture_output=True, timeout=5)
                 self.assertNotEqual(result.returncode, 0, result.stdout)

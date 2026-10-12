@@ -12,7 +12,11 @@
     "supervisor_node.py": [
       "Align gripper commands to Thor 10..360 degrees and feedback tolerance to <=365 degrees",
       "Save explicitly requested policy-only episodes; expert mask remains unchanged",
-      "Use unified A start / B save / X reset only / Y discard only in status hints"
+      "Use unified A start / B save / X reset only / Y discard only in status hints",
+      "Allow explicit Y discard after a confirmed invalid workspace; retain ambiguous publication results without replay"
+    ],
+    "recorder.py": [
+      "Carry episode_invalid and publication_uncertain in correlated command receipts"
     ],
     "core.py": [
       "Add explicit expert-authority selection for the collection atomic V4 handoff; no HOLD ACK claim"

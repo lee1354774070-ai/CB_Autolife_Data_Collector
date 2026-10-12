@@ -1,7 +1,8 @@
-"""Bounded, lossless temporary-image writer used only by the DAgger recorder.
+"""Bounded, lossless temporary-image writer shared by all recording modes.
 
-Capture spends CPU on copying pixels, not PNG compression. Final video encoding
-still runs through LeRobot at save time. No ROS publishers or hardware APIs.
+DAgger uses uncompressed PNG to reduce capture CPU; other modes use light PNG
+compression. Final video encoding runs through LeRobot at save time. Every
+worker failure propagates to the recorder. No ROS publishers or hardware APIs.
 """
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -11,6 +12,13 @@ import cv2
 import numpy as np
 from PIL import Image
 from lerobot.datasets.image_writer import image_array_to_pil_image, save_kwargs_for_path
+
+
+def write_compressed_image(image, fpath):
+    # LeRobot's convenience write_image logs and swallows exceptions in some
+    # releases. Do not use it: the recorder must see every failed write.
+    img = image if isinstance(image, Image.Image) else image_array_to_pil_image(image)
+    img.save(fpath, **save_kwargs_for_path(Path(fpath), compress_level=1))
 
 
 def write_capture_image(image, fpath):
@@ -30,13 +38,17 @@ def write_capture_image(image, fpath):
 
 class CaptureImageWriter:
     """LeRobot image-writer interface; bounded pending work and visible errors."""
-    def __init__(self, num_threads=2, max_pending=64):
-        if num_threads < 0 or max_pending < 1:
+    def __init__(self, num_threads=2, max_pending=64, max_pending_mb=256, low_cpu=True):
+        if num_threads < 0 or max_pending < 1 or max_pending_mb <= 0:
             raise ValueError("image-writer threads must be nonnegative and queue capacity positive")
-        self._pool = (ThreadPoolExecutor(max_workers=num_threads, thread_name_prefix="dagger_image")
+        self._pool = (ThreadPoolExecutor(max_workers=num_threads, thread_name_prefix="collector-image")
                       if num_threads else None)
         self._pending = deque()
         self._max_pending = max_pending
+        self._max_bytes = int(max_pending_mb * 1024 ** 2)
+        self._bytes = 0
+        self._error = None
+        self._write = write_capture_image if low_cpu else write_compressed_image
         self._stopped = False
 
     @property
@@ -46,25 +58,50 @@ class CaptureImageWriter:
     def save_image(self, image, fpath, compress_level=1):
         if self._stopped:
             raise RuntimeError("image writer is stopped")
-        while self._pending and self._pending[0].done():
-            self._pending.popleft().result()
+        self.check()
         if len(self._pending) >= self._max_pending:
             raise RuntimeError(f"temporary image queue full ({self._max_pending}); storage cannot keep up")
         if hasattr(image, "cpu"):
             image = image.cpu().numpy()
+        size = (image.width * image.height * len(image.getbands()) * 4
+                if isinstance(image, Image.Image) else int(getattr(image, 'nbytes', 0)))
+        if self._bytes + size > self._max_bytes:
+            raise RuntimeError('temporary image queue memory limit exceeded')
         if self._pool is None:
-            write_capture_image(image, fpath)
+            self._write(image, fpath)
         else:
-            self._pending.append(self._pool.submit(write_capture_image, image, fpath))
+            self._pending.append((self._pool.submit(self._write, image, fpath), size))
+            self._bytes += size
+
+    def check(self):
+        """Observe failures even behind a slow first write; never block a tick."""
+        remaining = deque()
+        while self._pending:
+            future, size = self._pending.popleft()
+            if not future.done():
+                remaining.append((future, size))
+                continue
+            self._bytes -= size
+            try:
+                future.result()
+            except Exception as exc:
+                self._error = self._error or exc
+        self._pending = remaining
+        if self._error is not None:
+            raise self._error
 
     def wait_until_done(self):
-        error = None
+        error = self._error
         while self._pending:
+            future, size = self._pending.popleft()
             try:
-                self._pending.popleft().result()
+                future.result()
             except Exception as exc:
                 if error is None:
                     error = exc
+            finally:
+                self._bytes -= size
+        self._error = error
         if error is not None:
             raise error
 
