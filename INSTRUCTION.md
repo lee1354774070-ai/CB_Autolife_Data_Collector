@@ -452,6 +452,14 @@ ROS_DOMAIN_ID=211 python tests/vr_ros_smoke.py --subtasks
 
 Core regression tests are development-only and never loaded by the launcher.
 Historical validation is in `docs/validation/`; opt-in diagnostics are in `tests/remote/`.
+The supported live inference probe is `dagger_pinned_readonly.py`: it uses the
+current Collector bridge, discards proposals, and never executes them. Run it
+only against an idle Thor session. `dagger_rgbd_recording_smoke.py` checks live
+cameras with synthetic joint signals; `dagger_thor_receipts.py` checks the
+separate Thor source's receipt/gripper contract. These require their documented
+environments and are not part of automatic local discovery.
+`tools/patch_*` are hash-pinned offline migrations, not startup dependencies;
+they preview by default and back up sources only with explicit `--apply`.
 SSE tests require aiohttp in the VR web environment; the rest run without it.
 Do not infer robot acceptance or minimum CPU usage from these software tests.
 

@@ -6,11 +6,10 @@ operator attachment, explicit A/B/X/Y semantics and status/haptic presentation.
 """
 import json
 import os
-import threading
 import time
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
-from std_srvs.srv import SetBool, Trigger
+from std_srvs.srv import Trigger
 from .control.core import Mode, finite_vector
 from .control.supervisor_node import HgDaggerSupervisor
 from .compat import CommandGate, CompatibilityPublisher, FEATURES, SERVICE, VERSION

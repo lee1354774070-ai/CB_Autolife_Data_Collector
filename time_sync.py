@@ -142,28 +142,14 @@ def oldest_ready_sample(
     return min(ready, key=lambda sample: sample.stamp_sec, default=None)
 
 
-def bracketing_samples(
-    samples: Iterable[TimestampedT],
-    target_sec: float,
-) -> tuple[TimestampedT, TimestampedT] | None:
-    """Return the closest samples immediately before and after ``target_sec``."""
-
-    before, after = surrounding_samples(samples, target_sec)
-    if before is None or after is None:
-        return None
-    return before, after
-
-
 def surrounding_samples(
     samples: Iterable[TimestampedT],
     target_sec: float,
 ) -> tuple[TimestampedT | None, TimestampedT | None]:
     """Return the closest samples on each side of ``target_sec``.
 
-    Unlike :func:`bracketing_samples`, this function preserves which side is
-    missing. A recorder can therefore wait when a future sample has not arrived
-    yet, while rejecting an anchor whose older sample has already fallen out of
-    the buffer.
+    Preserve which side is missing so a recorder can wait for a future sample,
+    while rejecting an anchor whose older sample has fallen out of the buffer.
     """
 
     before: TimestampedT | None = None

@@ -7,7 +7,6 @@ import unittest
 from dataclasses import dataclass
 
 from time_sync import (
-    bracketing_samples,
     frame_interval_error_ratio,
     latest_at_or_before,
     linear_interpolation_alpha,
@@ -79,7 +78,7 @@ class TimeSyncTest(unittest.TestCase):
 
     def test_bracketing_and_causal_hold(self) -> None:
         samples = [Sample(10.00, "before"), Sample(10.04, "after"), Sample(10.08, "future")]
-        before, after = bracketing_samples(samples, 10.03)
+        before, after = surrounding_samples(samples, 10.03)
         self.assertEqual((before.value, after.value), ("before", "after"))
         self.assertEqual(latest_at_or_before(samples, 10.03).value, "before")
         self.assertAlmostEqual(linear_interpolation_alpha(10.00, 10.04, 10.03), 0.75)

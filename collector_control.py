@@ -254,25 +254,6 @@ def format_dataset_summary(dataset_root: Path) -> str:
     return "\n".join(lines)
 
 
-def read_active_cameras(dataset_root: Path, recorder_log: Path) -> list[str]:
-    """Return active camera names from metadata or the recorder startup log."""
-
-    info_path = dataset_root / "meta" / "info.json"
-    try:
-        info = json.loads(info_path.read_text(encoding="utf-8"))
-        cameras = sorted(
-            key.removeprefix("observation.images.")
-            for key in info.get("features", {})
-            if key.startswith("observation.images.")
-        )
-        if cameras:
-            return cameras
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        pass
-
-    return read_camera_startup_log(recorder_log)
-
-
 def read_camera_startup_log(recorder_log: Path) -> list[str]:
     """The unique per-run log marker is emitted only after create_dataset()."""
     try:

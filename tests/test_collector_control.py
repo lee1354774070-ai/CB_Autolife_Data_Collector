@@ -18,7 +18,6 @@ from collector_control import (
     format_dataset_summary,
     format_status,
     format_sync_report,
-    read_active_cameras,
     run_command,
     wait_for_status,
     wait_for_active_cameras,
@@ -135,7 +134,7 @@ class CollectorControlTest(unittest.TestCase):
             finally:
                 os.close(reader_fd)
 
-    def test_active_cameras_are_read_from_dataset_metadata(self) -> None:
+    def test_old_metadata_without_current_startup_marker_times_out(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
             (root / "meta").mkdir()
@@ -152,8 +151,8 @@ class CollectorControlTest(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertEqual(
-                read_active_cameras(root, root / "missing.log"),
-                ["hand_left", "rgbd_head_color"],
+                wait_for_active_cameras(root, root / "missing.log", 0.001, os.getpid()),
+                [],
             )
 
     def test_sync_report_summarizes_deltas_and_waits(self) -> None:

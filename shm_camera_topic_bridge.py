@@ -15,9 +15,7 @@ from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import Image
 
 from camera_config import CAMERA_SPECS, CameraSpec
-from shm_camera import frame_to_hwc, read_shm_frame, read_shm_metadata
-EPOCH_NS_MIN = 946684800 * 1_000_000_000
-EPOCH_NS_MAX = 4102444800 * 1_000_000_000
+from shm_camera import EPOCH_NS_MIN, EPOCH_NS_MAX, frame_to_hwc, read_shm_frame, read_shm_metadata
 
 
 def stamp_from_ns(timestamp_ns: int, node: Node) -> Time:

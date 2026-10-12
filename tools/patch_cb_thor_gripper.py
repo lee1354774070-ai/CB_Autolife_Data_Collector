@@ -3,14 +3,7 @@
 Preview by default; --apply backs up sources. Does not restart any service.
 Enable with --gripper-phase-aware; omit that flag for continuous actions.
 """
-import argparse
-import ast
-import difflib
-import hashlib
-from pathlib import Path
-import shutil
-import time
-from patch_thor_receipts import replace_once
+from patch_thor_receipts import replace_once, run_patch
 
 HASHES = {
  "server.py":"507076710ba4ad21669a6796e50e7152562f763a5644c6415d6043b7c9e22cbf",
@@ -93,31 +86,11 @@ def transform(name, source):
         source = replace_once(source, '    factory._wyli_history_offsets = ()',
             '    factory._wyli_gripper_mode = "phase_aware" if gripper_phase_aware else "continuous"\n'
             '    factory._wyli_history_offsets = ()')
-    ast.parse(source)
     return source
 
 def main():
-    parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("repo",type=Path)
-    parser.add_argument("--apply",action="store_true")
-    args=parser.parse_args()
-    updates=[]
-    for name,digest in HASHES.items():
-        path=args.repo/"deploy/groot_n1_7"/name
-        raw=path.read_bytes()
-        if hashlib.sha256(raw).hexdigest()!=digest:
-            raise SystemExit(f"Unreviewed source: {path}; inspect before applying")
-        source=raw.decode(); updated=transform(name,source)
-        updates.append((path,updated))
-        print("".join(difflib.unified_diff(source.splitlines(True),updated.splitlines(True),
-                                         fromfile=name,tofile=name)),end="")
-    if args.apply:
-        backup=args.repo/".codex_backups"/("dagger_phase_gripper_"+time.strftime("%Y%m%d_%H%M%S"))
-        backup.mkdir(parents=True,exist_ok=False)
-        for path,_ in updates: shutil.copy2(path,backup/path.name)
-        for path,updated in updates: path.write_text(updated)
-        print(f"BACKUP={backup}")
-        print("Sources patched; service unchanged. Enable explicitly with --gripper-phase-aware.")
+    run_patch(HASHES, transform, description=__doc__, backup_prefix="dagger_phase_gripper_",
+              completion_message="Sources patched; service unchanged. Enable explicitly with --gripper-phase-aware.")
 
 if __name__=="__main__":
     main()

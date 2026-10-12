@@ -367,5 +367,13 @@ ROS_DOMAIN_ID=211 python tests/vr_ros_smoke.py --subtasks
 
 核心回归测试仅供开发验证，启动器不会加载，不占采集 CPU。历史验证记录放在 `docs/validation/`，远程诊断脚本在 `tests/remote/`。SSE 测试需要网页环境中的 aiohttp，其余测试不依赖它。软件回归不代表实机验收或最低 CPU 保证。
 
+真实观测推理统一使用 `dagger_pinned_readonly.py`，复用当前 Collector 的推理桥接，
+只生成并丢弃动作，不执行；运行前需确认 Thor 没有其他会话。
+`dagger_rgbd_recording_smoke.py` 使用真实相机和合成关节信号验证保存，
+`dagger_thor_receipts.py` 验证独立 Thor 源码中的回执/夹爪契约。
+这三项需各自的运行环境，不在本地自动测试中启动。
+`tools/patch_*` 是受源码哈希约束的离线迁移工具，不参与采集启动；
+默认只预览，显式 `--apply` 才备份并修改源码。
+
 机器人现场还应检查 ROS 发现、SHM 文件、相机源 FPS、编码器、CPU、磁盘吞吐和
 `sync_log.jsonl`，确认生产采集前没有异常 drop 或 episode invalidation。

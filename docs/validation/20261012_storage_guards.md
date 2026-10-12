@@ -64,3 +64,23 @@ Production robot tests must use independent data roots and fresh authorization.
   arbitrary power loss. Do not edit/train the dataset concurrently with publication.
 - Quarantined interrupted work is retained for inspection and consumes disk until
   an operator removes it after stopping collection.
+
+## Follow-up Cleanup
+
+Starting from VLA `c3fd89c9` / standalone `f67d10f9`, removed the superseded
+`dagger_readonly_inference.py` and the one-off `dagger_stack_idle_probe.py` (fixed
+robot topics and stale web text). Live inference uses `dagger_pinned_readonly.py`;
+the archived full-stack result above remains historical, not a new hardware check.
+Removed two helpers with no runtime callers (`read_active_cameras` and
+`bracketing_samples`), unused supervisor imports and duplicated timestamp constants.
+Thor migration tools share hash checks, syntax validation, preview and backup
+handling; their pinned transforms and explicit apply behavior are unchanged.
+Local generated Python/test caches were removed, not dataset or runtime workspaces.
+
+All 224 Python tests passed, including preview/no-write, backup and later-source
+rejection tests for the shared patch runner. JavaScript feedback, shell syntax,
+133 Python files' syntax and isolated DAgger ROS smoke passed again. The smoke
+confirmed all 74 teleoperation snapshot files match and made zero hardware calls
+or model requests. Compatibility launchers, reviewed snapshots, provenance,
+licenses, recovery journals and regression coverage were retained. No robot
+deployment or physical validation was performed for this cleanup.
