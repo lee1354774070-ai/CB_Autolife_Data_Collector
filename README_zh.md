@@ -2,7 +2,11 @@
 
 中文使用说明已统一到 [README.md](README.md)，避免多个入口文档内容不一致。
 
-- [安装、四种采集模式和按键](README.md)
-- [暂存上限与写入失败处理](README.md#暂存上限与写入失败)
+- [参数设置：关节、深度、帧率、同步、存储与模式专用参数](README.md#parameters)
+- [环境准备](README.md#setup)
+- [四种模式使用的遥操作版本](README.md#modes)
+- [键盘数采](README.md#keyboard) / [原厂单人VR](README.md#vr) / [子任务数采](README.md#subtask)
+- [V4增量遥操作与DAgger](README.md#dagger)
+- [续录、输出与故障处理](README.md#data)
 - [300测试与验收](ROBOT300_TESTING_zh.md)
 - [实现与数据格式](INSTRUCTION_zh.md)
