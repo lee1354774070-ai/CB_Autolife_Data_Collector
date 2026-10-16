@@ -38,6 +38,29 @@ class DaggerLabelsTest(unittest.TestCase):
         self.assertEqual(self.frame(self.labels(grip_original=STAMP - 1000))["dagger.train_mask"], 0)
         self.assertEqual(self.frame(self.labels(grip_epoch=2))["dagger.train_mask"], 0)
 
+    def test_body_correction_is_retained_while_gripper_still_belongs_to_policy(self):
+        frame = self.frame(self.labels(grip_original=STAMP - 1000, grip_epoch=2))
+        self.assertEqual(frame["dagger.train_mask"], 0)  # Legacy consumers remain conservative.
+        self.assertEqual(frame["dagger.action_train_mask"], [1] * 14 + [0, 0] + [1] * 5)
+
+    def test_masks_follow_each_command_origin_without_relabelling_policy(self):
+        for source in (0, 2):
+            self.assertEqual(self.frame(self.labels(source))["dagger.action_train_mask"], [0] * 21)
+        self.assertEqual(self.frame(self.labels())["dagger.action_train_mask"], [1] * 21)
+        labels = self.labels()
+        labels.arms.clear()
+        labels.ingest({**packet(), "origin_authority_epoch": 2})
+        self.assertEqual(self.frame(labels)["dagger.action_train_mask"], [0] * 14 + [1, 1] + [0] * 5)
+
+    def test_old_dataset_or_wrong_vector_order_cannot_be_silently_resumed(self):
+        old = {k: v for k, v in FEATURES.items() if k != "dagger.action_train_mask"}
+        with self.assertRaisesRegex(ValueError, "new dataset"):
+            validate_features(old, True)
+        for change in ({"shape": [1]}, {"names": list(reversed(FEATURES["dagger.action_train_mask"]["names"]))}):
+            features = {**FEATURES, "dagger.action_train_mask": {**FEATURES["dagger.action_train_mask"], **change}}
+            with self.assertRaises(ValueError):
+                validate_features(features, True)
+
     def test_missing_future_stale_and_fallback_provenance_fail_closed(self):
         for delta in ({}, {"action_state_fallback": 0}, {"action_body": 1, "action_gripper": -10}):
             with self.assertRaises(ValueError):

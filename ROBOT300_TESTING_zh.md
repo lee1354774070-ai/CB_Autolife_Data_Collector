@@ -90,8 +90,8 @@ DAGGER_PUBLISH=0 bash start_dagger.sh dagger_release_check --check
 1. 只有 `[SAVED]` 和成功回执才计为保存成功，`保存中`不代表完成。
 2. 核对 `dataset/meta/info.json`、episode条数和实际视频/Parquet存在。
 3. 子任务核对 `subtask_index` 和 `annotations/subtasks/episode_*.json`，边界连续且不越界。
-4. DAgger核对 `dagger.control_source`、`dagger.is_intervention`、`dagger.train_mask`。
-   专家纠错mask为1，纯模型/保持段mask为0；模型条目不能直接当作专家监督。
+4. DAgger核对 `dagger.control_source`、`dagger.is_intervention`、`dagger.train_mask`、21维 `dagger.action_train_mask`。仅身体纠错而夹爪保持旧指令时，整帧掩码为0、身体19维为1、夹爪2维为0；模型/保持段全0。升级后使用新任务目录，旧schema不直接续录。
+   训练部分纠错时用逐维掩码；旧整帧掩码保留保守规则，模型条目不能直接当作专家监督。
 5. 上线前检查首/中/末帧能被LeRobot加载，同步日志无 `EPISODE INVALID`，逐步增加连续录制时长。
 
 DAgger低CPU录制暂存图像体积更大；保证磁盘空间和吞吐。

@@ -14,6 +14,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dagger.compat import SERVICE, check_host
+from dagger.robot_profile import resolve_robot
 
 
 def main():
@@ -26,8 +27,10 @@ def main():
     from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
     from rcl_interfaces.srv import SetParametersAtomically
     from std_msgs.msg import String
-    if os.environ.get('ROBOT_ID', '300') != '300':
-        parser.error('Only robot 300 is supported')
+    try:
+        robot = resolve_robot(os.environ)
+    except ValueError as exc:
+        parser.error(str(exc))
     publish = os.environ.get('DAGGER_PUBLISH', '0')
     if publish not in ('0', '1'):
         parser.error('DAGGER_PUBLISH must be 0 or 1')
@@ -70,7 +73,7 @@ def main():
                 raise RuntimeError('Expected exactly one authority publisher; attachment refused')
             return check_host(latest, fifo=fifo, task_text=expected_text,
                               publish=publish == '1', depth=None if depth is None else depth == '1',
-                              domain=os.environ.get('ROS_DOMAIN_ID', '0'))
+                              domain=robot.domain, robot_id=robot.robot_id, robot_profile=robot.model)
         identity = host()['instance_id']
         if not client.wait_for_service(timeout_sec=2):
             raise RuntimeError('Compatible command endpoint unavailable')

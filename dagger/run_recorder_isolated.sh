@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Robot-300: keep capture off performance CPUs 0-11; use efficiency CPUs 12-19.
+# The launcher selects the CPU mask for this robot; 12-19 is the legacy S2 default.
 # Apply before Python imports: all library threads/children inherit this mask.
 set -euo pipefail
 cpus="${HG_DAGGER_RECORDER_CPUS:-12-19}"

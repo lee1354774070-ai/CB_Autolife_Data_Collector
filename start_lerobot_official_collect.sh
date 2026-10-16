@@ -24,28 +24,30 @@ show_help() {
                 echo "COLLECTOR_MODE"
                 echo "Usage: COLLECTOR_MODE=keyboard|vr|subtask|dagger bash start_lerobot_official_collect.sh task_name"
                 echo "keyboard: original terminal controls. vr: single-operator VR buttons. subtask: VR with ordered SUBTASKS_JSON."
-                echo "dagger: robot-300 incremental V4 + our Thor GR00T; A=start, GL/GR=takeover, B=save, Y=discard, X=reset."
+                echo "dagger: model/profile-selected incremental V4 + our Thor GR00T; A=start, GL/GR=takeover, B=save, Y=discard, X=reset."
                 echo "Requires DAGGER_SERVER_URL and inspected V4/HG sources. Default DAGGER_PUBLISH=0; set 1 for button-authorized motion."
                 echo "Unset: preserve legacy VR_CONTROL/SUBTASKS_JSON selection; default keyboard."
                 echo "An explicit mode rejects conflicting legacy flags before creating data or starting processes."
                 ;;
-            DAGGER_BACKEND|DAGGER_SERVER_URL|DAGGER_PUBLISH|DAGGER_TOKEN_FILE|DAGGER_DEPENDENCY_ROOT|DAGGER_TOOLS_ROOT|DAGGER_ROS_SETUP|DAGGER_WEB_PORT|DAGGER_ROS_PY|DAGGER_VR_PY|DAGGER_WEB_PY)
+            DAGGER_ROBOT_PROFILE|DAGGER_ROBOT_DESCRIPTION_ROOT|DAGGER_BACKEND|DAGGER_SERVER_URL|DAGGER_PUBLISH|DAGGER_TOKEN_FILE|DAGGER_DEPENDENCY_ROOT|DAGGER_TOOLS_ROOT|DAGGER_ROS_SETUP|DAGGER_WEB_PORT|DAGGER_ROS_PY|DAGGER_VR_PY|DAGGER_WEB_PY)
                 echo "${parameter} (COLLECTOR_MODE=dagger only)"
                 case "${parameter}" in
+                    DAGGER_ROBOT_PROFILE) echo "s2_v2_2 or s3_v3_1. Robot 300 defaults to s2_v2_2; other IDs need an explicit model. ROBOT_ID and ROS_DOMAIN_ID select topics, not the model." ;;
+                    DAGGER_ROBOT_DESCRIPTION_ROOT) echo "S3 vendor SDK description directory; contains reviewed urdfs/robot_v3_1.urdf and srdfs/robot_v3_1.srdf. S2 keeps the inspected V4 URDF/SRDF." ;;
                     DAGGER_BACKEND) echo "owned (default): start one exclusive host. attach: connect to an already-compatible host; never starts or stops its controller/recorder/model/web. Q only detaches; host keeps running. Match OUTPUT_BASE_DIR and task_name. Legacy hosts require a one-time compatible-copy migration." ;;
                     DAGGER_SERVER_URL) echo "Required Thor GR00T URL, e.g. http://THOR_IP:8777. No default; baseline/frame protocol only." ;;
                     DAGGER_PUBLISH) echo "0=no hardware publishing (default); 1=A/C and X/R may move the robot. No automatic start." ;;
                     DAGGER_TOKEN_FILE) echo "Token file; default /home/ubuntu/.config/autolife_hg_dagger/groot_server.token. Never put tokens in URLs." ;;
                     DAGGER_DEPENDENCY_ROOT) echo "Inspected V4/HG package parent; default /home/ubuntu/ros2_ws/src. Key sources/configs are hash-checked." ;;
-                    DAGGER_TOOLS_ROOT) echo "Our full Autolife_VLA_Tools root for deploy imports; defaults to this repo, or /home/ubuntu/Autolife_VLA_Tools for standalone Collector." ;;
-                    DAGGER_ROS_SETUP) echo "ROS workspace environment; default /home/ubuntu/ros2_ws/install/setup.bash." ;;
+                    DAGGER_TOOLS_ROOT) echo "Legacy Tools root; health preflight uses the bundled HTTP client and no longer requires the full Tools installation." ;;
+                    DAGGER_ROS_SETUP) echo "ROS environment; use /home/ubuntu/ros2_ws/install/setup.bash when present, otherwise system Jazzy. Explicit paths must exist." ;;
                     DAGGER_WEB_PORT) echo "VR HTTPS port; default 8447. Changing it does not permit concurrent controllers." ;;
                     DAGGER_ROS_PY) echo "ROS supervisor/bridge interpreter; default /usr/bin/python3." ;;
                     DAGGER_VR_PY) echo "V4 controller interpreter; default /home/ubuntu/ros2_ws/venvs/openarmx_v4_placo/bin/python. Must include Placo." ;;
                     DAGGER_WEB_PY) echo "HTTPS/WebXR interpreter; default /home/ubuntu/ros2_ws/venvs/hg_dagger_web/bin/python." ;;
                 esac
                 echo "Usage: COLLECTOR_MODE=dagger ${parameter}=<value> bash start_lerobot_official_collect.sh task_name"
-                echo "The current adapter supports robot 300, domain 0, 21-D head+upper-waist, three RGB cameras, optional recorded depth."
+                echo "ROBOT_ID/ROS_DOMAIN_ID select the robot topics; DAGGER_ROBOT_PROFILE selects the reviewed model. Requires matching controller/lease support; 21-D head+upper-waist, three RGB cameras, optional recorded depth."
                 ;;
             SUBTASKS_JSON)
                 echo "SUBTASKS_JSON"

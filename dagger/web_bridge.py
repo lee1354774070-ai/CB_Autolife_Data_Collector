@@ -11,6 +11,7 @@ from aiohttp import web
 from openarmx_teleop_vr_306_v4 import vr_web_bridge as upstream
 from vr_feedback import PATTERNS
 from .dependencies import ASSETS
+from .robot_profile import resolve_robot
 
 
 def main():
@@ -27,7 +28,11 @@ def main():
             if mode not in ("dagger", "vr", "subtask"):
                 raise ValueError("Invalid COLLECTOR_WEB_MODE")
             self._index_body = Path(__file__).with_name("web_index.html").read_text(encoding="utf-8")
-            self._app_body = (source / "web/vr_app.js").read_text(encoding="utf-8")
+            robot = resolve_robot(os.environ) if mode == "dagger" else None
+            title = "CB Collector | DAgger" + (f" {robot.robot_id} · {robot.model}" if robot else "")
+            self._index_body = self._index_body.replace("CB Collector | DAgger 300", title)
+            self._app_body = "const collectorRobotTitle = " + json.dumps(title) + ";\n"
+            self._app_body += (source / "web/vr_app.js").read_text(encoding="utf-8")
             if mode == "dagger":
                 self._app_body += "\n" + Path(__file__).with_name("ui_overrides.js").read_text(encoding="utf-8")
             self._app_body += "\nconst collectorWebMode = " + json.dumps(mode) + ";\n"

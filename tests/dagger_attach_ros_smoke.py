@@ -17,11 +17,13 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from dagger.compat import CommandGate, FEATURES, SERVICE
+from dagger.robot_profile import resolve_robot
 
 
 def main():
     if os.environ.get('ROS_DOMAIN_ID') != '211':
         raise SystemExit('Requires isolated ROS_DOMAIN_ID=211; never run on the robot control domain')
+    robot = resolve_robot(os.environ)
     import rclpy
     from rcl_interfaces.msg import SetParametersResult
     from rcl_interfaces.srv import SetParametersAtomically
@@ -54,14 +56,17 @@ def main():
             state.update(collector_fifo=str(Path(directory) / 'task/.official_recording_control'),
                          mode='DISARMED', authority_epoch=0, collector_compat=dict(
                              version=1, instance_id=gate.instance_id, features=FEATURES,
-                             robot_id='300', domain_id='211', command_service=SERVICE,
+                             robot_id=robot.robot_id, robot_profile=robot.model, domain_id='211', command_service=SERVICE,
                              hardware_publish=True, task_text='test', with_depth=False))
             env = {**os.environ, 'OUTPUT_BASE_DIR': directory, 'TASK_TEXT': 'test',
-                   'DAGGER_PUBLISH': '1', 'WITH_DEPTH': '0', 'ROBOT_ID': '300'}
+                   'DAGGER_PUBLISH': '1', 'WITH_DEPTH': '0', 'ROBOT_ID': robot.robot_id, 'DAGGER_ROBOT_PROFILE': robot.model}
             command_line = [sys.executable, '-u', str(ROOT / 'dagger/attach.py'), 'task']
             checked = subprocess.run([*command_line, '--check'], env=env, capture_output=True, text=True, timeout=12)
             assert checked.returncode == 0, checked.stderr
             assert calls == []
+            wrong = {**env, 'ROBOT_ID':'348' if robot.robot_id == '347' else '347'}
+            rejected = subprocess.run([*command_line, '--check'], env=wrong, capture_output=True, text=True, timeout=12)
+            assert rejected.returncode != 0 and calls == [], 'Wrong robot must never receive a command'
             # Use OS reads: TextIO buffering can hide already-buffered lines
             # from select(), making a healthy child look stalled.
             child = subprocess.Popen(command_line, env=env, stdin=subprocess.PIPE,
@@ -92,7 +97,7 @@ def main():
             assert checked.returncode != 0
             assert 'no compatible attachment contract' in checked.stderr
             assert calls == ['start']
-            print('ATTACH_ROS_SMOKE_PASS preflight=true command_once=true detach_preserves_host=true legacy_rejected=true hardware_calls=0')
+            print(f'ATTACH_ROS_SMOKE_PASS robot={robot.robot_id} profile={robot.model} preflight=true command_once=true detach_preserves_host=true legacy_rejected=true hardware_calls=0')
     finally:
         if child is not None and child.poll() is None:
             child.terminate()

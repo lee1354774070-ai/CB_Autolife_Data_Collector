@@ -39,7 +39,7 @@ class DaggerLaunchTest(unittest.TestCase):
             child.send_signal.assert_not_called()
 
     def env(self, **updates):
-        return environment("towel_dagger", None, {"DAGGER_SERVER_URL": "http://thor:8777", **updates})
+        return environment("towel_dagger", None, {"DAGGER_SERVER_URL": "http://thor:8777", "ROBOT_ID": "300", **updates})
 
     def test_defaults_are_no_publish_new_controller_and_21d(self):
         env = self.env()
@@ -53,7 +53,7 @@ class DaggerLaunchTest(unittest.TestCase):
 
     def test_unsupported_settings_are_rejected(self):
         for updates in ({"WITH_WAIST": "1"}, {"WITH_HEAD": "0"}, {"WITH_UPPER_WAIST": "0"},
-                        {"ROBOT_ID": "283"}, {"ROS_DOMAIN_ID": "1"}, {"DAGGER_PUBLISH": "true"},
+                        {"ROBOT_ID": "283"}, {"ROS_DOMAIN_ID": "233"}, {"DAGGER_PUBLISH": "true"},
                         {"ACTION_MODE": "status_target"}, {"FALLBACK_ACTION_TO_STATE": "1"},
                         {"DAGGER_SERVER_URL": ""}):
             with self.subTest(updates=updates), self.assertRaises(ValueError):

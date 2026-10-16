@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Robot-300 DAgger environment. No hardware publishing unless explicitly requested.
+# Model/profile-selected DAgger environment. No hardware publishing unless explicitly requested.
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 export COLLECTOR_MODE=dagger
