@@ -15,10 +15,12 @@ from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dagger.dependencies import ASSETS, interpreter_environment
+from dagger.robot_profile import resolve_robot
 
 
 def generate_launch_description():
     vr = Path(os.environ["DAGGER_V4_RUNTIME_ROOT"])
+    robot = resolve_robot(os.environ)
     hg = ASSETS
     here = Path(__file__).resolve().parent
     runtime = str(here / "runtime.py")
@@ -35,7 +37,7 @@ def generate_launch_description():
         if config:
             args += ["--params-file", str(config)]
         for key, value in (params or {}).items():
-            args += ["-p", f"{key}:={value}"]
+            args += ["-p", f"{key}:={json.dumps(value) if isinstance(value, (list, dict)) else value}"]
         for source, target in (remaps or {}).items():
             args += ["-r", f"{source}:={target}"]
         process_env = {**env, **interpreter_environment(command[0], os.environ)}
@@ -43,6 +45,9 @@ def generate_launch_description():
                               sigterm_timeout="15", sigkill_timeout="5")
 
     supervisor = process([python, runtime, "supervisor"], config=hg / "config/hg_dagger.yaml", params={
+        "joint_state_topic": robot.joint_topic,
+        "vendor_joint_command_topic": f"/topic_arm_whole_body_target_joints_position_{robot.suffix}",
+        "vendor_gripper_command_topic": f"/topic_arm_gripper_target_joints_position_{robot.suffix}",
         "trace_root": str(base / "dagger_trace"), "human_finish_only": "true",
         "default_depth_enabled": "true" if os.environ.get("WITH_DEPTH", "0") == "1" else "false",
         "rgb_collector_fifo": str(base / ".official_recording_control"),
@@ -52,7 +57,7 @@ def generate_launch_description():
     })
     controller = process([vr_python, "-m", "openarmx_teleop_vr_306_v4.controller_node"],
                          config=vr / "config/controller.yaml", params={
-        "topic_suffix": "0_300", "dry_run": dry,
+        "topic_suffix": robot.suffix, "dry_run": dry,
         "gripper_max_position": "360.0",
         "sync_hold_only_enable": "true", "hardware_session_mode": "sync",
         "require_sync_session_service": "true", "require_teleop_heartbeat": "true",
@@ -67,13 +72,12 @@ def generate_launch_description():
         "input_joint_target_topic": "/hg_dagger/selected/joint_target",
         "input_body_height_topic": "/hg_dagger/disabled/body_height_command",
         "input_head_target_topic": "/hg_dagger/disabled/head_target",
-        "urdf_path": str(vr / "urdf/robot_v2_2_simplified.urdf"),
-        "srdf_path": str(vr / "urdf/robot_v2_2.srdf"),
+        **robot.controller_params(vr, os.environ),
     }, remaps={"__node": "independent_arm_controller_306_v4",
                f"{prefix}/set_hardware_enabled": "/hg_dagger/controller/set_hardware_enabled"})
     mapper = process([python, runtime, "mapper"],
                      config=vr / "config/teleop.yaml", params={
-        "topic_suffix": "0_300", "dry_run": dry, "quick_reset_enabled": "false",
+        "topic_suffix": robot.suffix, "dry_run": dry, "quick_reset_enabled": "false",
         "gripper_filter_alpha": "1.0", "gripper_max_step_per_cycle": "350.0", "gripper_closed_position": "360.0",
     }, remaps={**{f"{prefix}/{key}": f"/hg_dagger/expert/{key}"
                   for key in ("eef_target", "gripper_target", "release_hold")},
@@ -83,7 +87,7 @@ def generate_launch_description():
         "server_url": os.environ["DAGGER_SERVER_URL"], "token_file": os.environ["DAGGER_TOKEN_FILE"],
         "task": json.dumps(os.environ["TASK_TEXT"]),
         "collector_root": str(here.parent),
-        "joint_state_topic": "/topic_arm_whole_body_and_gripper_current_joints_status_0_300",
+        "joint_state_topic": robot.joint_topic,
     })
     web = process([web_python, runtime, "web"], params={
         "host": "0.0.0.0", "https_port": os.environ.get("DAGGER_WEB_PORT", "8447"),

@@ -26,26 +26,29 @@ def main():
     rclpy.init()
     if component == "check":
         import time
-        from deploy.groot_n1_7.robot_client import GrootRemoteClient
-        from deploy.groot_n1_7.auth import read_token
-        client = GrootRemoteClient(os.environ["DAGGER_SERVER_URL"],
-            read_token(os.environ.get("GROOT_REMOTE_TOKEN"), os.environ["DAGGER_TOKEN_FILE"]), timeout_sec=10)
-        try:
-            health, _ = client.health()
-            if (health.get("mode") not in ("policy_only_baseline", "policy_only_frame")
-                    or not health.get("controller_submission_receipts") or health.get("outcome_history_offsets")):
-                raise SystemExit("Update our Thor baseline/frame server: controller_submission receipts required")
-        finally:
-            getattr(client, "close_connections", lambda: None)()
+        from dagger.robot_profile import resolve_robot
+        from dagger.control.groot_policy_bridge import RemoteClient
+        from dagger.control.groot_bridge_core import GrootContract
+        robot = resolve_robot(os.environ)
+        token = os.environ.get("GROOT_REMOTE_TOKEN", "").strip()
+        if not token:
+            token = Path(os.environ["DAGGER_TOKEN_FILE"]).read_text().strip()
+        if not token:
+            raise SystemExit("Thor token is empty")
+        client = RemoteClient(os.environ["DAGGER_SERVER_URL"], token, 10.)
+        health = client.request("/health")
+        robot.validate_health(health)
+        GrootContract.from_mapping(health.get("contract", {}))
         node = rclpy.create_node("collector_dagger_preflight")
         try:
             from collections import Counter
             from std_msgs.msg import String
             from std_srvs.srv import SetBool
             from rclpy.qos import qos_profile_sensor_data
-            from dagger.dependencies import COMMAND_PUBLISHERS, command_conflicts
+            from dagger.dependencies import command_publishers, command_conflicts
+            topics = command_publishers(robot.suffix)
             counts = Counter()
-            for topic in COMMAND_PUBLISHERS:
+            for topic in topics:
                 node.create_subscription(String, topic,
                     lambda message, topic=topic: counts.update([topic]), qos_profile_sensor_data)
             # Discovery plus a command observation window. Endpoint existence
@@ -55,15 +58,15 @@ def main():
                 rclpy.spin_once(node, timeout_sec=.1)
             publishers = {topic: [info.node_namespace.rstrip('/') + '/' + info.node_name
                                   for info in node.get_publishers_info_by_topic(topic)]
-                          for topic in COMMAND_PUBLISHERS}
-            conflicts = command_conflicts(publishers, counts)
+                          for topic in topics}
+            conflicts = command_conflicts(publishers, counts, suffix=robot.suffix)
             if any(conflicts.values()):
                 raise SystemExit(f"Command conflict; not starting a second controller: {conflicts}")
-            lease = node.create_client(SetBool, "/control_independent_sync_hold_session_0_300")
+            lease = node.create_client(SetBool, robot.lease_service)
             if not lease.wait_for_service(timeout_sec=2):
-                raise SystemExit("Guarded hold-only SYNC service is unavailable")
+                raise SystemExit(f"Guarded hold-only SYNC service unavailable: {robot.lease_service}. Install the reviewed ARM lease integration; do not bypass or clear/restart ARM automatically.")
             for topic in ("whole_body", "gripper"):
-                name = f"/topic_arm_{topic}_target_joints_position_0_300"
+                name = f"/topic_arm_{topic}_target_joints_position_{robot.suffix}"
                 consumers = node.get_subscriptions_info_by_topic(name)
                 if not any(info.node_name.startswith("node_mod_motor_") for info in consumers):
                     raise SystemExit(f"Hardware command subscriber unavailable: {name}")

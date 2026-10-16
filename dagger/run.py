@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from dagger.dependencies import conflicting_processes, validate
 from dagger.runtime_copy import prepare_copy
+from dagger.robot_profile import resolve_robot, recorder_cpus
 
 
 def environment(task: str, text: str | None, source: dict[str, str]) -> dict[str, str]:
@@ -38,8 +39,11 @@ def environment(task: str, text: str | None, source: dict[str, str]) -> dict[str
             raise ValueError(f"{name} must be 0 or 1")
     if (env["WITH_HEAD"], env["WITH_UPPER_WAIST"], env["WITH_WAIST"]) != ("1", "1", "0"):
         raise ValueError("This GR00T DAgger adapter requires 21-D: WITH_HEAD=1 WITH_UPPER_WAIST=1 WITH_WAIST=0")
-    if env.get("ROBOT_ID", "300") != "300" or env.get("ROS_DOMAIN_ID", "0") != "0":
-        raise ValueError("The inspected private DAgger stack only supports robot 300 / ROS domain 0")
+    robot = resolve_robot(env)
+    env.update(ROBOT_ID=robot.robot_id, ROS_DOMAIN_ID=robot.domain, DAGGER_ROBOT_PROFILE=robot.model)
+    env.setdefault("ROBOT_TYPE", "autolife_s3" if robot.model == "s3_v3_1" else "autolife_s1")
+    if "HG_DAGGER_RECORDER_CPUS" not in env and hasattr(os, "sched_getaffinity"):
+        env["HG_DAGGER_RECORDER_CPUS"] = recorder_cpus(os.sched_getaffinity(0), robot.model)
     if not task or Path(task).name != task or task in (".", ".."):
         raise ValueError("task_name must be a single nonempty directory name")
     if env.get("ACTION_MODE", "joint") != "joint" or env.get("FALLBACK_ACTION_TO_STATE", "0") != "0":
@@ -58,7 +62,7 @@ def environment(task: str, text: str | None, source: dict[str, str]) -> dict[str
     env.setdefault("DAGGER_DEPENDENCY_ROOT", "/home/ubuntu/ros2_ws/src")
     env.setdefault("DAGGER_TOOLS_ROOT", str(ROOT.parent) if (ROOT.parent / "deploy").is_dir()
                    else "/home/ubuntu/Autolife_VLA_Tools")
-    env.setdefault("DAGGER_ROS_SETUP", "/home/ubuntu/ros2_ws/install/setup.bash")
+    env.setdefault("DAGGER_ROS_SETUP", default_ros_setup())
     env.setdefault("DAGGER_TOKEN_FILE", "/home/ubuntu/.config/autolife_hg_dagger/groot_server.token")
     env.setdefault("OUTPUT_BASE_DIR", "/home/ubuntu/nas14")
     for name in ("DAGGER_DEPENDENCY_ROOT", "DAGGER_TOOLS_ROOT", "DAGGER_ROS_SETUP", "DAGGER_TOKEN_FILE", "OUTPUT_BASE_DIR"):
@@ -69,7 +73,7 @@ def environment(task: str, text: str | None, source: dict[str, str]) -> dict[str
     if not 1 <= int(env["DAGGER_WEB_PORT"]) <= 65535:
         raise ValueError("invalid DAGGER_WEB_PORT")
     env.update(COLLECTOR_MODE="keyboard", VR_CONTROL="0", SUBTASKS_JSON="[]",
-               _COLLECTOR_DAGGER_RECORDING="1", ACTION_MODE="joint", ROBOT_ID="300", ROS_DOMAIN_ID="0",
+               _COLLECTOR_DAGGER_RECORDING="1", ACTION_MODE="joint",
                START_HAND_PRODUCER="0", TASK_TEXT=env.get("TASK_TEXT", text or task),
                RMW_IMPLEMENTATION="rmw_cyclonedds_cpp")
     env["DAGGER_BASE_DIR"] = str(Path(env["OUTPUT_BASE_DIR"]).expanduser().resolve() / task)
@@ -80,6 +84,11 @@ def environment(task: str, text: str | None, source: dict[str, str]) -> dict[str
         '</Discovery></Domain></CycloneDDS>')))
     env["COLLECT_CYCLONEDDS_URI"] = env["CYCLONEDDS_URI"]
     return env
+
+
+def default_ros_setup():
+    workspace = Path("/home/ubuntu/ros2_ws/install/setup.bash")
+    return str(workspace) if workspace.is_file() else "/opt/ros/jazzy/setup.bash"
 
 
 def ros_command(env, *command):
@@ -140,7 +149,7 @@ def main():
         # No dependency copies, model connection, recorder or controller launch.
         # The running host owns those lifecycles, even when this terminal exits.
         env = dict(os.environ)
-        env.setdefault('DAGGER_ROS_SETUP', '/home/ubuntu/ros2_ws/install/setup.bash')
+        env.setdefault('DAGGER_ROS_SETUP', default_ros_setup())
         env.setdefault('ROS_DOMAIN_ID', '0')
         env.setdefault('RMW_IMPLEMENTATION', 'rmw_cyclonedds_cpp')
         env.setdefault('CYCLONEDDS_URI', '<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lo"/></Interfaces><AllowMulticast>false</AllowMulticast></General><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>200</MaxAutoParticipantIndex></Discovery></Domain></CycloneDDS>')
@@ -155,7 +164,10 @@ def main():
         raise SystemExit(result.returncode)
     try:
         env = environment(args.task_name, args.task_text, os.environ)
-        validate(Path(env["DAGGER_DEPENDENCY_ROOT"]))
+        robot = resolve_robot(env)
+        dependency = Path(env["DAGGER_DEPENDENCY_ROOT"])
+        validate(dependency)
+        robot.validate_description(dependency / "openarmx_teleop_vr_306_v4", env)
         conflicts = conflicting_processes()
         if conflicts:
             raise RuntimeError(f"Another control stack is running (PIDs {conflicts}); stop it manually before DAgger")
@@ -173,11 +185,14 @@ def main():
 
     # Separate from the recorder's per-episode motion lock. This protects stack
     # startup too, including the interval before ROS participants are visible.
-    lock = open("/tmp/collector_dagger_0_300.lock", "a")
+    locks = [open(robot.lock_file, "a"),
+             open(f"/tmp/collector_dagger_domain_{robot.domain}.lock", "a")]
     try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # HG authority topics are shared within one local DDS domain.
+        for lock in locks:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        raise SystemExit("Another integrated DAgger launcher owns robot 300")
+        raise SystemExit(f"Another integrated DAgger launcher owns robot {robot.suffix} or its local DDS domain")
     base = Path(env["DAGGER_BASE_DIR"])
     base.mkdir(parents=True, exist_ok=True)
     recorder = stack = None
@@ -198,7 +213,7 @@ def main():
                                  env=env, stdin=subprocess.DEVNULL, start_new_session=True)
         print("DAgger running. VR: A start, GL/GR held takeover, B save, Y discard, X reset only. "
               "Terminal: C start, A save, X/D discard, R reset, Q exit.", flush=True)
-        print(f"Hardware publishing: {env['DAGGER_PUBLISH']} (1=enabled). "
+        print(f"Robot {robot.suffix} / {robot.model}; hardware publishing: {env['DAGGER_PUBLISH']} (1=enabled). "
               "VR X / terminal R resets all body joints and grippers after B/Y receipt; keep workspace clear.", flush=True)
         if not args.serve and sys.stdin.isatty():
             terminal = termios.tcgetattr(sys.stdin)
@@ -231,7 +246,8 @@ def main():
         stop_child(recorder, timeout=330)
         if command_worker is not None:
             command_worker.join(timeout=12)
-        lock.close()
+        for lock in locks:
+            lock.close()
 
 
 if __name__ == "__main__":

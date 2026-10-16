@@ -172,7 +172,7 @@ class HgDaggerSupervisor(Node):
             reliable,
         )
         self.create_subscription(
-            String, "/topic_arm_whole_body_and_gripper_current_joints_status_0_300",
+            String, str(self.get_parameter("joint_state_topic").value),
             self._on_joint_feedback, latest,
         )
         self.create_subscription(
@@ -265,6 +265,7 @@ class HgDaggerSupervisor(Node):
             "collector_save_timeout_sec": 120.0,
             "quick_reset_request_timeout_sec": 3.0,
             "quick_reset_wait_timeout_sec": 25.0,
+            "joint_state_topic": "/topic_arm_whole_body_and_gripper_current_joints_status_0_300",
             "vendor_joint_command_topic": "/topic_arm_whole_body_target_joints_position_0_300",
             "vendor_gripper_command_topic": "/topic_arm_gripper_target_joints_position_0_300",
         }

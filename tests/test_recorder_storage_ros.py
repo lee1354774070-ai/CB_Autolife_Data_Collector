@@ -14,6 +14,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from dagger_labels import DaggerLabels
 
 import numpy as np
 
@@ -86,6 +87,20 @@ class RecorderStorageTest(unittest.TestCase):
                                 frame[name] = node.latest_images[name.removeprefix('observation.images.')].image_hwc
                             elif name in ('observation.state', 'action', 'subtask_index') or name.startswith('dagger.'):
                                 frame[name] = np.zeros(feature['shape'], dtype=feature['dtype'])
+                        if mode == 'dagger':
+                            stamp = 1_800_000_000_000_000_000
+                            labels = DaggerLabels()
+                            packet = dict(timestamp_ns=stamp+20_000_000, authority_epoch=3,
+                                original_command_timestamp_ns=stamp+20_000_000,
+                                dagger=dict(timestamp_ns=stamp+22_000_000, authority_timestamp_ns=stamp,
+                                    authority_epoch=3, control_source=1, is_intervention=1,
+                                    intervention_id=1, trial_id='synthetic'))
+                            labels.ingest(packet)
+                            labels.ingest({**packet, 'origin_authority_epoch':2,
+                                           'original_command_timestamp_ns':stamp-1_000_000}, gripper=True)
+                            values = labels.frame((stamp+30_000_000)/1e9,
+                                                   {'action_body':-10, 'action_gripper':-10}, .5)
+                            frame.update({k:np.asarray(v,dtype=np.int64).reshape(-1) for k,v in values.items()})
                         node.storage_budget.admit(frame)
                         node.dataset.add_frame(frame)
                         node.current_episode_frames += 1
@@ -133,6 +148,12 @@ class RecorderStorageTest(unittest.TestCase):
                         self.assertTrue(node.save_current_episode('test'))
                         self.assertEqual(node.saved_episodes, 2)
                         self.assertEqual(sum(pq.read_metadata(p).num_rows for p in (root / 'data').rglob('*.parquet')), 6)
+                        if mode == 'dagger':
+                            table = pq.read_table(sorted((root / 'data').rglob('*.parquet')),
+                                                  columns=['dagger.train_mask','dagger.action_train_mask'])
+                            self.assertEqual(table['dagger.train_mask'].to_pylist(), [0]*6)
+                            self.assertEqual(table['dagger.action_train_mask'].to_pylist(),
+                                             [[1]*14+[0,0]+[1]*5]*6)
                         for path in (root / 'videos').rglob('*.mp4'):
                             with av.open(str(path)) as video:
                                 self.assertEqual(sum(1 for _ in video.decode(video=0)), 3)

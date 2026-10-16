@@ -1431,11 +1431,11 @@ class OfficialLeRobotRecorder(Node):
             except ValueError as exc:
                 self._invalidate_episode("missing_dagger_provenance", now, detail=str(exc))
                 return
-            frame.update({key: np.array([value], dtype=np.int64) for key, value in labels.items()})
+            frame.update({key: np.asarray(value, dtype=np.int64).reshape(-1) for key, value in labels.items()})
         self.storage_budget.admit(frame)
         self.dataset.add_frame(frame)
         if dagger is not None:
-            dagger.expert_frames += labels["dagger.train_mask"]
+            dagger.expert_frames += int(any(labels["dagger.action_train_mask"]))
             if (self.current_episode_frames % 15 == 0 and
                     (self.dagger_progress_future is None or self.dagger_progress_future.done())):
                 if self.dagger_progress_future is not None:

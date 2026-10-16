@@ -139,7 +139,7 @@ export SYNC_IMAGE_BUFFER_SIZE=16
 | `IMAGE_WRITER_MAX_PENDING` | 64 | 所有相机共享的未完成写图任务数上限，不是每路图像FIFO容量。 |
 | `IMAGE_WRITER_MAX_MB` | 256 | 未完成写图任务所持原始图像的内存预算，不是进程总内存上限。 |
 | `IMAGE_WRITER_THREADS` | 普通4；DAgger2 | 后台写图线程数。0为同步写入，可能阻塞采集；更多线程也可能增加CPU和磁盘争用。 |
-| `HG_DAGGER_RECORDER_CPUS` | `12-19` | 仅DAgger：录制器CPU亲和性，另用nice=5。是300的配置，不可直接套到其他CPU布局。 |
+| `HG_DAGGER_RECORDER_CPUS` | 按可用CPU选择 | 仅DAgger：300保留`12-19`；其他布局选择可用CPU尾部最多4核并保留至少一半给控制。可显式指定，经`taskset`校验；仍需每台机器做负载验收。 |
 
 前五个限额必须大于0。超限、写图或保存失败会将当前条目标为 `EPISODE INVALID`，
 停止接收新帧，不覆盖已经保存的数据。处理方法见[故障与恢复](#recovery)。
@@ -182,20 +182,23 @@ export SYNC_IMAGE_BUFFER_SIZE=16
 
 ### 1.8 DAgger 专用参数
 
-除注明外，仅对 `COLLECTOR_MODE=dagger` 生效。当前适配机器人300、ROS domain0、
-21维头部+上腰、三路RGB和兼容Thor GR00T baseline/frame协议。
+除注明外，仅对 `COLLECTOR_MODE=dagger` 生效。按`ROBOT_ID`与`DAGGER_ROBOT_PROFILE`分别选择编号和型号，
+保持21维头部+上腰、三路RGB和兼容Thor GR00T baseline/frame协议。
+编号可配置不等于该机器已完成控制器部署或真机验收；新机器仍需增量遥操、匹配URDF和独立控制权接口。
 
 | 参数 | 默认值 | 功能及注意事项 |
 |---|---|---|
+| `DAGGER_ROBOT_PROFILE` | 300默认`s2_v2_2` | 支持`s2_v2_2`、`s3_v3_1`；其他编号须明确型号，`ROBOT_TYPE=autolife_s3`也可选择S3。型号不是由编号猜测。 |
+| `DAGGER_ROBOT_DESCRIPTION_ROOT` | S3的SDK descriptions/autolife_s1目录 | S3使用已审查的`robot_v3_1.urdf`和对应SRDF；模型描述哈希不符时拒绝启动，需复核校准。 |
 | `DAGGER_BACKEND` | `owned` | `owned` 启动并管理一套独占宿主；`attach` 仅连接已有**兼容**宿主，不创建/替换控制器。详见模式示例。 |
 | `DAGGER_PUBLISH` | `0` | 0不发布硬件动作；1允许用户按键触发推理控制/复位。设1本身不会自动开始，但A/C、X/R可能产生真实运动。 |
 | `DAGGER_SERVER_URL` | 统一入口无默认，必填 | Thor服务URL，例如 `http://192.168.8.224:8777`。IP/端口是部署示例，以当前服务为准；不支持旧SOMA/Outcome协议。 |
 | `DAGGER_TOKEN_FILE` | `/home/ubuntu/.config/autolife_hg_dagger/groot_server.token` | Thor认证token文件，须与服务匹配；不要把token写进URL或提交到Git。 |
 | `GROOT_REMOTE_TOKEN` | 未设置 | 兼容的环境变量认证入口，非空时预检和模型桥接均优先使用它而不是token文件。建议统一使用文件，避免Shell历史泄漏或旧环境变量覆盖凭据。 |
 | `DAGGER_DEPENDENCY_ROOT` | `/home/ubuntu/ros2_ws/src` | 包含已审核 `openarmx_teleop_vr_306_v4` 的目录。源文件须通过哈希检查，启动器在 `.runtime/` 副本中应用补丁，不改同事原代码。 |
-| `DAGGER_TOOLS_ROOT` | 集合仓库自动取根目录；独立库为 `/home/ubuntu/Autolife_VLA_Tools` | 用于加载我们自己的部署客户端。必须是含 `deploy/` 的完整Tools目录，不是模型目录或Collector子目录。 |
+| `DAGGER_TOOLS_ROOT` | 集合仓库自动取根目录；独立库为 `/home/ubuntu/Autolife_VLA_Tools` | 保留旧Tools目录兼容入口；DAgger预检现在复用仓库内HTTP客户端，不再为读health要求安装整套Tools。 |
 | `DAGGER_WEB_PORT` | `8447` | V4扩展网页的HTTPS端口，1～65535。改变端口不能解决两套控制器争用关节的问题。 |
-| `DAGGER_ROS_SETUP` | `/home/ubuntu/ros2_ws/install/setup.bash` | 机器人ROS工作区环境脚本。 |
+| `DAGGER_ROS_SETUP` | 有工作区时加载工作区，否则系统ROS | 显式指定的脚本必须存在；支持新机器没有`ros2_ws`的安装布局。 |
 | `DAGGER_ROS_PY` | `/usr/bin/python3` | ROS监督器、桥接和attach使用的Python。 |
 | `DAGGER_VR_PY` | `/home/ubuntu/ros2_ws/venvs/openarmx_v4_placo/bin/python` | 增量遥操作控制器Python，需安装Placo等依赖。 |
 | `DAGGER_WEB_PY` | `/home/ubuntu/ros2_ws/venvs/hg_dagger_web/bin/python` | HTTPS/WebXR进程Python。 |
@@ -213,7 +216,7 @@ DAgger在未显式设置时使用 `WITH_HEAD=1 WITH_UPPER_WAIST=1 WITH_WAIST=0 W
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `ROBOT_ID` | 主机名末尾数字，否则283 | 生成机器人话题后缀；在 `autolife-robot-300` 上为300。不要混淆IP和机器人编号。DAgger只接受300。 |
+| `ROBOT_ID` | 主机名末尾数字，否则283 | 生成机器人话题后缀；在 `autolife-robot-300` 上为300。不要混淆IP和机器人编号。DAgger另需匹配`DAGGER_ROBOT_PROFILE`。 |
 | `ROS_DOMAIN_ID` | `0` | ROS通信域，必须与机器人服务一致；不是机器人编号。DAgger只接受0。 |
 | `RMW_IMPLEMENTATION` | `rmw_cyclonedds_cpp` | ROS中间件；本工具当前使用CycloneDDS本机通信配置。 |
 | `ROBOT_PY` | `/home/ubuntu/miniconda3/envs/robot_env/bin/python` | 相机生产/桥接、普通VR辅助程序解释器。 |
@@ -279,7 +282,7 @@ export MAX_SYNC_DELTA_SEC=0.03 SYNC_IMAGE_BUFFER_SIZE=16
 ```
 
 `set +u` 关闭当前Shell的“未定义变量报错”，避免ROS环境脚本触发unbound variable，
-与模型开关、录制或电机使能无关。环境辅助脚本预设300/domain0，其他机器人在source后
+与模型开关、录制或电机使能无关。环境辅助脚本按主机名识别编号并预设domain0，其他ROS域在source后
 显式设置自己的 `ROBOT_ID` 和通信域；当前DAgger适配不能直接用于其他机器人。
 
 <a id="modes"></a>
@@ -445,7 +448,12 @@ bash start_lerobot_official_collect.sh towel_subtask_21d_rgb
 
 **遥操作：经过适配的V4增量控制副本，不是原厂App。**
 `owned` 会启动一套独占宿主；头显使用浏览器进入8447扩展网页。
-默认不发布硬件动作。当前仅支持300/domain0、21维、三路RGB，depth可选但不送入当前模型。
+默认不发布硬件动作。支持按编号/型号配置，保持21维和三路RGB；depth可选但不送入当前模型。
+300旧命令继续使用S2配置。其他S2-v2.2示例：`ROBOT_ID=328 DAGGER_ROBOT_PROFILE=s2_v2_2`。
+S3-v3.1示例：`ROBOT_ID=347 DAGGER_ROBOT_PROFILE=s3_v3_1 ROBOT_TYPE=autolife_s3`；
+347的增量控制器和独立控制权接口尚未部署，当前8779只读预览也会被执行入口拒绝。
+每台机器先完成依赖/型号预检，再现场验收，不得只改编号绕过检查。
+同一主机同一ROS域仍只允许一个DAgger宿主，控制权话题没有改成多机器人命名空间。
 
 ### 7.1 准备与只读预检
 
@@ -534,7 +542,7 @@ attach终端的 **Q只断开本终端，宿主和VR继续运行**，不会退出
 
 ### 7.4 便捷入口、桌面与Thor限制
 
-`start_dagger.sh` 使用同一套后端，但有[前文列出的300预设](#parameters)。
+`start_dagger.sh` 使用同一套后端，但有[前文列出的环境预设](#parameters)。
 例如明确关闭其默认depth并做只读检查：
 
 ```bash
@@ -609,9 +617,19 @@ bash start_lerobot_official_collect.sh water_tasks
 新episode使用新的Parquet/视频文件，不追加覆盖已提交的旧文件。
 LeRobot按元数据读取连续episode，**无需手工拼接MP4**。
 
-DAgger保存整条模型和人工过程，附加 `dagger.control_source`、`dagger.train_mask`、
-会话及接管标记。训练纠错数据时优先筛选 `dagger.train_mask=1`；
-模型段/保持段不冒充专家标签。工具不自动训练或上传数据。
+DAgger保存整条模型和人工过程，附加控制来源、会话/接管标记及两种训练掩码：
+
+- `dagger.train_mask`：保留原来的严格整帧规则；只有身体和夹爪均来自当前人工权限时为1。
+- `dagger.action_train_mask`：新增21维int64掩码，顺序与`action`完全一致。身体命令有效时0–13、16–20为1；夹爪命令有效时14–15为1。模型段、保持段和过期权限对应维度为0。
+- `expert_frames`：现在统计至少一个动作维度有效的人工帧，包含部分维度有效的纠错。
+
+例如只接管移动手臂、夹爪仍保持模型指令：整帧掩码仍是0，动作掩码为`[1×14, 0, 0, 1×5]`。
+新训练流程应筛选`action_train_mask.any(-1)`，在逐动作维度的loss上乘该掩码后按有效元素数归一化；
+不能先用旧的`train_mask=1`筛选，否则这些部分纠错仍会被丢弃，也不能对整帧无掩码计算loss。
+当前来源粒度是身体命令组与双夹爪命令组，不声称逐关节独立识别人工意图。
+
+**升级后DAgger请用新任务目录。** 新增字段与旧数据schema不同，拒绝直接续录混写；旧文件不修改，旧训练代码仍可按整帧掩码保守使用。
+工具不自动训练、回填历史掩码或上传数据。
 
 <a id="recovery"></a>
 ### 8.2 常见报错与恢复

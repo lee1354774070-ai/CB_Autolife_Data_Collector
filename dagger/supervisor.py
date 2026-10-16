@@ -16,6 +16,7 @@ from .compat import CommandGate, CompatibilityPublisher, FEATURES, SERVICE, VERS
 from .status_cache import CachedCollector
 from .trace import AsyncTrace
 from vr_feedback import feedback_packet
+from .robot_profile import resolve_robot
 
 class ProvenancePublisher:
     """Attach controller-publication origins; never restamp an old held target."""
@@ -37,7 +38,8 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
         self._closing = False
         super().__init__()
         self._feedback_pub = self.create_publisher(String, "/collector/feedback", 10)
-        self._speech_pub = self.create_publisher(String, "/topic_tts_0_300", 10)
+        robot = resolve_robot(os.environ)
+        self._speech_pub = self.create_publisher(String, f"/topic_tts_{robot.suffix}", 10)
         self._command_origins = {False: None, True: None}
         self._collector_arm_pub = ProvenancePublisher(self, self._collector_arm_pub, False)
         self._collector_gripper_pub = ProvenancePublisher(self, self._collector_gripper_pub, True)
@@ -49,7 +51,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
         from rcl_interfaces.srv import SetParametersAtomically
         self._operator_gate = CommandGate()
         self._state_pub = CompatibilityPublisher(self._state_pub, dict(
-            version=VERSION, instance_id=self._operator_gate.instance_id, robot_id='300',
+            version=VERSION, instance_id=self._operator_gate.instance_id, robot_id=robot.robot_id, robot_profile=robot.model,
             domain_id=os.environ.get('ROS_DOMAIN_ID', '0'),
             command_service=SERVICE, features=FEATURES,
             hardware_publish=os.environ.get('DAGGER_PUBLISH', '0') == '1',

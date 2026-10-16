@@ -49,8 +49,8 @@ updateHgStatusHud = function (status, options) {
 
 // Also identify pages served by a web process started before the new index.
 const collectorGuide = document.querySelector('.dagger-guide');
-if (document.title !== 'CB Collector | DAgger 300') {
-  document.title = 'CB Collector | DAgger 300';
+if (document.title !== collectorRobotTitle) {
+  document.title = collectorRobotTitle;
   const title = document.querySelector('.title');
   if (title) title.textContent = document.title;
   if (collectorGuide) collectorGuide.textContent =

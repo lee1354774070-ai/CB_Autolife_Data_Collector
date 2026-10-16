@@ -11,11 +11,15 @@ from collections import deque
 from dataclasses import dataclass
 import math
 
+from dagger.control.groot_bridge_core import EXPECTED_FEATURES
+
 
 FIELDS = ("control_source", "is_intervention", "intervention_id", "train_mask",
           "authority_epoch", "anchor_timestamp_ns", "arm_command_timestamp_ns",
           "gripper_command_timestamp_ns")
 FEATURES = {f"dagger.{key}": {"dtype": "int64", "shape": (1,), "names": [key]} for key in FIELDS}
+FEATURES["dagger.action_train_mask"] = {"dtype": "int64", "shape": (21,),
+                                         "names": list(EXPECTED_FEATURES)}
 
 
 def timestamp_ns(value: object) -> int:
@@ -79,7 +83,7 @@ class DaggerLabels:
             self.labels.append(dict(label))
         return stamp
 
-    def frame(self, anchor_sec: float, deltas_ms: dict[str, float], max_age_sec: float) -> dict[str, int]:
+    def frame(self, anchor_sec: float, deltas_ms: dict[str, float], max_age_sec: float) -> dict[str, int | list[int]]:
         anchor = round(anchor_sec * 1e9)
         label = max((x for x in self.labels if self.started_ns <= x["timestamp_ns"] <= anchor),
                     key=lambda x: x["timestamp_ns"], default=None)
@@ -100,24 +104,31 @@ class DaggerLabels:
             if origin is None:
                 raise ValueError("DAgger action origin was evicted")
             origins.append(origin)
-        expert = (label["control_source"] == 1 and label["is_intervention"] == 1
-                  and label["intervention_id"] > 0 and all(
-                      x.epoch == label["authority_epoch"]
-                      and label["authority_timestamp_ns"] <= x.original_ns <= anchor
-                      for x in origins))
+        intervening = (label["control_source"] == 1 and label["is_intervention"] == 1
+                       and label["intervention_id"] > 0)
+        body, gripper = [int(intervening and x.epoch == label["authority_epoch"]
+                             and label["authority_timestamp_ns"] <= x.original_ns <= anchor)
+                         for x in origins]
+        # Preserve the old whole-frame contract; a held policy gripper must not
+        # suppress valid body correction dimensions or become an expert label.
+        action_mask = [body] * 14 + [gripper] * 2 + [body] * 5
+        expert = body and gripper
         values = {key: int(label[key]) for key in
                   ("control_source", "is_intervention", "intervention_id", "authority_epoch")}
         values.update(train_mask=int(expert), anchor_timestamp_ns=anchor,
                       arm_command_timestamp_ns=origins[0].original_ns,
                       gripper_command_timestamp_ns=origins[1].original_ns)
+        values["action_train_mask"] = action_mask
         return {f"dagger.{key}": value for key, value in values.items()}
 
 
 def validate_features(features: dict, enabled: bool) -> None:
     present = {key for key in features if key.startswith("dagger.")}
     if present != (set(FEATURES) if enabled else set()):
-        raise ValueError("DAgger schema differs; use a separate dataset directory")
+        raise ValueError("DAgger schema differs (including action_train_mask); use a new dataset directory; existing data is unchanged")
     if enabled:
         for key in FEATURES:
-            if features[key].get("dtype") != "int64" or list(features[key].get("shape", [])) != [1]:
+            if features[key].get("dtype") != "int64" or list(features[key].get("shape", [])) != list(FEATURES[key]["shape"]):
                 raise ValueError(f"incompatible DAgger feature: {key}")
+            if key == "dagger.action_train_mask" and features[key].get("names") != FEATURES[key]["names"]:
+                raise ValueError("DAgger action mask joint order differs")

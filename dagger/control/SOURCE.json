@@ -13,7 +13,8 @@
       "Align gripper commands to Thor 10..360 degrees and feedback tolerance to <=365 degrees",
       "Save explicitly requested policy-only episodes; expert mask remains unchanged",
       "Use unified A start / B save / X reset only / Y discard only in status hints",
-      "Allow explicit Y discard after a confirmed invalid workspace; retain ambiguous publication results without replay"
+      "Allow explicit Y discard after a confirmed invalid workspace; retain ambiguous publication results without replay",
+      "Parameterize the joint-feedback topic; launch profile supplies robot/domain suffix"
     ],
     "recorder.py": [
       "Carry episode_invalid and publication_uncertain in correlated command receipts"

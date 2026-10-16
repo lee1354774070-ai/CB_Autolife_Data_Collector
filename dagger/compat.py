@@ -17,13 +17,14 @@ COMMANDS = {'start', 'finish', 'discard', 'reset'}
 FEATURES = ['immediate_takeover', 'epoch_fencing', 'single_controller']
 
 
-def check_host(state, *, fifo, task_text=None, publish=False, depth=None, domain='0'):
+def check_host(state, *, fifo, task_text=None, publish=False, depth=None, domain='0', robot_id='300', robot_profile='s2_v2_2'):
     host = state.get('collector_compat', {})
     if (not isinstance(host, dict) or host.get('version') != VERSION
             or host.get('command_service') != SERVICE
             or not isinstance(host.get('instance_id'), str)
             or len(host['instance_id']) != 32
-            or host.get('robot_id') != '300'
+            or host.get('robot_id') != robot_id
+            or host.get('robot_profile', 's2_v2_2') != robot_profile
             or host.get('domain_id') != domain
             or not set(FEATURES).issubset(host.get('features', []))):
         raise ValueError('Existing host has no compatible attachment contract; install the compatible COPY once. No second stack started.')

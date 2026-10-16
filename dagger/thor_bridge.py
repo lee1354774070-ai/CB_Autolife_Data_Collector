@@ -4,11 +4,13 @@ The sole protocol addition reports a controller-submission receipt, never
 claims physical completion from a ROS forward acknowledgement.
 """
 import json
+import os
 import cv2
 import time
 from std_msgs.msg import String
 from .control.groot_policy_bridge import GrootPolicyBridge
 from .control.groot_bridge_core import array_digest_float32
+from .robot_profile import resolve_robot
 
 
 class CollectorThorBridge(GrootPolicyBridge):
@@ -79,8 +81,7 @@ class CollectorThorBridge(GrootPolicyBridge):
 
     def _connect(self):
         super()._connect()
-        if not self._health.get("controller_submission_receipts"):
-            raise RuntimeError("Thor controller_submission receipts are required")
+        resolve_robot(os.environ).validate_health(self._health)
 
     def _publish_status(self):
         # Tag the producer generation, not whichever new trial is active while

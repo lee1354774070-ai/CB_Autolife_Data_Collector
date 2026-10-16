@@ -34,29 +34,34 @@ REVIEWED_ALTERNATES = {}
 # only their audited idle endpoints, never an active command. In particular,
 # target_robot_eef_pose/target_robot_height_z are outgoing vendor telemetry,
 # not the move_* command inputs monitored by the V4 controller.
-_ARM = "/node_arm_vr_control_service_0_300"
-_ACTION = "/node_robot_action_service_0_300"
-_VISION = "/vision_service_0_300"
-COMMAND_PUBLISHERS = {
-    "/topic_arm_whole_body_target_joints_position_0_300": {_ARM, _ACTION, _VISION},
-    "/topic_arm_whole_body_target_joints_velocity_0_300": {_ACTION},
-    "/topic_arm_gripper_target_joints_position_0_300": {_ACTION},
-    "/topic_arm_move_eef_pose_in_robot_frame_0_300": set(),
-    "/topic_arm_move_eef_pose_in_vr_frame_0_300": {_ARM},
-    "/topic_arm_move_up_down_z_0_300": {_ARM, _ACTION, _VISION},
-    "/control_topic_0_300": {_VISION},
-    "/control_reset_0_300": set(),
-}
+def command_publishers(suffix="0_300"):
+    _ARM = f"/node_arm_vr_control_service_{suffix}"
+    _ACTION = f"/node_robot_action_service_{suffix}"
+    _VISION = f"/vision_service_{suffix}"
+    return {
+        f"/topic_arm_whole_body_target_joints_position_{suffix}": {_ARM, _ACTION, _VISION},
+        f"/topic_arm_whole_body_target_joints_velocity_{suffix}": {_ACTION},
+        f"/topic_arm_gripper_target_joints_position_{suffix}": {_ACTION},
+        f"/topic_arm_move_eef_pose_in_robot_frame_{suffix}": set(),
+        f"/topic_arm_move_eef_pose_in_vr_frame_{suffix}": {_ARM},
+        f"/topic_arm_move_up_down_z_{suffix}": {_ARM, _ACTION, _VISION},
+        f"/control_topic_{suffix}": {_VISION},
+        f"/control_reset_{suffix}": set(),
+    }
 
 
-def command_conflicts(publishers: dict[str, list[str]], counts: dict[str, int]) -> dict:
+COMMAND_PUBLISHERS = command_publishers()
+
+
+def command_conflicts(publishers: dict[str, list[str]], counts: dict[str, int], *, suffix="0_300") -> dict:
     """Fail closed for unknown endpoints or any observed motion/input message.
 
     This is only startup preflight. The V4 controller must still acquire the
     vendor's guarded SYNC lease, observe its quiet window, and continuously
     arbitrate actual commands while enforcing heartbeats and physical limits.
     """
-    unknown = {topic: sorted(set(names) - COMMAND_PUBLISHERS.get(topic, set()))
+    allowed = command_publishers(suffix)
+    unknown = {topic: sorted(set(names) - allowed.get(topic, set()))
                for topic, names in publishers.items()}
     return {"unknown_publishers": {t: names for t, names in unknown.items() if names},
             "active_commands": {t: count for t, count in counts.items() if count}}
