@@ -1,6 +1,6 @@
 # 云蝶 AutoLife 数据采集器
 
-> **S3 适配分支：`codex/s3-collector`**。347 已完成普通、单人 VR、子任务的录制按键与数据格式验证。运动采集和长时负载待验收；DAgger 仅通过无动作测试，尚不能用于 S3 真机控制。详见 [S3 使用与验收范围](S3_TESTING_zh.md)。
+> **S3 适配分支：`s3-collector`**。347 已完成普通、单人 VR、子任务的录制按键与数据格式验证。运动采集和长时负载待验收；DAgger 仅通过无动作测试，尚不能用于 S3 真机控制。详见 [S3 使用与验收范围](S3_TESTING_zh.md)。
 
 统一入口：`start_lerobot_official_collect.sh`。支持键盘、单人 VR、子任务标注和 DAgger，
 输出官方 `LeRobotDataset`。本文先解释参数，再给出各模式的完整用法。
