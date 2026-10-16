@@ -27,6 +27,14 @@ if os.environ.get('ROS_DOMAIN_ID') == '211':
 
 @unittest.skipIf(recorder is None, 'requires ROS + LeRobot and isolated ROS_DOMAIN_ID=211')
 class RecorderStorageTest(unittest.TestCase):
+    def test_robot_type_environment_and_explicit_argument(self):
+        with patch.dict(os.environ, {"ROBOT_TYPE": "autolife_s3"}):
+            with patch.object(sys, "argv", ["recorder", "--output-dir", "/unused"]):
+                self.assertEqual(recorder.parse_args().robot_type, "autolife_s3")
+            with patch.object(sys, "argv", ["recorder", "--output-dir", "/unused",
+                                           "--robot-type", "explicit_test"]):
+                self.assertEqual(recorder.parse_args().robot_type, "explicit_test")
+
     def test_nonfinite_limits_and_unsafe_encoding_modes_are_rejected(self):
         for option, value in (('--max-sync-delta-sec', 'nan'), ('--image-poll-fps', 'inf'),
                               ('--max-episode-temp-gb', '0'), ('--min-free-disk-gb', '-1'),
