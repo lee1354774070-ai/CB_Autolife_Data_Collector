@@ -643,6 +643,7 @@ DAgger保存整条模型和人工过程，附加 `dagger.control_source`、`dagg
 - [VR语音、文字及振动反馈边界](VR_FEEDBACK.md)
 - [300测试与验收流程](ROBOT300_TESTING_zh.md)
 - [S3 环境适配、测试与使用](S3_TESTING_zh.md)
+- [S3 推理预览、验证结果与回滚](docs/validation/20261016_s3_inference.md)
 - [存储保护测试记录](docs/validation/20261012_storage_guards.md)
 - [已适配V4源码快照](teleop_snapshot/README.md)
 
