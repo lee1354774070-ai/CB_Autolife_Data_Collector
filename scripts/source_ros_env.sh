@@ -7,8 +7,12 @@ case "$-" in
 esac
 
 set +u
-source /opt/ros/jazzy/setup.bash
-source /home/ubuntu/ros2_ws/install/setup.bash
+hg_dagger_setup_status=0
+source /opt/ros/jazzy/setup.bash || hg_dagger_setup_status=$?
+# S3 SDK installations publish native topics without a separate ROS workspace.
+if [ "${hg_dagger_setup_status}" -eq 0 ] && [ -f /home/ubuntu/ros2_ws/install/setup.bash ]; then
+  source /home/ubuntu/ros2_ws/install/setup.bash || hg_dagger_setup_status=$?
+fi
 
 if [ "${hg_dagger_restore_nounset}" -eq 1 ]; then
   set -u
@@ -16,11 +20,18 @@ else
   set +u
 fi
 unset hg_dagger_restore_nounset
+if [ "${hg_dagger_setup_status}" -ne 0 ]; then
+  # Restore the caller's shell mode even when ROS cannot be loaded.
+  return "${hg_dagger_setup_status}"
+fi
+unset hg_dagger_setup_status
 
-export ROS_DOMAIN_ID=0
-export ROBOT_ID="${HG_DAGGER_ROBOT_ID:-${ROBOT_ID:-300}}"
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
+hg_dagger_host_robot_id="$(hostname | sed -n 's/.*-\([0-9][0-9]*\)$/\1/p')"
+export ROBOT_ID="${HG_DAGGER_ROBOT_ID:-${ROBOT_ID:-${hg_dagger_host_robot_id:-300}}}"
+unset hg_dagger_host_robot_id
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
 export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lo"/></Interfaces><AllowMulticast>false</AllowMulticast></General><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>200</MaxAutoParticipantIndex></Discovery></Domain></CycloneDDS>'
 
-echo "AutoLife ROS environment loaded (robot ${ROBOT_ID}, CycloneDDS loopback)."
+echo "AutoLife ROS environment loaded (robot ${ROBOT_ID}, domain ${ROS_DOMAIN_ID}, CycloneDDS loopback)."

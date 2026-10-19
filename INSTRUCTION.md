@@ -36,6 +36,31 @@ launcher
 recorder. Direct SHM is preferred because it avoids image serialization and DDS
 queueing.
 
+## S2 / S3 compatibility
+
+Both families use `main`; no S3 branch switch is required. The ROS helper keeps
+an explicit `ROS_DOMAIN_ID` (default 0) and resolves the robot ID from
+`HG_DAGGER_ROBOT_ID`, then `ROBOT_ID`, then the hostname suffix, then 300.
+It restores the caller's nounset setting even if sourcing ROS fails. The vendor
+ROS workspace is optional; system ROS is still required. The launcher resolves
+library roots from each configured interpreter's `sys.base_prefix`, including
+venvs, without changing the recorder's data layout.
+
+Set `ROBOT_TYPE=autolife_s3` for new S3 datasets. The historical default
+`autolife_s1` is preserved for compatibility; this is metadata, not a kinematic
+conversion or DAgger controller profile. Existing datasets keep their original
+label on resume. Optional EEF capture and conversion are shared, but the vendor
+pose reports and their semantics must be verified on each robot.
+
+`s3_thor_preview.py` is an optional read-only inference entry point requiring
+the tools repository's `deploy.groot_n1_7` runtime with the reviewed phase-gripper
+patch (`tools/patch_cb_thor_gripper.py`). It checks that API before loading model
+weights; ordinary collection neither imports it nor requires that patch.
+Its health response forbids hardware execution and its execution ACK
+endpoints reject requests. Joint-sign conversion is not trajectory retargeting;
+it does not prove that an S2 policy can control an S3 robot. Historical evidence
+and remaining acceptance work are in [S3_TESTING_zh.md](S3_TESTING_zh.md).
+
 ## Data contract
 
 The policy schema always starts with 16 dimensions:

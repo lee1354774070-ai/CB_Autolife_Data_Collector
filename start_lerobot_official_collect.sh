@@ -243,6 +243,11 @@ show_help() {
                 echo "Usage: FALLBACK_ACTION_TO_STATE=1 bash start_lerobot_official_collect.sh task_name"
                 echo "Use measured state as action when action topics are unavailable. Default: 0"
                 ;;
+            ROBOT_TYPE)
+                echo "ROBOT_TYPE"
+                echo "Usage: ROBOT_TYPE=autolife_s3 bash start_lerobot_official_collect.sh task_name"
+                echo "LeRobot metadata robot label for NEW datasets; default autolife_s1. Does not change control or joint order."
+                ;;
             ROS_DOMAIN_ID|ROBOT_ID|RMW_IMPLEMENTATION)
                 echo "${parameter}"
                 echo "Usage: ${parameter}=<value> bash start_lerobot_official_collect.sh task_name"
@@ -337,6 +342,7 @@ Common parameters:
   FALLBACK_ACTION_TO_STATE   Use state as action for link tests. Default: 0
   ROS_DOMAIN_ID              ROS domain. Default: 0
   ROBOT_ID                   Robot topic suffix. Hostname suffix is used when unset.
+  ROBOT_TYPE                 LeRobot metadata label for new datasets. S3: autolife_s3; default: autolife_s1
   RMW_IMPLEMENTATION         ROS middleware implementation. Default: rmw_cyclonedds_cpp
 
 Advanced timing, encoding, and timeout variables are forwarded to
@@ -564,8 +570,9 @@ set -u
 # libraries only for the process that needs them.
 ROS_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
 ROS_PYTHONPATH="${PYTHONPATH:-}"
-ROBOT_ENV_LIB="/home/ubuntu/miniconda3/envs/robot_env/lib"
-LEROBOT_ENV_LIB="/home/ubuntu/miniconda3/envs/lerobot/lib"
+# A venv may use a different base interpreter (and OpenSSL) from the old conda layout.
+ROBOT_ENV_LIB="$("${ROBOT_PY}" -c 'import sys; print(sys.base_prefix + "/lib")')"
+LEROBOT_ENV_LIB="$("${LEROBOT_PY}" -c 'import sys; print(sys.base_prefix + "/lib")')"
 COLLECT_CYCLONEDDS_URI='<CycloneDDS><Domain><General><NetworkInterfaceAddress>127.0.0.1</NetworkInterfaceAddress></General><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>120</MaxAutoParticipantIndex></Discovery></Domain></CycloneDDS>'
 CAMERA_ONLY="${CAMERA_ONLY:-0}"
 COLLECT_FPS="${COLLECT_FPS:-30}"

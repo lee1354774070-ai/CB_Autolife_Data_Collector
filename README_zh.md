@@ -4,6 +4,7 @@
 
 - [参数设置：关节、深度、帧率、同步、存储与模式专用参数](README.md#parameters)
 - [环境准备](README.md#setup)
+- [S3适配与历史验收记录](S3_TESTING_zh.md)（与S2共用main）
 - [四种模式使用的遥操作版本](README.md#modes)
 - [键盘数采](README.md#keyboard) / [原厂单人VR](README.md#vr) / [子任务数采](README.md#subtask)
 - [V4增量遥操作与DAgger](README.md#dagger)

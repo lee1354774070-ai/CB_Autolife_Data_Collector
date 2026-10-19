@@ -35,11 +35,13 @@ class RecorderStorageTest(unittest.TestCase):
         from lerobot.datasets import LeRobotDataset
         recorder.rclpy.init()
         try:
-            for with_state, with_action, with_dagger in itertools.product((False, True), repeat=3):
-                with self.subTest(state=with_state, action=with_action, dagger=with_dagger), tempfile.TemporaryDirectory() as directory:
+            combinations = itertools.product((False, True), (False, True), (False, True),
+                                             ('autolife_s1', 'autolife_s3'))
+            for with_state, with_action, with_dagger, robot_type in combinations:
+                with self.subTest(state=with_state, action=with_action, dagger=with_dagger, robot_type=robot_type), tempfile.TemporaryDirectory() as directory:
                     root = Path(directory) / 'dataset'
                     argv = ['recorder', '--output-dir', str(root), '--image-source', 'ros', '--vcodec', 'h264',
-                            '--encoder-threads', '1', '--with-head', '--with-upper-waist']
+                            '--encoder-threads', '1', '--with-head', '--with-upper-waist', '--robot-type', robot_type]
                     if with_state:
                         argv.append('--with-eef-state')
                     if with_action:
@@ -112,6 +114,7 @@ class RecorderStorageTest(unittest.TestCase):
                         node.finish()
                         node.destroy_node()
                     data = LeRobotDataset('local/eef-smoke', root=root, video_backend='pyav')
+                    self.assertEqual(data.meta.robot_type, robot_type)
                     first = data[0]
                     self.assertEqual(tuple(first['observation.state'].shape), (21 + 14 * with_state,))
                     self.assertEqual(tuple(first['action'].shape), (21 + 14 * with_action,))
@@ -126,6 +129,8 @@ class RecorderStorageTest(unittest.TestCase):
                     self.assertEqual(len(layout['features']['action']['groups']['eef']), 14 * with_action)
                     convert_dataset(root, Path(directory) / 'training', state='eef' if with_state else 'joint',
                                     action='eef+gripper' if with_action else 'joint')
+                    converted_info = json.loads((Path(directory) / 'training/meta/info.json').read_text())
+                    self.assertEqual(converted_info['robot_type'], robot_type)
                     # A second real recorder reopens this root without losing
                     # the sidecar during create/resume/empty-workspace cleanup.
                     node = recorder.OfficialLeRobotRecorder(args)
@@ -134,6 +139,7 @@ class RecorderStorageTest(unittest.TestCase):
                         node.create_dataset()
                         self.assertEqual(node.saved_episodes, 1)
                         changed = json.loads((root / 'meta/info.json').read_text())
+                        self.assertEqual(changed['robot_type'], robot_type)
                         changed['features']['action']['shape'][0] += 14
                         with self.assertRaisesRegex(RuntimeError, 'action size'):
                             node._validate_resume_schema(changed)
@@ -143,6 +149,14 @@ class RecorderStorageTest(unittest.TestCase):
                     self.assertEqual(json.loads((root / SCHEMA_PATH).read_text()), layout)
         finally:
             recorder.rclpy.shutdown()
+
+    def test_robot_type_environment_and_explicit_argument(self):
+        with patch.dict(os.environ, {"ROBOT_TYPE": "autolife_s3"}):
+            with patch.object(sys, "argv", ["recorder", "--output-dir", "/unused"]):
+                self.assertEqual(recorder.parse_args().robot_type, "autolife_s3")
+            with patch.object(sys, "argv", ["recorder", "--output-dir", "/unused",
+                                           "--robot-type", "explicit_test"]):
+                self.assertEqual(recorder.parse_args().robot_type, "explicit_test")
 
     def test_nonfinite_limits_and_unsafe_encoding_modes_are_rejected(self):
         for option, value in (('--max-sync-delta-sec', 'nan'), ('--image-poll-fps', 'inf'),

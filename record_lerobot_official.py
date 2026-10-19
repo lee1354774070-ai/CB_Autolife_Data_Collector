@@ -1990,7 +1990,7 @@ def parse_args() -> argparse.Namespace:
         help='Ordered subtask texts as a JSON array. Empty [] disables annotation. Example: \'["pick", "place"]\'.',
     )
     parser.add_argument(
-        "--robot-type", default="autolife_s1",
+        "--robot-type", default=os.environ.get("ROBOT_TYPE", "autolife_s1"),
         help="Robot type label stored in LeRobot metadata; it does not change ROS topics.",
     )
     parser.add_argument(

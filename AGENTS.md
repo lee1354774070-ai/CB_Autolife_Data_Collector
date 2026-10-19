@@ -7,6 +7,7 @@
 - `vr_collector_control.py`、`subtask_annotations.py` 管理单人按键、语音及子任务标记。
 - `dagger/control/` 为已验证控制基础；外层 `dagger/` 负责权限、部署与集合版适配。
 - `dagger/robot_profile.py`区分机器人编号和型号；不能恢复只允许300的判断，也不能用编号猜型号。
+- S2/S3共用main，ROBOT_TYPE只标记数据集。`s3_thor_preview.py`保持独立只读，不可绕过执行ACK拒绝或生产控制器校验。
 - `dagger/assets/` 为随版本发布的配置与网页；哈希在 `dependencies.py` 和 `SOURCE.json`。
 - `teleop_snapshot/` 为已打补丁的审查快照，不是待打补丁的运行依赖。
 - 300正式部署在 `/home/ubuntu/CB_Autolife_Data_Collector`；部署路径不等于修改硬件的授权。

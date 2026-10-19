@@ -43,6 +43,23 @@ launcher
 `IMAGE_SOURCE=ros` 会增加 `shm_camera_topic_bridge.py`。direct-SHM 是默认方式，
 因为它省去了图像序列化和 DDS 队列。
 
+## S2 / S3 兼容范围
+
+两代机器人共用 `main`，S3无需切换分支。ROS环境脚本保留显式 `ROS_DOMAIN_ID`
+（未设置时为0），机器人编号按 `HG_DAGGER_ROBOT_ID`、`ROBOT_ID`、主机名后缀、300
+依次选择。即使加载ROS失败也恢复调用者的nounset设置。机器人ROS工作空间为可选，
+系统ROS仍必须安装；启动器从配置解释器的 `sys.base_prefix` 获取动态库目录，支持venv。
+
+新S3数据集显式设置 `ROBOT_TYPE=autolife_s3`。为兼容旧数据保留默认值 `autolife_s1`；
+该字段只标记数据，不进行运动学转换，也不代替DAgger控制器型号配置。续录保留原标签。
+EEF采集与转换同样可用，但各机器人实际位姿报告及其语义必须独立核实。
+
+`s3_thor_preview.py` 为独立只读推理入口，需要集合仓库的 `deploy.groot_n1_7` runtime
+及已审查的夹爪补丁 `tools/patch_cb_thor_gripper.py`。加载权重前检查接口；普通采集
+不导入预览，也不要求安装此补丁。预览健康信息禁止硬件执行，执行ACK接口拒绝请求。
+关节符号转换不等于轨迹重定向，不证明S2策略可直接控制S3；历史证据和未完成验收项
+见 [S3_TESTING_zh.md](S3_TESTING_zh.md)。
+
 ## 数据契约
 
 policy schema 固定以 16 维开始：

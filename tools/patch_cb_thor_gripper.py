@@ -3,7 +3,10 @@
 Preview by default; --apply backs up sources. Does not restart any service.
 Enable with --gripper-phase-aware; omit that flag for continuous actions.
 """
-from patch_thor_receipts import replace_once, run_patch
+if __package__:
+    from .patch_thor_receipts import replace_once, run_patch
+else:
+    from patch_thor_receipts import replace_once, run_patch
 
 HASHES = {
  "server.py":"507076710ba4ad21669a6796e50e7152562f763a5644c6415d6043b7c9e22cbf",

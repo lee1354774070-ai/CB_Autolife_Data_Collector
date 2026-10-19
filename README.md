@@ -1,5 +1,8 @@
 # 云蝶 AutoLife 数据采集器
 
+> **S2 / S3 共用 `main`**，不再需要为S3切换分支。S3环境适配与最新EEF采集、转换工具均保留。
+> S3真机运动、长时负载和DAgger接管仍需单独验收；推理预览禁止执行。历史测试范围见 [S3 使用与验收记录](S3_TESTING_zh.md)。
+
 统一入口：`start_lerobot_official_collect.sh`。支持键盘、单人 VR、子任务标注和 DAgger，
 输出官方 `LeRobotDataset`。本文先解释参数，再给出各模式的完整用法。
 
@@ -272,6 +275,7 @@ DAgger在未显式设置时使用 `WITH_HEAD=1 WITH_UPPER_WAIST=1 WITH_WAIST=0 W
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `ROBOT_ID` | 主机名末尾数字，否则283 | 生成机器人话题后缀；在 `autolife-robot-300` 上为300。不要混淆IP和机器人编号。DAgger另需匹配`DAGGER_ROBOT_PROFILE`。 |
+| `ROBOT_TYPE` | `autolife_s1` | 新数据集的机器人类型标签；S3显式设置`autolife_s3`。不改变关节顺序、单位或控制方式，也不把S3坐标转换成S2。旧数据续录不会自动改标签。 |
 | `ROS_DOMAIN_ID` | `0` | ROS通信域，必须与机器人服务一致；不是机器人编号。DAgger接受0～232，并据此生成话题后缀。 |
 | `RMW_IMPLEMENTATION` | `rmw_cyclonedds_cpp` | ROS中间件；本工具当前使用CycloneDDS本机通信配置。 |
 | `ROBOT_PY` | `/home/ubuntu/miniconda3/envs/robot_env/bin/python` | 相机生产/桥接、普通VR辅助程序解释器。 |
@@ -337,8 +341,33 @@ export MAX_SYNC_DELTA_SEC=0.03 SYNC_IMAGE_BUFFER_SIZE=16
 ```
 
 `set +u` 关闭当前Shell的“未定义变量报错”，避免ROS环境脚本触发unbound variable，
-与模型开关、录制或电机使能无关。main中的环境辅助脚本保留300/domain0预设；其他机器人在source后
-显式设置自己的 `ROBOT_ID` 和通信域。DAgger还需明确 `DAGGER_ROBOT_PROFILE`，并通过该机器的依赖和控制权预检。
+与模型开关、录制或电机使能无关。环境辅助脚本优先保留显式编号和ROS域，否则从主机名识别编号，
+ROS域默认0；没有`ros2_ws`时只加载系统ROS。请核对启动提示，不要沿用其他机器的环境变量。
+DAgger还需明确 `DAGGER_ROBOT_PROFILE`，并通过该机器的依赖和控制权预检。
+
+### 2.1 S3 环境示例
+
+同样使用当前`main`和原厂遥操作。以下以347为例，编号、数据路径和解释器应按实际机器修改：
+
+```bash
+cd /home/ubuntu/CB_Autolife_Data_Collector
+unset HG_DAGGER_ROBOT_ID VR_CONTROL SUBTASKS_JSON ACTION_MODE
+export ROBOT_ID=347 ROS_DOMAIN_ID=0 ROBOT_TYPE=autolife_s3
+source scripts/source_ros_env.sh
+set +u
+export OUTPUT_BASE_DIR=/home/ubuntu/nas
+export WITH_HEAD=1 WITH_UPPER_WAIST=1 WITH_WAIST=0 WITH_DEPTH=0
+export START_HAND_PRODUCER=0 ACTION_MODE=status_target
+export TASK_TEXT='Pick the laundry bag.'
+COLLECTOR_MODE=vr bash start_lerobot_official_collect.sh s3_vr_rgb
+```
+
+若LeRobot装在独立venv，启动前将`LEROBOT_PY`设为该环境的Python绝对路径；
+原厂辅助环境不同则同时设置`ROBOT_PY`。启动器从各解释器的`sys.base_prefix`选择动态库，
+不再假定必须使用默认Conda目录。具体版本和依赖仍需预先安装。
+
+S3可使用相同的EEF录制开关和离线转换工具，但必须先确认实测/目标位姿报告存在、坐标语义正确；
+本次合并没有在S3上新增EEF真机验证。S2与S3的数据、归一化参数和模型不能仅因维度相同就直接混用。
 
 <a id="modes"></a>
 ## 3. 四种模式使用哪套遥操作
@@ -504,9 +533,11 @@ bash start_lerobot_official_collect.sh towel_subtask_21d_rgb
 **遥操作：经过适配的V4增量控制副本，不是原厂App。**
 `owned` 会启动一套独占宿主；头显使用浏览器进入8447扩展网页。
 默认不发布硬件动作。支持按编号/型号配置，保持21维和三路RGB；depth可选但不送入当前模型。
-S2 main和S3分支共用编号路由与逐维纠错掩码修复。300旧命令继续使用S2配置。其他S2-v2.2示例：`ROBOT_ID=328 DAGGER_ROBOT_PROFILE=s2_v2_2`。
-S3环境安装和独立推理预览仍使用`s3-collector`分支，v3.1参数示例：`ROBOT_ID=347 DAGGER_ROBOT_PROFILE=s3_v3_1 ROBOT_TYPE=autolife_s3`；
-347的增量控制器和独立控制权接口尚未部署，当前8779只读预览也会被执行入口拒绝。
+S2与S3现在共用main中的编号路由、逐维纠错掩码和环境适配。
+300旧命令继续使用S2配置。其他S2-v2.2示例：`ROBOT_ID=328 DAGGER_ROBOT_PROFILE=s2_v2_2`。
+S3-v3.1示例：`ROBOT_ID=347 DAGGER_ROBOT_PROFILE=s3_v3_1 ROBOT_TYPE=autolife_s3`；
+截至2026-10-16的记录，347的增量控制器和独立控制权接口尚未部署；本次源码合并不改变部署状态。
+独立8779只读预览仍会被执行入口拒绝，不能当作可执行的S3模型服务。
 每台机器先完成依赖/型号预检，再现场验收，不得只改编号绕过检查。
 同一主机同一ROS域仍只允许一个DAgger宿主，控制权话题没有改成多机器人命名空间。
 
@@ -775,6 +806,8 @@ RGB/depth视频逐字节复制，不重编码、不拼接，保留原LeRobot v3�
 - [官方 LeRobot v3 数据格式](https://huggingface.co/docs/lerobot/lerobot-dataset-v3)
 - [VR语音、文字及振动反馈边界](VR_FEEDBACK.md)
 - [300测试与验收流程](ROBOT300_TESTING_zh.md)
+- [S3 环境适配、测试与使用](S3_TESTING_zh.md)
+- [S3 推理预览、验证结果与回滚](docs/validation/20261016_s3_inference.md)
 - [存储保护测试记录](docs/validation/20261012_storage_guards.md)
 - [已适配V4源码快照](teleop_snapshot/README.md)
 
