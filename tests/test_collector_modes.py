@@ -60,6 +60,38 @@ class CollectorModeTest(unittest.TestCase):
         self.assertIn("inspected V4/HG", result.stdout)
         self.assertIn("SUBTASKS_JSON", result.stdout)
 
+    def test_action_mode_help_distinguishes_regular_collection_and_dagger(self):
+        for args in (("--help",), ("ACTION_MODE", "--help")):
+            with self.subTest(args=args):
+                result = subprocess.run(["bash", str(self.launcher), *args],
+                                        text=True, capture_output=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("keyboard/vr/subtask", result.stdout)
+                self.assertIn("status_target", result.stdout)
+                self.assertIn("dagger", result.stdout)
+                self.assertIn("joint", result.stdout)
+                self.assertNotIn("status_target|joint|eef", result.stdout)
+        self.assertIn("WITH_EEF_STATE/WITH_EEF_ACTION", result.stdout)
+
+    def test_removed_or_unknown_action_mode_exits_before_startup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "must_not_exist"
+            for mode in ("keyboard", "vr", "subtask", "dagger"):
+                for action, eef in (("eef", "0"), ("eef", "1"), ("unknown", "0")):
+                    with self.subTest(mode=mode, action=action, eef=eef):
+                        env = dict(os.environ, COLLECTOR_MODE=mode, ACTION_MODE=action,
+                                   WITH_EEF_STATE=eef, WITH_EEF_ACTION=eef,
+                                   OUTPUT_BASE_DIR=str(output))
+                        result = subprocess.run(["bash", str(self.launcher), "test"], env=env,
+                                                text=True, capture_output=True, timeout=5)
+                        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                        self.assertIn("ACTION_MODE", result.stderr)
+                        if action == "eef":
+                            self.assertIn("was removed", result.stderr)
+                            self.assertIn("WITH_EEF_STATE/WITH_EEF_ACTION", result.stderr)
+                        self.assertNotIn("AutoLife Collector |", result.stdout)
+                        self.assertFalse(output.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

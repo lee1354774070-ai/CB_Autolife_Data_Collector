@@ -51,6 +51,12 @@ class RecorderStorageTest(unittest.TestCase):
                     with patch.object(sys, 'argv', argv):
                         args = recorder.parse_args()
                     node = recorder.OfficialLeRobotRecorder(args)
+                    topics = {subscription.topic_name for subscription in node.subscriptions}
+                    self.assertEqual(args.action_arm_topic in topics, with_dagger)
+                    self.assertEqual(args.action_gripper_topic in topics, with_dagger)
+                    self.assertEqual(args.state_eef_topic in topics, with_state)
+                    self.assertEqual(args.action_eef_topic in topics, with_action)
+                    self.assertNotIn(f'/topic_arm_target_robot_height_z_{recorder.TOPIC_NODE_ID}', topics)
                     pose = parse_eef_pose({f'{side}_eef_pose': {'position': [.4, .2, .8], 'rotation': [0, 0, 0, 1]}
                                            for side in ('left', 'right')})
                     def seed(anchor):
@@ -118,6 +124,8 @@ class RecorderStorageTest(unittest.TestCase):
                     first = data[0]
                     self.assertEqual(tuple(first['observation.state'].shape), (21 + 14 * with_state,))
                     self.assertEqual(tuple(first['action'].shape), (21 + 14 * with_action,))
+                    np.testing.assert_array_equal(first['observation.state'][:21].numpy(), np.zeros(21))
+                    np.testing.assert_array_equal(first['action'][:21].numpy(), np.ones(21))
                     if with_state:
                         np.testing.assert_allclose(first['observation.state'][21:].numpy(), pose)
                     if with_action:
@@ -168,12 +176,46 @@ class RecorderStorageTest(unittest.TestCase):
                 with self.assertRaises(SystemExit) as error:
                     recorder.parse_args()
                 self.assertEqual(error.exception.code, 2)
-        with patch.object(sys, 'argv', ['recorder', '--output-dir', '/unused', '--action-mode', 'eef', '--with-eef-state']), contextlib.redirect_stderr(io.StringIO()):
-            with self.assertRaises(SystemExit):
-                recorder.parse_args()
         with patch.object(sys, 'argv', ['recorder', '--output-dir', '/unused', '--with-eef-action', '--fallback-action-to-state']), contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):
                 recorder.parse_args()
+
+    def test_action_mode_defaults_and_eef_append_flags(self):
+        for mode in (None, 'status_target', 'joint'):
+            for with_state, with_action in itertools.product((False, True), repeat=2):
+                with self.subTest(mode=mode, state=with_state, action=with_action):
+                    argv = ['recorder', '--output-dir', '/unused']
+                    if mode is not None:
+                        argv.extend(['--action-mode', mode])
+                    if with_state:
+                        argv.append('--with-eef-state')
+                    if with_action:
+                        argv.append('--with-eef-action')
+                    with patch.object(sys, 'argv', argv):
+                        args = recorder.parse_args()
+                    self.assertEqual(args.action_mode, mode or 'status_target')
+                    self.assertEqual(args.with_eef_state, with_state)
+                    self.assertEqual(args.with_eef_action, with_action)
+                    self.assertFalse(hasattr(args, 'action_height_topic'))
+
+    def test_removed_eef_mode_and_height_option_are_rejected(self):
+        for extra in ([], ['--with-eef-state'], ['--with-eef-action'],
+                      ['--with-eef-state', '--with-eef-action']):
+            with self.subTest(extra=extra):
+                error = io.StringIO()
+                argv = ['recorder', '--output-dir', '/unused', '--action-mode', 'eef', *extra]
+                with patch.object(sys, 'argv', argv), contextlib.redirect_stderr(error):
+                    with self.assertRaises(SystemExit) as result:
+                        recorder.parse_args()
+                self.assertEqual(result.exception.code, 2)
+                self.assertIn("invalid choice: 'eef'", error.getvalue())
+        error = io.StringIO()
+        argv = ['recorder', '--output-dir', '/unused', '--action-height-topic', '/unused']
+        with patch.object(sys, 'argv', argv), contextlib.redirect_stderr(error):
+            with self.assertRaises(SystemExit) as result:
+                recorder.parse_args()
+        self.assertEqual(result.exception.code, 2)
+        self.assertIn('unrecognized arguments: --action-height-topic', error.getvalue())
 
     def test_four_workflows_save_invalidate_discard_and_resume(self):
         import pyarrow.parquet as pq

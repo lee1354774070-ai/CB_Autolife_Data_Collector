@@ -24,6 +24,7 @@ show_help() {
                 echo "COLLECTOR_MODE"
                 echo "Usage: COLLECTOR_MODE=keyboard|vr|subtask|dagger bash start_lerobot_official_collect.sh task_name"
                 echo "keyboard: original terminal controls. vr: single-operator VR buttons. subtask: VR with ordered SUBTASKS_JSON."
+                echo "Action source: keyboard/vr/subtask use status_target (default); dagger requires joint."
                 echo "dagger: model/profile-selected incremental V4 + our Thor GR00T; A=start, GL/GR=takeover, B=save, Y=discard, X=reset."
                 echo "Requires DAGGER_SERVER_URL and inspected V4/HG sources. Default DAGGER_PUBLISH=0; set 1 for button-authorized motion."
                 echo "Unset: preserve legacy VR_CONTROL/SUBTASKS_JSON selection; default keyboard."
@@ -107,7 +108,7 @@ show_help() {
                 echo "STATE uses measured current_robot_eef_pose; ACTION uses reported target_robot_eef_pose, never measured state."
                 echo "Robot frame, metres, quaternion x/y/z/w; left XYZ+XYZW then right XYZ+XYZW. Grippers stay in the joint block."
                 echo "Requires fresh pose publishers; missing/stale data invalidates capture, no zero/FK fallback."
-                echo "Use ACTION_MODE=status_target or joint and a NEW dataset root when changing either switch."
+                echo "Keep status_target for regular collection or joint for DAgger; use a NEW dataset root when changing either switch."
                 echo "Offline selection: python convert_dataset.py SOURCE DEST --state joint|eef|all|eef+gripper --action joint|eef|all|eef+gripper"
                 ;;
             STATE_EEF_TOPIC|ACTION_EEF_TOPIC)
@@ -204,8 +205,11 @@ show_help() {
                 ;;
             ACTION_MODE)
                 echo "ACTION_MODE"
-                echo "Usage: ACTION_MODE=status_target|joint|eef bash start_lerobot_official_collect.sh task_name"
-                echo "Action source: status_target is recommended; joint reads command topics; eef records end-effector targets. Default: status_target"
+                echo "Usage: ACTION_MODE=status_target|joint bash start_lerobot_official_collect.sh task_name"
+                echo "keyboard/vr/subtask: use status_target (default). Arm/head/waist use reported targets; grippers use measured positions."
+                echo "dagger: joint is required and selected by its launcher; verified V4 controller proxies provide body and gripper target positions."
+                echo "Outside DAgger, joint requires a verified publisher for BOTH command topics; factory VR input alone is not sufficient."
+                echo "The legacy eef mode was removed. Add poses with WITH_EEF_STATE/WITH_EEF_ACTION, then use convert_dataset.py for pure EEF data."
                 ;;
             COLLECT_VCODEC|DEPTH_VCODEC|DEPTH_MIN|DEPTH_MAX|DEPTH_SHIFT|DEPTH_USE_LOG)
                 echo "${parameter}"
@@ -316,7 +320,7 @@ Common parameters:
   IMAGE_WRITER_THREADS       Image workers. Default: 4 (DAgger: 2); 0 is synchronous.
   SYNC_SIGNAL_BUFFER_SIZE    State/action buffer capacity. Default: 64
   MIN_CAMERAS                Minimum valid cameras. Default: all selected cameras
-  ACTION_MODE                status_target, joint, or eef. Default: status_target
+  ACTION_MODE                keyboard/vr/subtask: status_target (default); dagger: joint (required).
   MAX_IMAGE_AGE_SEC          Maximum image age in seconds. Default: 0.15
   MAX_STATE_AGE_SEC          Maximum joint-state age in seconds. Default: 0.15
   MAX_STATE_INTERPOLATION_GAP_SEC  Maximum interpolation span. Default: 0.05
@@ -383,10 +387,19 @@ for parameter in WITH_EEF_STATE WITH_EEF_ACTION; do
         exit 2
     fi
 done
-if [[ "${ACTION_MODE:-status_target}" = "eef" && ( "${WITH_EEF_STATE}" = "1" || "${WITH_EEF_ACTION}" = "1" ) ]]; then
-    echo "ERROR: WITH_EEF_* requires ACTION_MODE=status_target or joint, not legacy eef." >&2
-    exit 2
-fi
+# Validate before creating data or starting ROS. Never reinterpret a removed
+# action layout as joint targets in an existing dataset.
+case "${ACTION_MODE:-status_target}" in
+    status_target|joint) ;;
+    eef)
+        echo "ERROR: ACTION_MODE=eef was removed. Use status_target for regular collection or joint for DAgger; add poses with WITH_EEF_STATE/WITH_EEF_ACTION in a new dataset root." >&2
+        exit 2
+        ;;
+    *)
+        echo "ERROR: ACTION_MODE must be status_target (regular collection) or joint (DAgger/verified command topics)." >&2
+        exit 2
+        ;;
+esac
 VR_CONTROL="${VR_CONTROL:-}"
 VR_SPEECH="${VR_SPEECH:-1}"
 if [[ ! "${VR_SPEECH}" =~ ^[01]$ ]]; then
@@ -669,7 +682,6 @@ RECORDER_ARGS=(
     --action-gripper-topic "/topic_arm_gripper_target_joints_position_${TOPIC_NODE_ID}"
     --state-eef-topic "${STATE_EEF_TOPIC:-/topic_arm_current_robot_eef_pose_${TOPIC_NODE_ID}}"
     --action-eef-topic "${ACTION_EEF_TOPIC:-/topic_arm_target_robot_eef_pose_${TOPIC_NODE_ID}}"
-    --action-height-topic "/topic_arm_target_robot_height_z_${TOPIC_NODE_ID}"
     --control-fifo "${CONTROL_FIFO}"
     --status-file "${STATUS_FILE}"
     "${RECORDER_CAMERA_ARGS[@]}"

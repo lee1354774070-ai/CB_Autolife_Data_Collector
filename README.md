@@ -51,13 +51,22 @@ export WITH_DEPTH=1
 | `WITH_EEF_ACTION` | `0` | `1` 在 `action` 的完整 joint 向量后追加双臂目标末端位姿，共14维。与 `WITH_EEF_STATE` 独立；不会把实测位姿当成目标。 |
 | `STATE_EEF_TOPIC` | `/topic_arm_current_robot_eef_pose_<domain>_<robot>` | 实测位姿报告。覆盖时必须保持相同的机器人坐标系、米、XYZW四元数语义，不能传入控制指令话题。 |
 | `ACTION_EEF_TOPIC` | `/topic_arm_target_robot_eef_pose_<domain>_<robot>` | 目标位姿报告。该报告不等于 VR 手柄位姿，也不是本工具根据 joint action 做 FK 算出的位姿。 |
-| `ACTION_MODE` | `status_target` | `status_target` 从状态包读取目标，适合普通遥操作采集；`joint` 从关节/夹爪命令话题读取；`eef` 为15维末端目标调试格式，不能当作同维关节 action 使用。DAgger **必须为 `joint`**，由启动器设置。 |
+| `ACTION_MODE` | 常规 `status_target`；DAgger `joint` | **键盘、单人VR、子任务数采使用 `status_target`**；**DAgger 使用 `joint`**，由启动器设置并校验。仅保留这两个取值，具体来源见下文。 |
 
 `WITH_UPPER_WAIST=1` 与 `WITH_WAIST=1` **不能同时出现**。
 开关控制的是保存哪些维度，不是禁止机器人其余关节运动。
 
-`status_target` 中，手臂/头/腰使用状态包中的控制目标；状态包没有单独的夹爪目标，
-两维夹爪沿用实测位置作为标签。若需要明确的夹爪命令标签，应先确认命令话题并使用 `joint`。
+<a id="action-modes"></a>
+**Action 来源约定：**
+
+- **常规数采 `keyboard / vr / subtask`：`ACTION_MODE=status_target`。** 默认无需填写。手臂/头/腰取状态包中的控制目标；由于状态包没有独立夹爪目标，两维夹爪取实测位置。
+- **DAgger：`ACTION_MODE=joint`。** 启动器自动设置，显式设置为 `status_target` 会报错。使用修改后的V4控制器实际发布的目标位置，经 `/hg_dagger/collector/arm_action` 和 `/hg_dagger/collector/gripper_action` 写入，并保留控制来源、时间戳和训练mask；不回退为实测state。
+
+原厂App能让机器人运动、夹爪支持位置控制，都不等于它会发布独立的身体/夹爪目标位置命令。
+非DAgger的底层 `joint` 接口仅保留给已核实命令话题的集成或链路调试，不作为常规数采配置。
+2026-10-19在345原厂App实际遥操作时，两个默认joint命令话题均未收到消息，
+但状态包的控制目标持续更新。该机器当前原厂采集应使用`status_target`；不能仅因机器人在动就改成`joint`。
+DAgger另有专门的命令代理话题，不与此次原厂链路混为一谈，见[实测记录](docs/validation/20261019_s3_345.md)。
 
 关节模式的 state/action 顺序固定为：左臂7维 → 右臂7维 → 左夹爪 → 右夹爪 →
 可选头部3维 → 可选上腰2维或完整腰腿4维。具体名称见 [robot_schema.py](robot_schema.py)。
@@ -77,7 +86,10 @@ EEF 是录制扩展，不改变 DAgger 模型输入、控制命令或接管逻�
 
 #### EEF 布局与前提
 
-两个 EEF 开关只适用于 `ACTION_MODE=status_target` 或 `joint`，不能与旧的 `ACTION_MODE=eef` 混用。
+**旧的15维调试模式 `ACTION_MODE=eef` 已删除**，对应的高度话题参数也已删除。
+旧命令会直接报错，不自动转换或覆盖已有数据；旧15维数据不能用新版本续录。
+`WITH_EEF_STATE`、`WITH_EEF_ACTION` **继续保留**：按上述规则选择 `status_target` / `joint`，
+再独立开启需要的EEF字段；纯EEF训练数据通过后文的转换工具从新采集的joint+EEF数据导出。
 `WITH_EEF_ACTION=1` 也不能搭配 `FALLBACK_ACTION_TO_STATE=1`，以免把实测joint混作目标action。
 以基础16维 joint 为例：
 
@@ -102,7 +114,9 @@ XYZ 使用原厂机器人坐标系下的绝对位置（米），姿态为单位�
 
 必须先有持续更新的原厂 current/target 位姿报告。协议为 `std_msgs/msg/String` 的 JSON：
 `left_eef_pose` 和 `right_eef_pose` 各包含 `position[3]`、`rotation[4]`。
-普通 joint 状态存在，不代表 EEF 报告一定存在；截至本次只读检查，345 尚未发布这两个话题。
+普通 joint 状态存在，不代表 EEF 报告一定存在。2026-10-19在345复查已收到两路约100 Hz的完整报告；
+经授权重启视觉服务后，37维state/action、RGB-D、30 FPS的一条480帧数据已保存并通过视频解码与LeRobot回读。
+同日另一条录制因关节流短暂停顿作废，因此不代表长时稳定性或运动中EEF语义已验收。见[345验证记录](docs/validation/20261019_s3_345.md)。
 开启缺失的 EEF 输入会在初始化时报错，不会填0或自动启动新的控制器。
 
 EEF state 按图像时间进行 XYZ 线性插值与四元数最短弧 SLERP，复用
@@ -124,7 +138,7 @@ bash start_lerobot_official_collect.sh WITH_EEF_STATE --help
 ```
 
 新建的 joint 数据集包含 `meta/collector_schema.json`，记录 joint、夹爪、EEF 的索引、名称和位姿来源。
-续录会检查该布局。历史数据仍可按原 schema 续录，但没有 EEF 的旧数据不会被自动“补出”末端位姿。
+续录会检查该布局。历史joint数据仍可按原 schema 续录，但没有 EEF 的旧数据不会被自动“补出”末端位姿。
 
 ### 1.2 模式、任务和保存位置
 
@@ -366,8 +380,14 @@ COLLECTOR_MODE=vr bash start_lerobot_official_collect.sh s3_vr_rgb
 原厂辅助环境不同则同时设置`ROBOT_PY`。启动器从各解释器的`sys.base_prefix`选择动态库，
 不再假定必须使用默认Conda目录。具体版本和依赖仍需预先安装。
 
+**不需要额外安装一套“S3 Collector环境”。** 已有兼容的ROS、`robot_env`和LeRobot环境就直接使用；
+例如345的现有环境已通过导入和隔离回归，无需新建venv。`ros2_ws`只在依赖其中的包时才需要，
+原厂已直接发布ROS话题/SHM的机器不必为了source脚本而创建空工作空间。
+环境兼容代码不改变录制数据或关节方向；`ROBOT_TYPE`只标记数据，不能替代DAgger的型号/控制器校验。
+
 S3可使用相同的EEF录制开关和离线转换工具，但必须先确认实测/目标位姿报告存在、坐标语义正确；
-本次合并没有在S3上新增EEF真机验证。S2与S3的数据、归一化参数和模型不能仅因维度相同就直接混用。
+345原厂遥操作期间的保存/回读结果见[验证记录](docs/validation/20261019_s3_345.md)，不替代EEF坐标标定。
+S2与S3的数据、归一化参数和模型不能仅因维度相同就直接混用。
 
 <a id="modes"></a>
 ## 3. 四种模式使用哪套遥操作
@@ -808,6 +828,7 @@ RGB/depth视频逐字节复制，不重编码、不拼接，保留原LeRobot v3�
 - [300测试与验收流程](ROBOT300_TESTING_zh.md)
 - [S3 环境适配、测试与使用](S3_TESTING_zh.md)
 - [S3 推理预览、验证结果与回滚](docs/validation/20261016_s3_inference.md)
+- [345部署、静止采集与action来源核查](docs/validation/20261019_s3_345.md)
 - [存储保护测试记录](docs/validation/20261012_storage_guards.md)
 - [已适配V4源码快照](teleop_snapshot/README.md)
 

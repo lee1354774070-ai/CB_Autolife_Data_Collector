@@ -114,9 +114,7 @@ ACTION_ARM_TOPIC = f"/topic_arm_whole_body_target_joints_position_{TOPIC_NODE_ID
 ACTION_GRIPPER_TOPIC = f"/topic_arm_gripper_target_joints_position_{TOPIC_NODE_ID}"
 ACTION_EEF_TOPIC = f"/topic_arm_target_robot_eef_pose_{TOPIC_NODE_ID}"
 STATE_EEF_TOPIC = f"/topic_arm_current_robot_eef_pose_{TOPIC_NODE_ID}"
-ACTION_HEIGHT_TOPIC = f"/topic_arm_target_robot_height_z_{TOPIC_NODE_ID}"
 
-EEF_ACTION_NAMES = [*EEF_NAMES, "height_z"]  # Legacy ACTION_MODE=eef only.
 
 @dataclass
 class ImageSample:
@@ -173,15 +171,6 @@ def parse_json_payload(text: str) -> Any | None:
         return json.loads(text[start:])
     except json.JSONDecodeError:
         return None
-
-
-def parse_height_action(obj: Any) -> float | None:
-    if not isinstance(obj, dict):
-        return None
-    value = obj.get("height_z")
-    if isinstance(value, (int, float, bool)):
-        return float(value)
-    return None
 
 
 def parse_gripper_action(obj: Any) -> tuple[float | None, float | None] | None:
@@ -315,11 +304,10 @@ class OfficialLeRobotRecorder(Node):
             with_upper_waist=args.with_upper_waist,
         )
         self.state_names = self.schema.names + (EEF_NAMES if args.with_eef_state else ())
-        self.action_names = (tuple(EEF_ACTION_NAMES) if args.action_mode == "eef" else
-                             self.schema.names + (EEF_NAMES if args.with_eef_action else ()))
+        self.action_names = self.schema.names + (EEF_NAMES if args.with_eef_action else ())
         self.dagger = (DaggerLabels(args.sync_signal_buffer_size, action_names=self.action_names)
                        if getattr(args, "dagger", False) else None)
-        self.capture_layout = None if args.action_mode == "eef" else capture_schema(
+        self.capture_layout = capture_schema(
             self.schema.names, with_state=args.with_eef_state, with_action=args.with_eef_action,
             state_topic=args.state_eef_topic, action_topic=args.action_eef_topic, action_mode=args.action_mode)
         self.dataset: LeRobotDataset | None = None
@@ -368,7 +356,6 @@ class OfficialLeRobotRecorder(Node):
         self.action_body_buffer: deque[TimedSample] = deque(maxlen=args.sync_signal_buffer_size)
         self.action_gripper_buffer: deque[TimedSample] = deque(maxlen=args.sync_signal_buffer_size)
         self.action_eef_buffer: deque[TimedSample] = deque(maxlen=args.sync_signal_buffer_size)
-        self.action_height_buffer: deque[TimedSample] = deque(maxlen=args.sync_signal_buffer_size)
         self.sync_reference_camera: str | None = None
         self.last_reference_stamp_sec: float | None = None
         self.last_episode_anchor_stamp_sec: float | None = None
@@ -395,22 +382,24 @@ class OfficialLeRobotRecorder(Node):
                 )
 
         self.create_subscription(String, args.state_topic, self._state_cb, 20)
-        self.create_subscription(String, args.action_arm_topic, self._action_arm_cb, 20)
-        self.create_subscription(String, args.action_gripper_topic, self._action_gripper_cb, 20)
+        if args.action_mode == "joint":
+            self.create_subscription(String, args.action_arm_topic, self._action_arm_cb, 20)
+            self.create_subscription(String, args.action_gripper_topic, self._action_gripper_cb, 20)
         if args.with_eef_state:
             self.create_subscription(String, args.state_eef_topic, self._state_eef_cb, 20)
             self.get_logger().info(f"EEF state topic: {args.state_eef_topic}")
-        if args.with_eef_action or args.action_mode == "eef":
+        if args.with_eef_action:
             self.create_subscription(String, args.action_eef_topic, self._action_eef_cb, 20)
-        if args.action_mode == "eef":
-            self.create_subscription(String, args.action_height_topic, self._action_height_cb, 20)
+            self.get_logger().info(f"EEF action topic: {args.action_eef_topic}")
         self.get_logger().info(f"state topic: {args.state_topic}")
         self.get_logger().info(f"state/action joints ({self.schema.size}): {', '.join(self.schema.names)}")
         self.get_logger().info(f"action mode: {args.action_mode}")
-        self.get_logger().info(f"action arm topic: {args.action_arm_topic}")
-        self.get_logger().info(f"action gripper topic: {args.action_gripper_topic}")
-        self.get_logger().info(f"action eef topic: {args.action_eef_topic}")
-        self.get_logger().info(f"action height topic: {args.action_height_topic}")
+        if args.action_mode == "status_target":
+            self.get_logger().info(
+                f"action source: controller targets in {args.state_topic}; grippers use measured positions")
+        else:
+            self.get_logger().info(f"action arm topic: {args.action_arm_topic}")
+            self.get_logger().info(f"action gripper topic: {args.action_gripper_topic}")
         self.get_logger().info(
             f"dataset dimensions: state={len(self.state_names)}, action={len(self.action_names)}; "
             f"EEF state={args.with_eef_state}, action={args.with_eef_action} (robot frame, m, quaternion XYZW)")
@@ -645,9 +634,6 @@ class OfficialLeRobotRecorder(Node):
     def _action_eef_cb(self, msg: String) -> None:
         self._store_eef(msg, self.action_eef_buffer, self.args.max_action_hold_sec)
 
-    def _action_height_cb(self, msg: String) -> None:
-        self._store_action(msg, parse_height_action, self.action_height_buffer)
-
     def _control_fifo_loop(self) -> None:
         if not self.args.control_fifo:
             return
@@ -803,8 +789,7 @@ class OfficialLeRobotRecorder(Node):
         state_shape = features.get("observation.state", {}).get("shape", [])
         action_shape = features.get("action", {}).get("shape", [])
         expected_state_size = self.schema.size + (len(EEF_NAMES) if getattr(self.args, "with_eef_state", False) else 0)
-        expected_action_size = (len(EEF_ACTION_NAMES) if self.args.action_mode == "eef" else
-                                self.schema.size + (len(EEF_NAMES) if getattr(self.args, "with_eef_action", False) else 0))
+        expected_action_size = self.schema.size + (len(EEF_NAMES) if getattr(self.args, "with_eef_action", False) else 0)
         if not state_shape or int(state_shape[0]) != expected_state_size:
             raise RuntimeError(
                 f"Existing dataset state size is {state_shape}; this run requires {expected_state_size}. "
@@ -813,7 +798,7 @@ class OfficialLeRobotRecorder(Node):
         if not action_shape or int(action_shape[0]) != expected_action_size:
             raise RuntimeError(
                 f"Existing dataset action size is {action_shape}; this run requires {expected_action_size}. "
-                "Use the original action mode or a new dataset root."
+                "Use matching joint/EEF settings or a new dataset root; legacy 15-D EEF recording is no longer supported."
             )
 
         existing_camera_features = {
@@ -1079,24 +1064,6 @@ class OfficialLeRobotRecorder(Node):
         now: float,
     ) -> tuple[np.ndarray, dict[str, float], dict[str, float]] | None:
         """Build an action whose source packet is synchronized to the anchor."""
-
-        if self.args.action_mode == "eef":
-            eef_sample = self._held_signal(self.action_eef_buffer, anchor_sec, now)
-            height_sample = self._held_signal(self.action_height_buffer, anchor_sec, now)
-            if eef_sample is None or height_sample is None:
-                return None
-            action = np.array([*eef_sample.value, height_sample.value], dtype=np.float32)
-            return (
-                action,
-                {
-                    "action_eef": (eef_sample.stamp_sec - anchor_sec) * 1000.0,
-                    "action_height": (height_sample.stamp_sec - anchor_sec) * 1000.0,
-                },
-                {
-                    "action_eef": (now - eef_sample.received_sec) * 1000.0,
-                    "action_height": (now - height_sample.received_sec) * 1000.0,
-                },
-            )
 
         if self.args.action_mode == "status_target":
             status_sample = latest_at_or_before(
@@ -2119,12 +2086,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--action-mode",
-        choices=("joint", "eef", "status_target"),
+        choices=("status_target", "joint"),
         default="status_target",
         help=(
-            "Action source: 'status_target' reads schema-aligned targets from the status topic "
-            "(recommended for PI0.5 collection), 'joint' reads explicit joint/gripper command topics, "
-            "and 'eef' records a 15-d EEF target for debugging. EEF names intentionally differ from state."
+            "Use 'status_target' for regular keyboard/VR/subtask collection: controller targets "
+            "from the status topic, with measured gripper positions. DAgger requires 'joint': "
+            "explicit body/gripper target commands from its verified controller proxies. "
+            "EEF poses are optional additions via --with-eef-state/--with-eef-action."
         ),
     )
     parser.add_argument("--action-arm-topic", default=ACTION_ARM_TOPIC, help="ROS2 JSON topic for arm and whole-body joint target commands.")
@@ -2132,8 +2100,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--with-eef-state", action="store_true", help="Append 14-D measured dual-arm EEF poses to joint state (robot frame, metres, quaternion XYZW).")
     parser.add_argument("--with-eef-action", action="store_true", help="Append 14-D reported dual-arm EEF targets to joint action; never substitutes measured state.")
     parser.add_argument("--state-eef-topic", default=STATE_EEF_TOPIC, help="Vendor current EEF pose report, required with --with-eef-state.")
-    parser.add_argument("--action-eef-topic", default=ACTION_EEF_TOPIC, help="Vendor target EEF pose report for --with-eef-action or legacy --action-mode=eef.")
-    parser.add_argument("--action-height-topic", default=ACTION_HEIGHT_TOPIC, help="ROS2 JSON topic for robot height targets when --action-mode=eef.")
+    parser.add_argument("--action-eef-topic", default=ACTION_EEF_TOPIC, help="Vendor target EEF pose report, required with --with-eef-action.")
     parser.add_argument("--image-writer-threads", type=int, default=4, help="Number of background image-writer threads used by LeRobot.")
     parser.add_argument('--image-writer-max-pending', type=int, default=64,
                         help='Maximum unfinished image jobs shared by all cameras; overflow invalidates the episode.')
@@ -2181,8 +2148,6 @@ def parse_args() -> argparse.Namespace:
                         help="Maximum wait for the first DAgger action/label barrier, before accepting any frame.")
     show_requested_parameter_help(parser)
     args = parser.parse_args()
-    if args.action_mode == "eef" and (args.with_eef_state or args.with_eef_action):
-        parser.error("WITH_EEF_* appends to joint data; use --action-mode status_target or joint, not legacy eef")
     if args.with_eef_action and args.fallback_action_to_state:
         parser.error("EEF targets require genuine joint actions; disable --fallback-action-to-state")
     if args.streaming_encoding or args.batch_encoding_size != 1:

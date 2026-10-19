@@ -84,14 +84,36 @@ Only `robot_schema.py` converts between these orders. A policy that does not
 enable head or waist leaves those physical joints at their latest measured
 positions.
 
+### Action sources
+
+Regular `keyboard`, `vr`, and `subtask` collection uses
+`ACTION_MODE=status_target` by default. Arm/head/waist actions are targets
+reported in the joint status packet; gripper actions are measured positions
+because that packet has no separate gripper target fields.
+
+DAgger requires `ACTION_MODE=joint` and forbids state fallback. Its launcher
+selects `/hg_dagger/collector/arm_action` and
+`/hg_dagger/collector/gripper_action`, populated from the patched V4 controller's
+publication audit with session, authority and original-command timestamps.
+This proves command publication, not physical completion. The per-action mask
+excludes model, held and stale-authority labels from expert training.
+Outside DAgger, `joint` remains a low-level integration/test option requiring
+verified body AND gripper command publishers, not a factory-App recording preset.
+The recorder subscribes to joint command topics only in `joint` mode.
+
+The legacy 15-D `ACTION_MODE=eef` and `--action-height-topic` were removed.
+Old commands fail explicitly before recording, and existing data is not rewritten.
+Legacy 15-D episodes cannot be resumed with this recorder. Use the independent
+EEF append flags below and project a new dataset for pure EEF training.
+
 ### Optional EEF capture and projection
 
 `WITH_EEF_STATE` and `WITH_EEF_ACTION` default to zero and independently append
 14 pose values after the full joint vector. Each arm contributes XYZ in metres
 and quaternion XYZW, left arm first, in the vendor controller's robot frame.
 The controller defines the EEF point; no TCP offsets or map transforms are
-applied. Grippers remain in the joint block. The flags cannot be combined with
-the old 15-D `ACTION_MODE=eef` debugging mode.
+applied. Grippers remain in the joint block. Both flags remain available with
+either supported action source; they do not change the joint action contract.
 
 State subscribes to `current_robot_eef_pose`; action subscribes to
 `target_robot_eef_pose`, with the usual domain/robot suffix. The vendor String
@@ -99,8 +121,22 @@ JSON contains `left_eef_pose`/`right_eef_pose`, each with `position[3]` and
 `rotation[4]`. Partial/nonfinite payloads and zero quaternions are rejected;
 valid quaternions are normalized. This does not start vendor services, publish
 commands, call SDK controllers, or substitute FK/zero/measured-state actions.
-Robot 345 did not publish these reports during the read-only inspection; joint
-feedback alone is not evidence that EEF collection is ready.
+Robot 345 lacked these reports during the earlier inspection. On 2026-10-19,
+both complete streams were observed at about 100 Hz. After an authorized vision
+service restart, a 480-frame, 30 FPS RGB-D episode with 37-D state/action passed
+full video decoding and LeRobot readback. A separate capture failed on a joint
+stream stall; this is not long-duration or moving-EEF calibration acceptance.
+The user confirmed factory-App teleoperation during the saved capture; the
+recorded joint changes rule out classifying it as a static test.
+See the [345 validation record](docs/validation/20261019_s3_345.md).
+Joint feedback alone remains insufficient evidence that EEF collection is ready.
+
+During the same factory-App test, status targets changed but neither default
+joint command topic delivered messages. `ACTION_MODE=joint` requires both
+fresh body and gripper commands; a publisher listed in the ROS graph is not
+proof that it sends them. Use `status_target` on this observed factory path,
+with its measured-gripper limitation; do not synthesize missing joint commands.
+DAgger's dedicated command proxies are a separate, independently checked path.
 
 EEF state has a separate bounded telemetry buffer. XYZ is interpolated linearly,
 rotation uses shortest-arc SLERP, and both use the image anchor and existing

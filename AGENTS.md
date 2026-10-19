@@ -32,6 +32,7 @@ ROS_DOMAIN_ID=211 DAGGER_DEPENDENCY_ROOT=/home/ubuntu/ros2_ws/src /usr/bin/pytho
 ## 保持不变的契约
 
 - 普通/单人/子任务使用原厂输入；DAgger使用独立增量控制器，不能同时运行两套。
+- 常规数采默认`ACTION_MODE=status_target`；DAgger强制`joint`并使用控制器输出代理。旧15维`ACTION_MODE=eef`已删除，不恢复；保留独立`WITH_EEF_STATE`/`WITH_EEF_ACTION`追加及离线转换。
 - 单人面键需GL+GR；DAgger面键无需双Grip，Grip用于人工接管。
 - A开始、B保存/阶段标记、X仅复位、Y仅丢弃；终端键位按README保留。
 - 原厂X复位未接入，不调用另一套控制器补偿；错误和未确认结果不能显示成功。

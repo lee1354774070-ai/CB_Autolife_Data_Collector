@@ -82,18 +82,42 @@ ROS 控制器的物理 q23 顺序不同：
 只有 `robot_schema.py` 可以在两种顺序间转换。policy 没有启用头部或腰部时，
 部署端会保留这些物理关节的最新实测值。
 
+### Action 来源
+
+常规 `keyboard / vr / subtask` 数采默认使用 `ACTION_MODE=status_target`：
+手臂/头/腰取状态包中的控制目标；该包没有独立夹爪目标，因此夹爪action使用实测位置。
+
+DAgger必须使用 `ACTION_MODE=joint`，禁止state回退。启动器将录制器切到
+`/hg_dagger/collector/arm_action` 与 `/hg_dagger/collector/gripper_action`，
+来源是修改后的V4控制器发布记录，并带session、控制权及原始命令时间戳。
+发布记录证明目标已发送，不证明物理动作已经完成；逐维mask排除模型、保持段及过期控制权的专家标签。
+非DAgger的 `joint` 仅保留给已核实身体和夹爪两路命令的底层集成/测试，不是原厂App常规数采配置。
+录制器仅在 `joint` 模式订阅这两路关节命令。
+
+旧15维 `ACTION_MODE=eef` 及 `--action-height-topic` 已删除。旧命令显式报错，不自动改写已有数据；
+旧15维episode不能使用新录制器续录。需要纯EEF训练数据时，使用下面的独立追加开关并离线导出新数据集。
+
 ### 可选 EEF 与数据转换
 
 `WITH_EEF_STATE`、`WITH_EEF_ACTION` 独立控制实测/目标末端位姿追加，默认0。
 原 joint 前缀及夹爪位置不变，每侧 EEF 为 XYZ（米）+单位四元数 XYZW，左臂后右臂，共14维。
 坐标系和末端点沿用原厂报告，不额外添加 TCP 偏移、地图变换或 FK 推算。
-不能与旧的15维调试模式 `ACTION_MODE=eef` 混用。
+两个开关在 `status_target` 与 `joint` 中都继续可用，不改变原有joint action来源约定。
 
 来源分别为 `/topic_arm_current_robot_eef_pose_<domain>_<robot>` 和
 `/topic_arm_target_robot_eef_pose_<domain>_<robot>`，均为输出报告，不是控制输入。
 只接受双臂完整 JSON 中的 `position[3]`、`rotation[4]`；拒绝非有限值和零四元数。
-有效四元数归一化。工具不自动开启原厂位姿服务；345本次只读检查没有这两路输出，
-因此不能将“关节数据正常”当作“EEF已能录制”的证据。
+有效四元数归一化。工具不自动开启原厂位姿服务；345早先检查没有这两路输出，
+2026-10-19复查已收到约100 Hz完整报告；经授权重启视觉服务后，37维state/action、RGB-D、
+30 FPS的480帧episode已通过保存、完整视频解码与LeRobot回读。另一条录制出现关节流停顿，
+不能据此宣称长时稳定性或运动中EEF坐标标定通过。见[345验证记录](docs/validation/20261019_s3_345.md)。
+用户确认成功录制期间由原厂App遥操作，数据内也有明显关节变化，不能将其归类为静止测试。
+不能将“关节数据正常”或“位姿话题存在”当作完整EEF数据已保存验收的证据。
+
+同次原厂App测试中状态包目标持续变化，但两个默认joint命令话题均为0条消息。
+`ACTION_MODE=joint`要求新鲜的身体和夹爪命令都齐全；ROS图上有发布者不等于收到消息。
+这条原厂链路使用`status_target`，并保留其夹爪维度采用实测值的限制，不伪造缺失命令。
+DAgger的专用命令代理是另一条独立校验的链路，不用此次原厂结果替代其验收。
 
 EEF state 单独使用有界时间缓存，在同一个图像锚点做位置线性插值和最短弧 SLERP。
 缺未来端点时保留参考图像等待；缺历史、过期或插值跨度过大时整条episode无效。
