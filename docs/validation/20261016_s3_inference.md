@@ -1,10 +1,13 @@
-# S3 推理适配：只读预览阶段
+# S3只读推理预览：已退役的历史实验
+
+> 2026-10-19：该实验不属于数据采集职责，预览入口、回放脚本及其专属测试已从Collector删除。
+> 本文仅保留既有实验结果与限制，不是当前启动说明，也不表示S3模型控制已通过验收。
 
 日期：2026-10-16，当时在 `s3-collector` 分支验证，未更改原S2的main或部署。
-2026-10-19更新：适配源码已合入 `main`，以下仍为历史验证记录，不代表重新部署、复测或获准执行真机动作。
-本版复用已验证的GR00T N1.7 baseline权重，完成关节约定转换；没有宣称S2模型在S3上的抓取成功率。
+源码曾于2026-10-19合入 `main`，随后在精简中删除。以下不代表重新部署、复测或获准执行真机动作。
+当时复用已验证的GR00T N1.7 baseline权重，完成关节约定转换；没有宣称S2模型在S3上的抓取成功率。
 
-## 改动位置
+## 历史实现（已删除）
 
 - `s3_thor_preview.py`：独立Thor服务入口，S3实测状态先转换为S2关节约定，再送入原模型。模型完成反归一化生成physical_actions后转换回S3，再进入原夹爪阶段处理和proposal digest。
 - 复用 `robot_schema.py` 的21维顺序；严格检查shape、有限值和19个身体关节的S3 URDF硬限位。超限报出关节名称和数值，不裁剪动作。
@@ -44,61 +47,15 @@ S3输入和模型输出使用同一个可逆符号映射。SDK已经负责原始
 `/home/ubuntu/collector_validation/20261016_s3_347/dagger_validation/s3_mapping_01/readonly-inference.json`。
 临时服务token副本已删除；报告和Git提交不含token。原始数据集未改动。
 
-## 复现
+## 追溯与退役范围
 
-**新环境依赖**：集合仓库的基础 `policy_only_session` 默认不含阶段夹爪接口。
-仅在独立预览runtime副本上，先使用已有工具查看补丁差异，再应用；工具校验原始文件哈希，
-源码不匹配就拒绝，不能跳过检查。不要为预览直接修改生产服务源码。
+删除前源码可在独立Collector仓库的固定提交
+[`5e0dc88`](https://github.com/lee1354774070-ai/CB_Autolife_Data_Collector/tree/5e0dc880edd5ccb16ce932a97c34a039b01182ac)
+中查看。旧启动命令已从当前文档移除，避免误将实验入口当作正式数采或DAgger服务。
 
-```bash
-# /path/to/preview-runtime 是独立副本根目录，包含 deploy/groot_n1_7。
-python tools/patch_cb_thor_gripper.py /path/to/preview-runtime
-python tools/patch_cb_thor_gripper.py /path/to/preview-runtime --apply
-```
+历史Thor验证目录为 `/home/wayne/s3_inference_validation_20261016/collector`，独立容器为
+`s3-groot-preview-20261016`，端口8779；当次验证结束后容器已停止。此次本地代码精简
+没有连接Thor，不对它目前的运行状态作判断，也未启停任何远端容器或修改模型。
 
-已具备 `gripper_phase_aware` 接口的Thor环境无需重复打补丁。预览入口在模型加载前检查接口；
-不满足时明确报错，不悄悄退回连续夹爪策略。本次合并只在本地内存副本回归该补丁，没有改生产runtime。
-
-已有Thor验证部署：`/home/wayne/s3_inference_validation_20261016/collector`。
-使用独立容器 `s3-groot-preview-20261016`，端口8779，模型只读挂载到 `/model`。
-该容器验证后已停止；需要再次回放时在Thor运行：
-
-```bash
-sudo docker start s3-groot-preview-20261016
-sudo docker logs --tail 20 s3-groot-preview-20261016
-```
-
-等待出现 `S3 preview ready`。新环境部署时需使用已有GR00T兼容环境，将Collector目录和集合仓库根目录（包含 `deploy.groot_n1_7`）同时加入PYTHONPATH，使用独立端口；入口为：
-
-```bash
-PYTHONPATH=/collector:/workspace python -B -m s3_thor_preview \
-  --model-dir /model --token-file /run/secrets/groot_token \
-  --host 0.0.0.0 --port 8779
-```
-
-347回放（`S3_PREVIEW_TOKEN_FILE`需指向已安全部署的同一服务token；不要写入Git或命令参数值）：
-
-```bash
-cd /home/ubuntu/collector_validation/20261016_s3_347/collector
-source scripts/source_ros_env.sh
-set +u
-export PYTHONPATH="$PWD:${PYTHONPATH:-}"
-export LD_LIBRARY_PATH="/home/ubuntu/miniconda3/envs/robot_env/lib:${LD_LIBRARY_PATH:-}"
-export HF_HUB_OFFLINE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
-: "${S3_PREVIEW_TOKEN_FILE:?请先指定已部署的服务token文件路径}"
-../venv/bin/python -B tests/remote/s3_saved_readonly.py \
-  --dataset /home/ubuntu/nas/s3_347_vr_01/dataset \
-  --token-file "$S3_PREVIEW_TOKEN_FILE" \
-  --url http://192.168.8.224:8779 \
-  --output-dir ../dagger_validation/s3_mapping_next
-```
-
-输出目录必须不存在。任务文本取自数据，必须是现有精确匹配的抓取或放置instruction。
-本脚本只回放已有数据，不启动录制、不驱动手臂。
-测试完成后在Thor停止**这个独立容器**：
-
-```bash
-sudo docker stop --timeout 10 s3-groot-preview-20261016
-```
-
-原8777/8778服务不需要停止、重启或重新配置；回滚S3预览仅需停用该入口。没有把预览集成到生产DAgger启动器。
+普通采集继续使用统一入口；生产DAgger保留型号匹配、控制权限和执行回执校验，仍拒绝
+`policy_only_baseline_s3_preview` 等非生产模式。历史符号映射不是已验证的S3部署方案。

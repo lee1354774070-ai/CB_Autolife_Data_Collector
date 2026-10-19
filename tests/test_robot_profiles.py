@@ -1,4 +1,5 @@
 """Identity routing and model boundaries without hardware or network access."""
+import ast
 import importlib.util
 import os
 from pathlib import Path
@@ -15,6 +16,26 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RobotProfileTest(unittest.TestCase):
+    def test_bad_profile_fails_before_ros_base_initialization(self):
+        source = ROOT / 'dagger/supervisor.py'
+        tree = ast.parse(source.read_text())
+        cls = next(item for item in tree.body if isinstance(item, ast.ClassDef)
+                   and item.name == 'CollectorDaggerSupervisor')
+        init = next(item for item in cls.body if isinstance(item, ast.FunctionDef) and item.name == '__init__')
+        calls = []
+        class Base:
+            def __init__(self):
+                calls.append('base')
+        def invalid(_):
+            raise ValueError('invalid model')
+        scope = {'Base': Base, 'os': os, 'resolve_robot': invalid}
+        node = ast.ClassDef(name='Supervisor', bases=[ast.Name(id='Base', ctx=ast.Load())],
+                           keywords=[], body=[init], decorator_list=[])
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[])), str(source), 'exec'), scope)
+        with self.assertRaisesRegex(ValueError, 'invalid model'):
+            scope['Supervisor']()
+        self.assertEqual(calls, [])
+
     def test_legacy_300_defaults_and_host_detection(self):
         robot = resolve_robot({}, hostname='autolife-robot-300')
         self.assertEqual((robot.suffix, robot.model), ('0_300', 's2_v2_2'))
@@ -78,6 +99,7 @@ class RobotProfileTest(unittest.TestCase):
         s3.validate_health(mapped)
         with self.assertRaisesRegex(ValueError, 'profile mismatch'):
             s2.validate_health(mapped)
+        # Retired preview endpoints may still exist on a separately deployed server.
         for changes in ({'preview_only':True}, {'hardware_execution_allowed':False},
                         {'mode':'policy_only_baseline_s3_preview'}, {'controller_submission_receipts':False},
                         {'outcome_visual_history_required':True}, {'ready':False}):

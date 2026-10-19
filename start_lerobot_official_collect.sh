@@ -5,366 +5,9 @@ set -euo pipefail
 #   bash /home/ubuntu/lerobot_data_collector/start_lerobot_official_collect.sh [task_name] [task_text]
 #   TASK_TEXT="pick the mango" bash /home/ubuntu/lerobot_data_collector/start_lerobot_official_collect.sh pick_the_mango
 
-show_help() {
-    local parameter="${1:-}"
-    if [ -n "${parameter}" ]; then
-        case "${parameter}" in
-            TASK_NAME|task_name)
-                echo "TASK_NAME / task_name"
-                echo "Usage: bash start_lerobot_official_collect.sh <task_name> [task_text]"
-                echo "Directory name, repo-id suffix, and default task text for this collection session."
-                echo "Example: bash start_lerobot_official_collect.sh pick_up_bottle"
-                ;;
-            TASK_TEXT|task_text)
-                echo "TASK_TEXT / task_text"
-                echo "Usage: TASK_TEXT='pick up the bottle' bash start_lerobot_official_collect.sh pick_up_bottle"
-                echo "Natural-language instruction stored in every dataset frame."
-                ;;
-            COLLECTOR_MODE)
-                echo "COLLECTOR_MODE"
-                echo "Usage: COLLECTOR_MODE=keyboard|vr|subtask|dagger bash start_lerobot_official_collect.sh task_name"
-                echo "keyboard: original terminal controls. vr: single-operator VR buttons. subtask: VR with ordered SUBTASKS_JSON."
-                echo "Action source: keyboard/vr/subtask use status_target (default); dagger requires joint."
-                echo "dagger: model/profile-selected incremental V4 + our Thor GR00T; A=start, GL/GR=takeover, B=save, Y=discard, X=reset."
-                echo "Requires DAGGER_SERVER_URL and inspected V4/HG sources. Default DAGGER_PUBLISH=0; set 1 for button-authorized motion."
-                echo "Unset: preserve legacy VR_CONTROL/SUBTASKS_JSON selection; default keyboard."
-                echo "An explicit mode rejects conflicting legacy flags before creating data or starting processes."
-                ;;
-            DAGGER_ROBOT_PROFILE|DAGGER_ROBOT_DESCRIPTION_ROOT|DAGGER_BACKEND|DAGGER_SERVER_URL|DAGGER_PUBLISH|DAGGER_TOKEN_FILE|DAGGER_DEPENDENCY_ROOT|DAGGER_TOOLS_ROOT|DAGGER_ROS_SETUP|DAGGER_WEB_PORT|DAGGER_ROS_PY|DAGGER_VR_PY|DAGGER_WEB_PY)
-                echo "${parameter} (COLLECTOR_MODE=dagger only)"
-                case "${parameter}" in
-                    DAGGER_ROBOT_PROFILE) echo "s2_v2_2 or s3_v3_1. Robot 300 defaults to s2_v2_2; other IDs need an explicit model. ROBOT_ID and ROS_DOMAIN_ID select topics, not the model." ;;
-                    DAGGER_ROBOT_DESCRIPTION_ROOT) echo "S3 vendor SDK description directory; contains reviewed urdfs/robot_v3_1.urdf and srdfs/robot_v3_1.srdf. S2 keeps the inspected V4 URDF/SRDF." ;;
-                    DAGGER_BACKEND) echo "owned (default): start one exclusive host. attach: connect to an already-compatible host; never starts or stops its controller/recorder/model/web. Q only detaches; host keeps running. Match OUTPUT_BASE_DIR and task_name. Legacy hosts require a one-time compatible-copy migration." ;;
-                    DAGGER_SERVER_URL) echo "Required Thor GR00T URL, e.g. http://THOR_IP:8777. No default; baseline/frame protocol only." ;;
-                    DAGGER_PUBLISH) echo "0=no hardware publishing (default); 1=A/C and X/R may move the robot. No automatic start." ;;
-                    DAGGER_TOKEN_FILE) echo "Token file; default /home/ubuntu/.config/autolife_hg_dagger/groot_server.token. Never put tokens in URLs." ;;
-                    DAGGER_DEPENDENCY_ROOT) echo "Inspected V4/HG package parent; default /home/ubuntu/ros2_ws/src. Key sources/configs are hash-checked." ;;
-                    DAGGER_TOOLS_ROOT) echo "Legacy Tools root; health preflight uses the bundled HTTP client and no longer requires the full Tools installation." ;;
-                    DAGGER_ROS_SETUP) echo "ROS environment; use /home/ubuntu/ros2_ws/install/setup.bash when present, otherwise system Jazzy. Explicit paths must exist." ;;
-                    DAGGER_WEB_PORT) echo "VR HTTPS port; default 8447. Changing it does not permit concurrent controllers." ;;
-                    DAGGER_ROS_PY) echo "ROS supervisor/bridge interpreter; default /usr/bin/python3." ;;
-                    DAGGER_VR_PY) echo "V4 controller interpreter; default /home/ubuntu/ros2_ws/venvs/openarmx_v4_placo/bin/python. Must include Placo." ;;
-                    DAGGER_WEB_PY) echo "HTTPS/WebXR interpreter; default /home/ubuntu/ros2_ws/venvs/hg_dagger_web/bin/python." ;;
-                esac
-                echo "Usage: COLLECTOR_MODE=dagger ${parameter}=<value> bash start_lerobot_official_collect.sh task_name"
-                echo "ROBOT_ID/ROS_DOMAIN_ID select the robot topics; DAGGER_ROBOT_PROFILE selects the reviewed model. Requires matching controller/lease support; 21-D head+upper-waist, three RGB cameras, optional recorded depth."
-                ;;
-            SUBTASKS_JSON)
-                echo "SUBTASKS_JSON"
-                echo "Usage: SUBTASKS_JSON='[\"pick\", \"handover\", \"place\"]' VR_CONTROL=1 bash start_lerobot_official_collect.sh task_name"
-                echo "Ordered subtask texts. Default: [] (disabled). TASK_TEXT remains the overall episode task."
-                echo "Hold GL+GR: A starts; recording short B confirms the current span; last mark saves."
-                echo "Hold B for VR_A_LONG_PRESS_SEC then release to save early. Unconfirmed frames have subtask_index=-1."
-                echo "Keyboard: N marks, S saves. Use a NEW dataset root when enabling/disabling annotation."
-                ;;
-            VR_INPUT_TOPIC|VR_RESET_PREFIX)
-                echo "${parameter}"
-                echo "VR_INPUT_TOPIC: defaults to /control_topic_<domain>_<robot>; V4 uses /openarmx_teleop_vr_306_v4/vr_input."
-                echo "VR_RESET_PREFIX: defaults to /openarmx_teleop_vr_306_v4; requires guarded reset/status services, not raw vendor reset."
-                echo "Factory input: X reset is not integrated; use the factory reset control. V4: disable old reset chords; X resets only while idle after both Grips are released."
-                exit 0
-                ;;
-            VR_A_LONG_PRESS_SEC)
-                echo "VR_A_LONG_PRESS_SEC"
-                echo "Usage: VR_A_LONG_PRESS_SEC=1.2 VR_CONTROL=1 SUBTASKS_JSON='[\"pick\",\"place\"]' bash start_lerobot_official_collect.sh task_name"
-                echo "B hold threshold in subtask mode (legacy variable name), seconds. Default: 1.0; finite range [0.2, 10]."
-                echo "Action occurs once on release with GL+GR still held; no simultaneous short-press mark."
-                ;;
-            OUTPUT_BASE_DIR)
-                echo "OUTPUT_BASE_DIR"
-                echo "Usage: OUTPUT_BASE_DIR=/mnt/nas bash start_lerobot_official_collect.sh task_name"
-                echo "Parent directory containing one task directory and dataset subdirectory per task. Default: /home/ubuntu/nas14"
-                ;;
-            COLLECT_FPS)
-                echo "COLLECT_FPS"
-                echo "Usage: COLLECT_FPS=30 bash start_lerobot_official_collect.sh task_name"
-                echo "Target dataset recording rate in frames per second. Default: 30"
-                ;;
-            WITH_HEAD)
-                echo "WITH_HEAD"
-                echo "Usage: WITH_HEAD=1 bash start_lerobot_official_collect.sh task_name"
-                echo "Append neck_roll, neck_pitch, and neck_yaw to state/action. Default: 0"
-                ;;
-            WITH_WAIST)
-                echo "WITH_WAIST"
-                echo "Usage: WITH_WAIST=1 bash start_lerobot_official_collect.sh task_name"
-                echo "Append leg_ankle, leg_knee, waist_pitch, and waist_yaw to state/action. Default: 0"
-                ;;
-            WITH_UPPER_WAIST)
-                echo "WITH_UPPER_WAIST"
-                echo "Usage: WITH_UPPER_WAIST=1 bash start_lerobot_official_collect.sh task_name"
-                echo "Append only waist_pitch and waist_yaw; leg_ankle and leg_knee are excluded. Cannot be 1 together with WITH_WAIST. Default: 0"
-                ;;
-            WITH_DEPTH)
-                echo "WITH_DEPTH"
-                echo "Usage: WITH_DEPTH=1 bash start_lerobot_official_collect.sh task_name"
-                echo "Record rgbd_head_depth in addition to the three default RGB cameras. Default: 0"
-                ;;
-            WITH_EEF_STATE|WITH_EEF_ACTION)
-                echo "${parameter}"
-                echo "Usage: WITH_EEF_STATE=1 WITH_EEF_ACTION=1 bash start_lerobot_official_collect.sh task_name"
-                echo "Independent 0/1 switches, default 0. Append 14 dual-arm pose values after the existing joint vector."
-                echo "STATE uses measured current_robot_eef_pose; ACTION uses reported target_robot_eef_pose, never measured state."
-                echo "Robot frame, metres, quaternion x/y/z/w; left XYZ+XYZW then right XYZ+XYZW. Grippers stay in the joint block."
-                echo "Requires fresh pose publishers; missing/stale data invalidates capture, no zero/FK fallback."
-                echo "Keep status_target for regular collection or joint for DAgger; use a NEW dataset root when changing either switch."
-                echo "Offline selection: python convert_dataset.py SOURCE DEST --state joint|eef|all|eef+gripper --action joint|eef|all|eef+gripper"
-                ;;
-            STATE_EEF_TOPIC|ACTION_EEF_TOPIC)
-                echo "${parameter}"
-                echo "Override a vendor EEF report topic (std_msgs/String JSON with left_eef_pose/right_eef_pose position[3], rotation[4])."
-                echo "Defaults: /topic_arm_current_robot_eef_pose_<domain>_<robot> and /topic_arm_target_robot_eef_pose_<domain>_<robot>."
-                echo "Usage: WITH_EEF_STATE=1 STATE_EEF_TOPIC=/my/current_pose bash start_lerobot_official_collect.sh task_name"
-                echo "The replacement must use the SAME robot frame, metres and XYZW semantics. Motion-command topics are not pose reports."
-                ;;
-            VR_CONTROL)
-                echo "VR_CONTROL"
-                echo "Usage: VR_CONTROL=1 bash start_lerobot_official_collect.sh task_name"
-                echo "Enable single-operator VR episode control after recorder startup. Default: 0 (keyboard only)."
-                echo "Hold GL+GR and tap/release: A=start, B=save, Y=discard, X=guarded reset only. Exit in terminal."
-                echo "With SUBTASKS_JSON: recording short B=mark subtask, long B=save early; final mark saves automatically."
-                echo "Keyboard controls remain available. Requires factory /control_topic_<domain>_<robot> String messages."
-                ;;
-            VR_START_DELAY_SEC|VR_SPEECH)
-                echo "${parameter}"
-                echo "Usage: VR_CONTROL=1 ${parameter}=<value> bash start_lerobot_official_collect.sh task_name"
-                echo "VR_START_DELAY_SEC: countdown seconds, 0 through 30, default 3. B/Y cancels countdown; X cancels then checks reset availability."
-                echo "VR_SPEECH: 1=use existing robot TTS service, 0=silent, default 1. System volume is unchanged."
-                echo "Command confirmation timeout uses CONTROL_ACK_TIMEOUT_SEC (default 300 seconds)."
-                ;;
-            IMAGE_SOURCE)
-                echo "IMAGE_SOURCE"
-                echo "Usage: IMAGE_SOURCE=shm|ros bash start_lerobot_official_collect.sh task_name"
-                echo "Image transport: shm reads shared memory directly; ros starts the SHM-to-ROS bridge. Default: shm"
-                ;;
-            IMAGE_POLL_FPS)
-                echo "IMAGE_POLL_FPS"
-                echo "Usage: IMAGE_POLL_FPS=120 bash start_lerobot_official_collect.sh task_name"
-                echo "Direct-SHM metadata polling rate. It is not the dataset recording FPS. Default: 120"
-                ;;
-            SYNC_REFERENCE_CAMERA)
-                echo "SYNC_REFERENCE_CAMERA"
-                echo "Usage: SYNC_REFERENCE_CAMERA=hand_left bash start_lerobot_official_collect.sh task_name"
-                echo "Camera used as the timestamp anchor. It must be one of the active cameras. Default: hand_left when active"
-                ;;
-            MAX_SYNC_DELTA_SEC)
-                echo "MAX_SYNC_DELTA_SEC"
-                echo "Usage: MAX_SYNC_DELTA_SEC=0.04 bash start_lerobot_official_collect.sh task_name"
-                echo "Maximum allowed absolute timestamp difference from the reference frame. Unit: seconds. Default: 0.03 (30 ms)"
-                ;;
-            SYNC_IMAGE_BUFFER_SIZE)
-                echo "SYNC_IMAGE_BUFFER_SIZE"
-                echo "Usage: SYNC_IMAGE_BUFFER_SIZE=16 bash start_lerobot_official_collect.sh task_name"
-                echo "Per-camera image FIFO capacity. Overflow invalidates the active episode. Default: 16"
-                ;;
-            MIN_FREE_DISK_GB|MAX_EPISODE_TEMP_GB|MAX_EPISODE_SECONDS|IMAGE_WRITER_MAX_PENDING|IMAGE_WRITER_MAX_MB)
-                echo "Storage protection (all modes): ${parameter}"
-                echo "Usage: ${parameter}=VALUE bash start_lerobot_official_collect.sh task_name"
-                case "${parameter}" in
-                    MIN_FREE_DISK_GB) echo "Default: 2 GiB free-space floor, plus one raw episode estimate for encoding." ;;
-                    MAX_EPISODE_TEMP_GB) echo "Default: 8 GiB conservative raw-image/overhead budget per episode; not a disk quota." ;;
-                    MAX_EPISODE_SECONDS) echo "Default: 600 seconds after start, including camera waits. Not an auto-save timer." ;;
-                    IMAGE_WRITER_MAX_PENDING) echo "Default: 64 unfinished image jobs, shared by all cameras; separate from image FIFOs." ;;
-                    IMAGE_WRITER_MAX_MB) echo "Default: 256 MiB raw inputs held by unfinished jobs; not total process RAM." ;;
-                esac
-                echo "Limits must be positive. Reaching them invalidates the current episode; no frame dropping."
-                echo "Discard the invalid episode, resolve storage pressure, then start again."
-                return 0
-                ;;
-            IMAGE_WRITER_THREADS)
-                echo "Usage: IMAGE_WRITER_THREADS=2 bash start_lerobot_official_collect.sh task_name"
-                echo "Background image-writing threads. Default: 4; DAgger: 2. Zero writes synchronously and may stall capture."
-                ;;
-            SYNC_SIGNAL_BUFFER_SIZE)
-                echo "SYNC_SIGNAL_BUFFER_SIZE"
-                echo "Usage: SYNC_SIGNAL_BUFFER_SIZE=64 bash start_lerobot_official_collect.sh task_name"
-                echo "Capacity of the state/action timestamp buffers. Default: 64"
-                ;;
-            MIN_CAMERAS)
-                echo "MIN_CAMERAS"
-                echo "Usage: MIN_CAMERAS=4 bash start_lerobot_official_collect.sh task_name"
-                echo "Minimum number of valid cameras required before recording. Default: all selected cameras (3 RGB, or 4 with depth)"
-                ;;
-            MAX_IMAGE_AGE_SEC|MAX_STATE_AGE_SEC|MAX_STATE_INTERPOLATION_GAP_SEC|MAX_ACTION_HOLD_SEC)
-                cli_parameter="${parameter,,}"
-                cli_parameter="${cli_parameter//_/-}"
-                case "${parameter}" in
-                    MAX_IMAGE_AGE_SEC|MAX_STATE_AGE_SEC) default_value="0.15" ;;
-                    MAX_STATE_INTERPOLATION_GAP_SEC) default_value="0.05" ;;
-                    MAX_ACTION_HOLD_SEC) default_value="0.5" ;;
-                esac
-                echo "${parameter}"
-                echo "Usage: ${parameter}=${default_value} bash start_lerobot_official_collect.sh task_name"
-                echo "Freshness/interpolation limit in seconds; see record_lerobot_official.py --${cli_parameter} --help for the exact rule. Default: ${default_value}"
-                ;;
-            MAX_FRAME_INTERVAL_ERROR_RATIO)
-                echo "MAX_FRAME_INTERVAL_ERROR_RATIO"
-                echo "Usage: MAX_FRAME_INTERVAL_ERROR_RATIO=0.45 bash start_lerobot_official_collect.sh task_name"
-                echo "Maximum reference-camera interval error as a fraction of one requested frame period. Default: 0.45"
-                ;;
-            ACTION_MODE)
-                echo "ACTION_MODE"
-                echo "Usage: ACTION_MODE=status_target|joint bash start_lerobot_official_collect.sh task_name"
-                echo "keyboard/vr/subtask: use status_target (default). Arm/head/waist use reported targets; grippers use measured positions."
-                echo "dagger: joint is required and selected by its launcher; verified V4 controller proxies provide body and gripper target positions."
-                echo "Outside DAgger, joint requires a verified publisher for BOTH command topics; factory VR input alone is not sufficient."
-                echo "The legacy eef mode was removed. Add poses with WITH_EEF_STATE/WITH_EEF_ACTION, then use convert_dataset.py for pure EEF data."
-                ;;
-            COLLECT_VCODEC|DEPTH_VCODEC|DEPTH_MIN|DEPTH_MAX|DEPTH_SHIFT|DEPTH_USE_LOG)
-                echo "${parameter}"
-                echo "Usage: ${parameter}=<value> bash start_lerobot_official_collect.sh task_name"
-                echo "Video/depth encoding option forwarded to the LeRobot recorder. See record_lerobot_official.py --help for units and defaults."
-                ;;
-            CAMERA_WARMUP_SEC|STATE_READY_TIMEOUT_SEC|CAMERA_DETECTION_TIMEOUT_SEC|CONTROL_ACK_TIMEOUT_SEC)
-                echo "${parameter}"
-                echo "Usage: ${parameter}=<seconds> bash start_lerobot_official_collect.sh task_name"
-                echo "Launcher wait/acknowledgement timeout in seconds. See the corresponding recorder/control --help output for the exact default."
-                ;;
-            BATCH_ENCODING_SIZE|ENCODER_QUEUE_MAXSIZE|ENCODER_THREADS|VIDEO_FILES_SIZE_IN_MB|DATA_FILES_SIZE_IN_MB|VIDEO_CRF|VIDEO_PRESET|VIDEO_GOP|STREAMING_ENCODING)
-                echo "${parameter}"
-                echo "Usage: ${parameter}=<value> bash start_lerobot_official_collect.sh task_name"
-                echo "Video encoding or file-segmentation option forwarded to the LeRobot recorder. Default: unset unless documented in record_lerobot_official.py --help."
-                echo "Transactional saves require BATCH_ENCODING_SIZE=1 and STREAMING_ENCODING=0. Episodes use new files; size settings cannot merge episodes."
-                ;;
-            ROBOT_PY|LEROBOT_PY)
-                echo "${parameter}"
-                echo "Usage: ${parameter}=/path/to/python bash start_lerobot_official_collect.sh task_name"
-                echo "Python interpreter used for the robot camera producer or LeRobot recorder. Use this only when environment locations differ from the defaults."
-                ;;
-            START_HAND_PRODUCER)
-                echo "START_HAND_PRODUCER"
-                echo "Usage: START_HAND_PRODUCER=0|1 bash start_lerobot_official_collect.sh task_name"
-                echo "Whether to start the hand-camera SHM producer. Set 0 when another process already owns the devices. Default: 1 unless devices are busy"
-                ;;
-            CAMERA_ONLY)
-                echo "CAMERA_ONLY"
-                echo "Usage: CAMERA_ONLY=1 bash start_lerobot_official_collect.sh task_name"
-                echo "Test only rgbd_head_color and use state as action fallback. This is for camera/link tests, not training data. Default: 0"
-                ;;
-            FALLBACK_ACTION_TO_STATE)
-                echo "FALLBACK_ACTION_TO_STATE"
-                echo "Usage: FALLBACK_ACTION_TO_STATE=1 bash start_lerobot_official_collect.sh task_name"
-                echo "Use measured state as action when action topics are unavailable. Default: 0"
-                ;;
-            ROBOT_TYPE)
-                echo "ROBOT_TYPE"
-                echo "Usage: ROBOT_TYPE=autolife_s3 bash start_lerobot_official_collect.sh task_name"
-                echo "LeRobot metadata robot label for NEW datasets; default autolife_s1. Does not change control or joint order."
-                ;;
-            ROS_DOMAIN_ID|ROBOT_ID|RMW_IMPLEMENTATION)
-                echo "${parameter}"
-                echo "Usage: ${parameter}=<value> bash start_lerobot_official_collect.sh task_name"
-                echo "ROS identity/middleware setting used to construct robot topic names. See the robot ROS configuration for valid values."
-                ;;
-            *)
-                echo "Unknown help parameter: ${parameter}" >&2
-                echo "Run: bash start_lerobot_official_collect.sh --help" >&2
-                return 2
-                ;;
-        esac
-        return 0
-    fi
-
-    cat <<'HELP'
-Official LeRobot collector launcher
-
-Usage:
-  bash start_lerobot_official_collect.sh [task_name] [task_text]
-  TASK_TEXT="pick up the bottle" bash start_lerobot_official_collect.sh pick_up_bottle
-
-Show one environment variable:
-  bash start_lerobot_official_collect.sh --help MAX_SYNC_DELTA_SEC
-  bash start_lerobot_official_collect.sh MAX_SYNC_DELTA_SEC --help
-
-Common parameters:
-  COLLECTOR_MODE             keyboard, vr, subtask, dagger. Unset: infer legacy settings.
-  DAGGER_BACKEND             owned (default) or attach. Attach requires a compatible host; Q detaches only.
-  DAGGER_SERVER_URL          Required by owned dagger mode; attach reuses the host's policy client.
-  DAGGER_PUBLISH             0=no hardware publishing (default), 1=button-authorized motion; no auto-start.
-  DAGGER_TOKEN_FILE          Thor token path; default ~/.config/autolife_hg_dagger/groot_server.token.
-  DAGGER_DEPENDENCY_ROOT     V4/HG source parent; default /home/ubuntu/ros2_ws/src (version checked).
-  DAGGER_TOOLS_ROOT          Our full VLA tools root; standalone default /home/ubuntu/Autolife_VLA_Tools.
-  DAGGER_ROS_SETUP           Workspace setup.bash; default /home/ubuntu/ros2_ws/install/setup.bash.
-  DAGGER_WEB_PORT            Incremental-VR HTTPS port; default 8447. Existing stack must be stopped first.
-  DAGGER_ROS_PY              Supervisor/bridge interpreter; default /usr/bin/python3.
-  DAGGER_VR_PY               Controller interpreter; default /home/ubuntu/ros2_ws/venvs/openarmx_v4_placo/bin/python.
-  DAGGER_WEB_PY              Web interpreter; default /home/ubuntu/ros2_ws/venvs/hg_dagger_web/bin/python.
-  TASK_NAME                  Dataset/task directory name. Positional argument 1.
-  TASK_TEXT                  Natural-language task instruction. Positional argument 2 or environment variable.
-  SUBTASKS_JSON               Ordered subtask JSON array. Default: [] (disabled); keyboard N marks.
-  OUTPUT_BASE_DIR            Dataset parent directory. Default: /home/ubuntu/nas14
-  COLLECT_FPS                Dataset FPS. Default: 30
-  WITH_HEAD                  Add 3 neck joints. Default: 0
-  WITH_UPPER_WAIST           Add only waist pitch/yaw. Cannot combine with WITH_WAIST. Default: 0
-  WITH_WAIST                 Add 4 leg/waist joints. Default: 0
-  WITH_DEPTH                 Add rgbd_head_depth. Default: 0
-  WITH_EEF_STATE             Append 14-D measured EEF poses to joint state. Default: 0
-  WITH_EEF_ACTION            Append 14-D EEF targets to joint action. Default: 0
-  STATE_EEF_TOPIC            Override the vendor current EEF report topic.
-  ACTION_EEF_TOPIC           Override the vendor target EEF report topic.
-  VR_CONTROL                 Enable VR episode buttons alongside keyboard controls. Default: 0
-  VR_START_DELAY_SEC         VR start countdown, 0 through 30 seconds. Default: 3
-  VR_SPEECH                  Use existing robot TTS service; does not change volume. Default: 1
-  VR_A_LONG_PRESS_SEC        B hold time for early save (legacy variable name) in subtask mode. Default: 1.0 seconds
-  IMAGE_SOURCE               shm or ros. Default: shm
-  IMAGE_POLL_FPS             SHM metadata polling rate. Default: 120
-  SYNC_REFERENCE_CAMERA      Timestamp anchor camera. Default: hand_left
-  MAX_SYNC_DELTA_SEC         Maximum sync error in seconds. Default: 0.03
-  SYNC_IMAGE_BUFFER_SIZE     Image FIFO capacity per camera. Default: 16
-  MIN_FREE_DISK_GB           Free GiB floor plus estimated encoding reserve. Default: 2
-  MAX_EPISODE_TEMP_GB        Per-episode raw-image/overhead GiB budget. Default: 8
-  MAX_EPISODE_SECONDS        Per-episode wall duration limit. Default: 600
-  IMAGE_WRITER_MAX_PENDING   Shared unfinished image job capacity. Default: 64
-  IMAGE_WRITER_MAX_MB        Raw image MiB held by unfinished jobs. Default: 256
-  IMAGE_WRITER_THREADS       Image workers. Default: 4 (DAgger: 2); 0 is synchronous.
-  SYNC_SIGNAL_BUFFER_SIZE    State/action buffer capacity. Default: 64
-  MIN_CAMERAS                Minimum valid cameras. Default: all selected cameras
-  ACTION_MODE                keyboard/vr/subtask: status_target (default); dagger: joint (required).
-  MAX_IMAGE_AGE_SEC          Maximum image age in seconds. Default: 0.15
-  MAX_STATE_AGE_SEC          Maximum joint-state age in seconds. Default: 0.15
-  MAX_STATE_INTERPOLATION_GAP_SEC  Maximum interpolation span. Default: 0.05
-  MAX_ACTION_HOLD_SEC        Maximum held-action age. Default: 0.5
-  MAX_FRAME_INTERVAL_ERROR_RATIO  Reference interval error ratio. Default: 0.45
-  CAMERA_WARMUP_SEC          Camera initialization timeout. Default: 10 (launcher)
-  STATE_READY_TIMEOUT_SEC    First joint-state timeout. Default: 10
-  CAMERA_DETECTION_TIMEOUT_SEC  Camera detection timeout. Default: 15
-  CONTROL_ACK_TIMEOUT_SEC    Save/discard acknowledgement timeout. Default: 300
-  COLLECT_VCODEC             RGB video codec. Default: h264
-  DEPTH_VCODEC               Depth video codec. Default: hevc
-  DEPTH_MIN/MAX/SHIFT        Depth quantizer range and shift. Defaults: 0.05/10.0/3.5
-  DEPTH_USE_LOG              Logarithmic depth quantization. Default: 1
-  BATCH_ENCODING_SIZE        Episodes per encoding batch. Must remain 1.
-  ENCODER_QUEUE_MAXSIZE      Maximum pending encoder batches. Default: 30
-  ENCODER_THREADS            Encoder worker threads. Default: unset
-  VIDEO_CRF/PRESET/GOP       Optional RGB encoding controls. Default: unset
-  VIDEO_FILES_SIZE_IN_MB     Optional video segment size. Default: unset
-  DATA_FILES_SIZE_IN_MB      Optional Parquet segment size. Default: unset
-  STREAMING_ENCODING         Must remain 0 for transactional saves.
-  START_HAND_PRODUCER        Start hand-camera producer. Default: 1 unless devices are busy
-  CAMERA_ONLY                Single-camera link test mode. Default: 0
-  FALLBACK_ACTION_TO_STATE   Use state as action for link tests. Default: 0
-  ROS_DOMAIN_ID              ROS domain. Default: 0
-  ROBOT_ID                   Robot topic suffix. Hostname suffix is used when unset.
-  ROBOT_TYPE                 LeRobot metadata label for new datasets. S3: autolife_s3; default: autolife_s1
-  RMW_IMPLEMENTATION         ROS middleware implementation. Default: rmw_cyclonedds_cpp
-
-Advanced timing, encoding, and timeout variables are forwarded to
-record_lerobot_official.py. Use its detailed CLI help:
-  python record_lerobot_official.py --help
-  python record_lerobot_official.py --max-sync-delta-sec --help
-
-Keyboard controls after startup: Enter=start, S=save, D=discard, Q=save and quit.
-HELP
-}
-
-if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
-    show_help "${2:-}"
-    exit 0
-fi
-if [ "${2:-}" = "--help" ] || [ "${2:-}" = "-h" ]; then
-    show_help "${1:-}"
-    exit 0
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "${1:-}" = "--help" || "${1:-}" = "-h" || "${2:-}" = "--help" || "${2:-}" = "-h" ]]; then
+    exec python3 "${SCRIPT_DIR}/launcher_help.py" "$@"
 fi
 
 # Keep small telemetry/image operations from creating competing BLAS pools.
@@ -381,8 +24,9 @@ WITH_UPPER_WAIST="${WITH_UPPER_WAIST:-0}"
 WITH_WAIST="${WITH_WAIST:-0}"
 WITH_EEF_STATE="${WITH_EEF_STATE:-0}"
 WITH_EEF_ACTION="${WITH_EEF_ACTION:-0}"
-for parameter in WITH_EEF_STATE WITH_EEF_ACTION; do
-    if [[ ! "${!parameter}" =~ ^[01]$ ]]; then
+for parameter in WITH_HEAD WITH_WAIST WITH_UPPER_WAIST WITH_EEF_STATE WITH_EEF_ACTION \
+    WITH_DEPTH CAMERA_ONLY FALLBACK_ACTION_TO_STATE STREAMING_ENCODING VR_SPEECH DEPTH_USE_LOG START_HAND_PRODUCER; do
+    if [[ -v "${parameter}" && ! "${!parameter}" =~ ^[01]$ ]]; then
         echo "ERROR: ${parameter} must be 0 or 1." >&2
         exit 2
     fi
@@ -411,7 +55,6 @@ if [ "${WITH_UPPER_WAIST}" = "1" ] && [ "${WITH_WAIST}" = "1" ]; then
     exit 2
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUBTASKS_JSON="${SUBTASKS_JSON:-[]}"
 # Resolve once, before directory creation, ROS setup, or any process startup.
 # In particular, DAgger must never accidentally start the factory VR helper.
@@ -423,6 +66,10 @@ if [ "${COLLECTOR_MODE}" = "dagger" ]; then
     exec python3 "${SCRIPT_DIR}/dagger/run.py" "$@"
 fi
 TASK_NAME="${1:-mango_pick}"
+if [[ "${TASK_NAME}" = "." || "${TASK_NAME}" = ".." || "${TASK_NAME}" = */* || "${TASK_NAME}" = -* || "${TASK_NAME}" = *$'\n'* ]]; then
+    echo "ERROR: task_name must be one directory name, not a path or option." >&2
+    exit 2
+fi
 TASK_TEXT="${TASK_TEXT:-${2:-${TASK_NAME}}}"
 OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR:-/home/ubuntu/nas14}"
 BASE_DIR="${OUTPUT_BASE_DIR}/${TASK_NAME}"
@@ -469,6 +116,15 @@ fi
 
 mkdir -p "${BASE_DIR}" "${LOG_DIR}"
 
+# Serialize startup as well as recording. The dataset lock is acquired later;
+# without this lock two launchers can replace each other's FIFO/PID files.
+# Keep the inode; children inherit the lock until they finish if the launcher dies.
+exec {SESSION_LOCK_FD}>"${BASE_DIR}/.official_session.lock"
+if ! flock -n "${SESSION_LOCK_FD}"; then
+    echo "ERROR: another launcher owns this collection directory: ${BASE_DIR}" >&2
+    exit 1
+fi
+
 # Refuse to reuse a session directory while any process from its last PID file
 # is still alive. Concurrent writes can corrupt LeRobot parquet/video indices.
 if [ -f "${PIDFILE}" ]; then
@@ -506,6 +162,8 @@ cleanup_session() {
         return
     fi
     CLEANUP_DONE=1
+    # A second signal must not interrupt wait and erase a live writer's PID.
+    trap '' INT TERM
 
     # Stop our input helper first, so it cannot send new commands during finalization.
     if [ -n "${VR_PID:-}" ] && kill -0 "${VR_PID}" 2>/dev/null; then
@@ -516,19 +174,19 @@ cleanup_session() {
         done
     fi
 
-    # Give the recorder time to save pending frames and finalize metadata before
-    # stopping camera processes in reverse launch order.
+    # Q/EOF/signal requests graceful finalization. Encoding may take minutes;
+    # an acknowledgement timeout is not permission to terminate the writer.
     if [ -n "${RECORDER_PID:-}" ] && kill -0 "${RECORDER_PID}" 2>/dev/null; then
         send_control "quit" >/dev/null 2>&1 || kill -INT "${RECORDER_PID}" 2>/dev/null || true
-        for _ in $(seq 1 120); do
-            kill -0 "${RECORDER_PID}" 2>/dev/null || break
-            sleep 0.25
-        done
+        echo "Waiting for recorder finalization. Keep this terminal open; encoding can take minutes."
+    fi
+    if [ -n "${RECORDER_PID:-}" ]; then
+        wait "${RECORDER_PID}" || echo "WARNING: recorder exited with an error; inspect ${LOG_PREFIX}.record_lerobot_official.log" >&2
     fi
 
     if [ -f "${PIDFILE}" ]; then
         tac "${PIDFILE}" | while read -r role pid log; do
-            if [ -z "${pid:-}" ]; then
+            if [ -z "${pid:-}" ] || [ "${role}" = "recorder" ]; then
                 continue
             fi
             if kill -0 "${pid}" 2>/dev/null; then
@@ -548,8 +206,8 @@ cleanup_session() {
 
     rm -f "${PIDFILE}" "${CONTROL_FIFO}" "${STATUS_FILE}" "${STATE_READY_FILE}" "${EPISODE_EVENT_FILE}"
     echo ""
-    python3 "${CONTROL_SCRIPT}" summary --dataset-root "${DATASET_ROOT}"
-    python3 "${CONTROL_SCRIPT}" sync-report --sync-log "${DATASET_ROOT}/sync_log.jsonl"
+    python3 "${CONTROL_SCRIPT}" summary --dataset-root "${DATASET_ROOT}" || true
+    python3 "${CONTROL_SCRIPT}" sync-report --sync-log "${DATASET_ROOT}/sync_log.jsonl" || true
     echo "=============================================="
 }
 
@@ -584,9 +242,9 @@ set -u
 ROS_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
 ROS_PYTHONPATH="${PYTHONPATH:-}"
 # A venv may use a different base interpreter (and OpenSSL) from the old conda layout.
-ROBOT_ENV_LIB="$("${ROBOT_PY}" -c 'import sys; print(sys.base_prefix + "/lib")')"
 LEROBOT_ENV_LIB="$("${LEROBOT_PY}" -c 'import sys; print(sys.base_prefix + "/lib")')"
-COLLECT_CYCLONEDDS_URI='<CycloneDDS><Domain><General><NetworkInterfaceAddress>127.0.0.1</NetworkInterfaceAddress></General><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>120</MaxAutoParticipantIndex></Discovery></Domain></CycloneDDS>'
+DEFAULT_DDS='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lo"/></Interfaces><AllowMulticast>false</AllowMulticast></General><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>120</MaxAutoParticipantIndex></Discovery></Domain></CycloneDDS>'
+COLLECT_CYCLONEDDS_URI="${COLLECT_CYCLONEDDS_URI:-${CYCLONEDDS_URI:-${DEFAULT_DDS}}}"
 CAMERA_ONLY="${CAMERA_ONLY:-0}"
 COLLECT_FPS="${COLLECT_FPS:-30}"
 WITH_DEPTH="${WITH_DEPTH:-0}"
@@ -629,6 +287,10 @@ if [ "${WITH_DEPTH}" = "1" ]; then
     RECORDER_FEATURE_ARGS+=(--with-depth)
 fi
 MIN_CAMERAS="${MIN_CAMERAS:-${#BRIDGE_CAMERAS[@]}}"
+ROBOT_ENV_LIB=""
+if [[ "${START_HAND_PRODUCER:-1}" = "1" || "${IMAGE_SOURCE}" = "ros" || "${VR_CONTROL}" = "1" ]]; then
+    ROBOT_ENV_LIB="$("${ROBOT_PY}" -c 'import sys; print(sys.base_prefix + "/lib")')"
+fi
 
 echo "  joint data  : head=${WITH_HEAD}, upper_waist=${WITH_UPPER_WAIST}, waist=${WITH_WAIST}"
 echo "  depth data  : ${WITH_DEPTH}"
@@ -702,24 +364,12 @@ fi
 if [ "${FALLBACK_ACTION_TO_STATE:-0}" = "1" ]; then
     RECORDER_ARGS+=(--fallback-action-to-state)
 fi
-if [ -n "${VIDEO_CRF:-}" ]; then
-    RECORDER_ARGS+=(--video-crf "${VIDEO_CRF}")
-fi
-if [ -n "${VIDEO_PRESET:-}" ]; then
-    RECORDER_ARGS+=(--video-preset "${VIDEO_PRESET}")
-fi
-if [ -n "${VIDEO_GOP:-}" ]; then
-    RECORDER_ARGS+=(--video-gop "${VIDEO_GOP}")
-fi
-if [ -n "${ENCODER_THREADS:-}" ]; then
-    RECORDER_ARGS+=(--encoder-threads "${ENCODER_THREADS}")
-fi
-if [ -n "${VIDEO_FILES_SIZE_IN_MB:-}" ]; then
-    RECORDER_ARGS+=(--video-files-size-in-mb "${VIDEO_FILES_SIZE_IN_MB}")
-fi
-if [ -n "${DATA_FILES_SIZE_IN_MB:-}" ]; then
-    RECORDER_ARGS+=(--data-files-size-in-mb "${DATA_FILES_SIZE_IN_MB}")
-fi
+for parameter in VIDEO_CRF VIDEO_PRESET VIDEO_GOP ENCODER_THREADS VIDEO_FILES_SIZE_IN_MB DATA_FILES_SIZE_IN_MB; do
+    if [ -n "${!parameter:-}" ]; then
+        option="${parameter,,}"
+        RECORDER_ARGS+=("--${option//_/-}" "${!parameter}")
+    fi
+done
 if [ "${STREAMING_ENCODING:-0}" = "1" ]; then
     RECORDER_ARGS+=(--streaming-encoding)
 fi

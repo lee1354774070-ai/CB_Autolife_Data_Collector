@@ -18,6 +18,7 @@ import fcntl
 import json
 import math
 import os
+import stat
 import threading
 import time
 from collections import Counter, defaultdict
@@ -83,7 +84,10 @@ def read_recorder_pid(pidfile: Path) -> int:
         fields = line.split(maxsplit=2)
         if len(fields) >= 2 and fields[0] == "recorder":
             try:
-                return int(fields[1])
+                pid = int(fields[1])
+                if pid <= 0:
+                    raise ValueError('PID must be positive')
+                return pid
             except ValueError as exc:
                 raise RuntimeError(f"Invalid recorder PID in {pidfile}: {fields[1]!r}") from exc
     raise RuntimeError(f"Recorder entry not found in PID file: {pidfile}")
@@ -92,6 +96,8 @@ def read_recorder_pid(pidfile: Path) -> int:
 def process_is_running(pid: int) -> bool:
     """Check process existence without sending a state-changing signal."""
 
+    if pid <= 0:
+        return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -102,17 +108,26 @@ def process_is_running(pid: int) -> bool:
 
 
 def send_fifo_command(fifo_path: Path, command: str, request_id: str | None = None) -> None:
-    """Write one non-blocking command line to the recorder FIFO."""
+    """Send one atomic command, never append to a mistaken file or retry it."""
 
     if not fifo_path.exists():
         raise RuntimeError(f"Control FIFO not found: {fifo_path}")
-    line = command + (f" {request_id}" if request_id else "") + "\n"
+    if command not in {"start", "resume", "enter", "mark_subtask", "save", "discard", "quit"}:
+        raise RuntimeError(f"Invalid collector command: {command!r}")
+    if request_id is not None and (not request_id or any(c.isspace() for c in request_id)):
+        raise RuntimeError("Request ID must be one nonempty token")
+    line = (command + (f" {request_id}" if request_id else "") + "\n").encode("utf-8")
     try:
-        fd = os.open(fifo_path, os.O_WRONLY | os.O_NONBLOCK)
+        fd = os.open(fifo_path, os.O_WRONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
     except OSError as exc:
         raise RuntimeError(f"Could not open control FIFO {fifo_path}: {exc}") from exc
     try:
-        os.write(fd, line.encode("utf-8"))
+        if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+            raise RuntimeError(f"Control path is not a FIFO: {fifo_path}")
+        if len(line) > os.fpathconf(fd, "PC_PIPE_BUF"):
+            raise RuntimeError("Collector command exceeds the atomic FIFO write limit")
+        if os.write(fd, line) != len(line):
+            raise RuntimeError("Incomplete FIFO write; command result unknown, do not retry automatically")
     finally:
         os.close(fd)
 
@@ -126,6 +141,8 @@ def wait_for_status(
 ) -> dict[str, Any]:
     """Wait for the matching atomic acknowledgement from the recorder."""
 
+    if not math.isfinite(timeout_sec) or timeout_sec <= 0:
+        raise RuntimeError('Command timeout must be finite and positive')
     started = time.monotonic()
     deadline = started + timeout_sec
     while time.monotonic() < deadline:
@@ -133,7 +150,7 @@ def wait_for_status(
             raise RuntimeError("Command wait cancelled; command may already have executed")
         try:
             status = json.loads(status_path.read_text(encoding="utf-8"))
-            if status.get("request_id") == request_id:
+            if isinstance(status, dict) and status.get("request_id") == request_id:
                 return status
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             pass
@@ -213,6 +230,9 @@ def run_command(
 ) -> dict[str, Any] | None:
     """Validate a session, send a command, and optionally await its result."""
 
+    # Reject invalid waits BEFORE sending a state-changing command.
+    if not math.isfinite(timeout_sec) or timeout_sec <= 0:
+        raise RuntimeError('Command timeout must be finite and positive')
     paths = SessionPaths(base_dir)
     recorder_pid = read_recorder_pid(paths.pidfile)
     if not process_is_running(recorder_pid):

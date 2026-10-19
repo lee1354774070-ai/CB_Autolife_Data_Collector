@@ -4,10 +4,11 @@
 
 - 统一入口 `start_lerobot_official_collect.sh`，`COLLECTOR_MODE=keyboard|vr|subtask|dagger`。
 - `record_lerobot_official.py` 管理同步采集、FIFO回执和LeRobot数据保存。
+- `recorder_config.py` 集中参数校验；`launcher_help.py` 复用参数定义生成帮助，修改参数时同步核对环境变量映射。
 - `vr_collector_control.py`、`subtask_annotations.py` 管理单人按键、语音及子任务标记。
 - `dagger/control/` 为已验证控制基础；外层 `dagger/` 负责权限、部署与集合版适配。
 - `dagger/robot_profile.py`区分机器人编号和型号；不能恢复只允许300的判断，也不能用编号猜型号。
-- S2/S3共用main，ROBOT_TYPE只标记数据集。`s3_thor_preview.py`保持独立只读，不可绕过执行ACK拒绝或生产控制器校验。
+- S2/S3共用main，ROBOT_TYPE只标记数据集；不在采集器中添加S2模型到S3的推理转换。旧S3预览工具已移除，生产DAgger仍须拒绝预览服务并校验控制接口。
 - `dagger/assets/` 为随版本发布的配置与网页；哈希在 `dependencies.py` 和 `SOURCE.json`。
 - `teleop_snapshot/` 为已打补丁的审查快照，不是待打补丁的运行依赖。
 - 300正式部署在 `/home/ubuntu/CB_Autolife_Data_Collector`；部署路径不等于修改硬件的授权。
@@ -23,10 +24,11 @@ DAgger额外依赖审核过的V4、Placo/Web环境和Thor baseline/frame服务�
 node tests/test_feedback.js
 bash -n start_lerobot_official_collect.sh
 ROS_DOMAIN_ID=211 /usr/bin/python3 tests/vr_ros_smoke.py --subtasks
-ROS_DOMAIN_ID=211 DAGGER_DEPENDENCY_ROOT=/home/ubuntu/ros2_ws/src /usr/bin/python3 tests/dagger_ros_smoke.py
+ROS_DOMAIN_ID=211 ROBOT_ID=345 DAGGER_ROBOT_PROFILE=s3_v3_1 DAGGER_DEPENDENCY_ROOT=/path/to/reviewed/dependencies /usr/bin/python3 tests/dagger_ros_smoke.py
 ```
 
 完整流程和证据见 `ROBOT300_TESTING_zh.md`。不在真实控制域注入合成动作。
+上面的DAgger示例仅用于隔离测试；必须先核验依赖版本，不把隔离域测试当作345的硬件控制验收。
 测试数据放独立目录并标记不可训练；已保存用户数据不因整理代码而改名、覆盖或删除。
 
 ## 保持不变的契约

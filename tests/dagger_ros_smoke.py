@@ -110,6 +110,8 @@ def main():
     sys.path[:0] = [str(Path(__file__).resolve().parents[1]),
                    str(root / "openarmx_teleop_vr_306_v4")]
     from dagger.dependencies import validate
+    from dagger.robot_profile import resolve_robot
+    resolve_robot(os.environ)  # Fail before creating the fake FIFO worker.
     validate(root)
     check_controller_copy(root)
     import rclpy

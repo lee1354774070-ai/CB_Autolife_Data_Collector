@@ -54,7 +54,10 @@ def normalize_epoch_seconds(value: Any) -> float | None:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         return None
 
-    timestamp = float(value)
+    try:
+        timestamp = float(value)
+    except OverflowError:
+        return None
     if not math.isfinite(timestamp):
         return None
     absolute = abs(timestamp)
@@ -76,7 +79,10 @@ def _stamp_mapping_to_seconds(value: Any) -> float | None:
     nanoseconds = value.get("nanosec", value.get("nsecs", value.get("nanoseconds", 0)))
     if not isinstance(seconds, (int, float)) or not isinstance(nanoseconds, (int, float)):
         return None
-    return normalize_epoch_seconds(float(seconds) + float(nanoseconds) * 1e-9)
+    try:
+        return normalize_epoch_seconds(float(seconds) + float(nanoseconds) * 1e-9)
+    except OverflowError:
+        return None
 
 
 def payload_timestamp_sec(payload: Any, received_sec: float, max_clock_skew_sec: float = 5.0) -> float:

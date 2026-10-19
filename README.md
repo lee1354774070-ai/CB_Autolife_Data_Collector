@@ -1,7 +1,7 @@
 # 云蝶 AutoLife 数据采集器
 
-> **S2 / S3 共用 `main`**，不再需要为S3切换分支。S3环境适配与最新EEF采集、转换工具均保留。
-> S3真机运动、长时负载和DAgger接管仍需单独验收；推理预览禁止执行。历史测试范围见 [S3 使用与验收记录](S3_TESTING_zh.md)。
+> **S2 / S3 共用 `main` 和同一套采集实现**，新S3数据集设置 `ROBOT_TYPE=autolife_s3`。
+> 无需S3专用推理预览或模型转换工具；EEF采集与转换继续保留。DAgger需另行核对机器人型号、控制接口并完成现场验收。
 
 统一入口：`start_lerobot_official_collect.sh`。支持键盘、单人 VR、子任务标注和 DAgger，
 输出官方 `LeRobotDataset`。本文先解释参数，再给出各模式的完整用法。
@@ -64,9 +64,7 @@ export WITH_DEPTH=1
 
 原厂App能让机器人运动、夹爪支持位置控制，都不等于它会发布独立的身体/夹爪目标位置命令。
 非DAgger的底层 `joint` 接口仅保留给已核实命令话题的集成或链路调试，不作为常规数采配置。
-2026-10-19在345原厂App实际遥操作时，两个默认joint命令话题均未收到消息，
-但状态包的控制目标持续更新。该机器当前原厂采集应使用`status_target`；不能仅因机器人在动就改成`joint`。
-DAgger另有专门的命令代理话题，不与此次原厂链路混为一谈，见[实测记录](docs/validation/20261019_s3_345.md)。
+345原厂链路的实际话题对比见[验证记录](docs/validation/20261019_s3_345.md)，不替代DAgger独立验收。
 
 关节模式的 state/action 顺序固定为：左臂7维 → 右臂7维 → 左夹爪 → 右夹爪 →
 可选头部3维 → 可选上腰2维或完整腰腿4维。具体名称见 [robot_schema.py](robot_schema.py)。
@@ -84,61 +82,19 @@ DAgger另有专门的命令代理话题，不与此次原厂链路混为一谈�
 EEF 是录制扩展，不改变 DAgger 模型输入、控制命令或接管逻辑。
 新建数据集后，改变关节、EEF开关、相机、深度、action格式或标注字段时，应换新目录，不能直接追加到旧 schema。
 
-#### EEF 布局与前提
+#### EEF 使用前提
 
-**旧的15维调试模式 `ACTION_MODE=eef` 已删除**，对应的高度话题参数也已删除。
-旧命令会直接报错，不自动转换或覆盖已有数据；旧15维数据不能用新版本续录。
-`WITH_EEF_STATE`、`WITH_EEF_ACTION` **继续保留**：按上述规则选择 `status_target` / `joint`，
-再独立开启需要的EEF字段；纯EEF训练数据通过后文的转换工具从新采集的joint+EEF数据导出。
-`WITH_EEF_ACTION=1` 也不能搭配 `FALLBACK_ACTION_TO_STATE=1`，以免把实测joint混作目标action。
-以基础16维 joint 为例：
+两个开关独立为state/action追加14维：左臂XYZ+XYZW、右臂XYZ+XYZW。
+位置为机器人坐标系下的米，姿态为单位四元数；14维不含夹爪，夹爪仍在joint前缀。
+16/21/23维joint分别变为30/35/37维；未开启的一侧向量不变。
 
-| `WITH_EEF_STATE` | `WITH_EEF_ACTION` | state维度 | action维度 |
-|---:|---:|---:|---:|
-| 0 | 0 | 16 | 16 |
-| 1 | 0 | 30 | 16 |
-| 0 | 1 | 16 | 30 |
-| 1 | 1 | 30 | 30 |
+需要持续更新的实测/目标位姿报告；缺失时拒绝初始化，过旧或无法同步时整条作废。
+不会用零、FK或实测state替代缺少的目标。旧15维 `ACTION_MODE=eef` 已移除；
+使用追加开关录制后，再通过[离线转换](#conversion)导出纯EEF或混合表示。
+新数据集的 `meta/collector_schema.json` 记录来源和索引，不能按向量宽度猜测旧数据含义。
 
-21维 joint 加 EEF 后对应35维；23维 joint 加 EEF 后对应37维。相机字段不变。
-追加部分顺序为：
-
-```text
-left_eef_x, left_eef_y, left_eef_z, left_eef_qx, left_eef_qy, left_eef_qz, left_eef_qw,
-right_eef_x, right_eef_y, right_eef_z, right_eef_qx, right_eef_qy, right_eef_qz, right_eef_qw
-```
-
-XYZ 使用原厂机器人坐标系下的绝对位置（米），姿态为单位四元数 `x,y,z,w`。
-末端点/机器人坐标系沿用控制器定义，工具不额外添加 TCP 偏移，也不转换到地图坐标系。
-夹爪开合仍在 joint 部分，**14维 EEF 本身不包含夹爪**。
-
-必须先有持续更新的原厂 current/target 位姿报告。协议为 `std_msgs/msg/String` 的 JSON：
-`left_eef_pose` 和 `right_eef_pose` 各包含 `position[3]`、`rotation[4]`。
-普通 joint 状态存在，不代表 EEF 报告一定存在。2026-10-19在345复查已收到两路约100 Hz的完整报告；
-经授权重启视觉服务后，37维state/action、RGB-D、30 FPS的一条480帧数据已保存并通过视频解码与LeRobot回读。
-同日另一条录制因关节流短暂停顿作废，因此不代表长时稳定性或运动中EEF语义已验收。见[345验证记录](docs/validation/20261019_s3_345.md)。
-开启缺失的 EEF 输入会在初始化时报错，不会填0或自动启动新的控制器。
-
-EEF state 按图像时间进行 XYZ 线性插值与四元数最短弧 SLERP，复用
-`MAX_STATE_AGE_SEC`、`MAX_STATE_INTERPOLATION_GAP_SEC`；EEF action 取参考时刻之前的目标，
-复用 `MAX_ACTION_HOLD_SEC`。数据不完整、过旧或没有有效匹配时作废本条episode。
-DAgger 的专家 mask 证明的是原有 joint 命令来源，**不额外证明原厂 EEF 报告的控制权/IK来源**；
-因此追加的14维 EEF action 对应 `dagger.action_train_mask` 固定为0，不自动当作专家标签。
-用于 EEF 纠错训练前，需另行核对目标及控制权来源并显式标注，不能用 joint mask 给 EEF 自动赋值。
-
-```bash
-# 仍使用原厂单人遥操作；同时保留 joint 和 EEF，需先确认两路位姿输出。
-COLLECTOR_MODE=vr WITH_HEAD=0 WITH_UPPER_WAIST=0 WITH_WAIST=0 WITH_DEPTH=0 \
-WITH_EEF_STATE=1 WITH_EEF_ACTION=1 \
-TASK_TEXT="Put the towel in the basket." \
-bash start_lerobot_official_collect.sh towel_joint_eef
-
-# 单项帮助，无需启动机器人服务。
-bash start_lerobot_official_collect.sh WITH_EEF_STATE --help
-```
-
-新建的 joint 数据集包含 `meta/collector_schema.json`，记录 joint、夹爪、EEF 的索引、名称和位姿来源。
-续录会检查该布局。历史joint数据仍可按原 schema 续录，但没有 EEF 的旧数据不会被自动“补出”末端位姿。
+**DAgger追加的14维EEF action训练mask固定为0**：joint命令来源不能证明独立EEF报告的专家身份。
+EEF纠错训练需单独核实和标注来源。混合state/action、四元数也不能直接套用逐维相减的relative action。
 
 ### 1.2 模式、任务和保存位置
 
@@ -191,10 +147,10 @@ export SYNC_IMAGE_BUFFER_SIZE=16
 
 | 参数 | 默认值 | 对应阶段 |
 |---|---:|---|
-| `STATE_READY_TIMEOUT_SEC` | 10秒 | 等待首个完整关节状态包；没有完整包，不开始相机轮询流程。 |
+| `STATE_READY_TIMEOUT_SEC` | 10秒 | 等待首个完整关节状态包；没有完整包，不启动可选相机生产者。已有SHM可被读取，尚不录制。 |
 | `CAMERA_WARMUP_SEC` | 10秒 | 统一启动器传给录制器的相机准备等待时间。直接运行Python的默认值不同，以该入口帮助为准。 |
 | `CAMERA_DETECTION_TIMEOUT_SEC` | 15秒 | 外层启动器等待相机/数据集初始化结果。提高相机warmup时，应同时给这个外层等待留足时间。 |
-| `CONTROL_ACK_TIMEOUT_SEC` | 300秒 | 等待开始、标记、保存、丢弃等命令的真实回执；不是图像同步阈值。结果未知时先查日志，不盲目重复提交。 |
+| `CONTROL_ACK_TIMEOUT_SEC` | 300秒 | 等待开始、标记、保存、丢弃等命令的真实回执；不是图像同步阈值。结果未知时先查日志，不盲目重复提交。正常退出会等待编码完成，不按此值强杀录制器。 |
 
 启动慢可增加准备等待时间；录制中 `unsynchronized_camera`、`stale_camera` 等错误
 不会因为增加 `CAMERA_WARMUP_SEC` 而得到修复。保存较慢也不等于应放宽同步误差。
@@ -298,11 +254,10 @@ DAgger在未显式设置时使用 `WITH_HEAD=1 WITH_UPPER_WAIST=1 WITH_WAIST=0 W
 | `FALLBACK_ACTION_TO_STATE` | `0` | 缺少joint目标时允许用实测state替代action，仅用于链路调试，不应当作专家目标；DAgger必须保持0。 |
 | `OMP_NUM_THREADS` / `MKL_NUM_THREADS` / `OPENBLAS_NUM_THREADS` | 通用入口未设置时为1 | 限制底层数学库线程，避免小计算创建过多线程；DAgger录制隔离脚本会强制这些库为1线程。 |
 
-通用录制子进程使用启动脚本内的本机回环DDS配置，不要以为仅导出 `CYCLONEDDS_URI`
-就能把所有节点改成跨机通信。DAgger控制侧接受 `COLLECT_CYCLONEDDS_URI` / `CYCLONEDDS_URI`，
-但自定义后仍必须与录制器及机器人服务互通；默认保持不改。
+默认本机回环DDS。覆盖优先级：`COLLECT_CYCLONEDDS_URI` → `CYCLONEDDS_URI` → 内置配置；
+录制器和辅助进程使用同一有效配置，自定义时须确保与机器人服务互通。
 
-查看帮助不会启动采集，适合核对安装版本：
+帮助只依赖系统Python标准库，不加载ROS/LeRobot，也不会启动采集：
 
 ```bash
 bash start_lerobot_official_collect.sh --help
@@ -311,526 +266,290 @@ bash start_lerobot_official_collect.sh MAX_SYNC_DELTA_SEC --help
 bash start_lerobot_official_collect.sh DAGGER_BACKEND --help
 
 # 录制器的底层参数使用 --kebab-case；不等同于启动脚本的环境变量。
-/home/ubuntu/miniconda3/envs/lerobot/bin/python record_lerobot_official.py --help
-/home/ubuntu/miniconda3/envs/lerobot/bin/python record_lerobot_official.py --max-sync-delta-sec --help
+python3 record_lerobot_official.py --help
+python3 record_lerobot_official.py --max-sync-delta-sec --help
 ```
 
 `--camera`、`--depth-camera`、`--duration` 等是录制器直接入口参数，
 统一Shell启动器不会自动转发任意Python参数，不要直接拼在任务名后。
 `--check` / `--serve` 是DAgger入口选项，不是普通三种模式的通用选项。
 
+
 <a id="setup"></a>
 ## 2. 环境准备
 
-需已配置 ROS 2 Jazzy、机器人关节反馈和相机SHM服务。
-`robot_env` 提供ROS/OpenCV等依赖；`lerobot` 提供 **LeRobot 0.6+ DatasetWriter/resume接口**、
-PyArrow及视频编码依赖。深度还需高位深视频支持。
-本仓库不会自动安装、启动或重启原厂硬件服务。
+依赖ROS 2 Jazzy、已运行的关节反馈和相机SHM服务。`LEROBOT_PY` 需要LeRobot 0.6+的
+DatasetWriter/resume接口、ROS、OpenCV、PyArrow和编码依赖；深度需要高位深HEVC。
+VR辅助、相机桥和备用生产者使用 `ROBOT_PY`；纯SHM键盘录制不启动这些辅助时，不要求额外robot_env。
+工具不自动安装或重启硬件服务。
 
-独立仓库安装：
+独立仓库首次安装：
 
 ```bash
 cd /home/ubuntu
-git clone https://github.com/lee1354774070-ai/CB_Autolife_Data_Collector.git
-cd /home/ubuntu/CB_Autolife_Data_Collector
+git clone git@github.com:lee1354774070-ai/CB_Autolife_Data_Collector.git
+cd CB_Autolife_Data_Collector
 ```
 
-集合仓库用户改为进入 `/home/ubuntu/Autolife_VLA_Tools/lerobot_data_collector`。
-不要同时从两个副本启动。启动首行的 `AutoLife Collector | mode=... | 实际代码目录`
-可以确认当前运行的是哪个副本。
-
-以下为**已配置好的300机器人**的新终端准备命令，各模式示例均在此之后执行：
+集合仓库则进入 `/home/ubuntu/Autolife_VLA_Tools/lerobot_data_collector`。不要从两个副本同时采同一目录。
+以下以 **S3-345** 为例，其他机器修改编号/型号；解释器不在默认位置时设置Python绝对路径：
 
 ```bash
 cd /home/ubuntu/CB_Autolife_Data_Collector
+export ROBOT_ID=345 ROS_DOMAIN_ID=0 ROBOT_TYPE=autolife_s3
 source scripts/source_ros_env.sh
 set +u
 unset VR_CONTROL SUBTASKS_JSON ACTION_MODE
-
-export ROBOT_ID=300 ROS_DOMAIN_ID=0
-export OUTPUT_BASE_DIR=/home/ubuntu/nas
+export OUTPUT_BASE_DIR=/home/ubuntu/nas14
 export START_HAND_PRODUCER=0 IMAGE_SOURCE=shm
-export COLLECT_FPS=30 SYNC_REFERENCE_CAMERA=hand_left
-export MAX_SYNC_DELTA_SEC=0.03 SYNC_IMAGE_BUFFER_SIZE=16
+export COLLECT_FPS=30 MAX_SYNC_DELTA_SEC=0.03 SYNC_IMAGE_BUFFER_SIZE=16
+export SYNC_REFERENCE_CAMERA=hand_left
 ```
 
-`set +u` 关闭当前Shell的“未定义变量报错”，避免ROS环境脚本触发unbound variable，
-与模型开关、录制或电机使能无关。环境辅助脚本优先保留显式编号和ROS域，否则从主机名识别编号，
-ROS域默认0；没有`ros2_ws`时只加载系统ROS。请核对启动提示，不要沿用其他机器的环境变量。
-DAgger还需明确 `DAGGER_ROBOT_PROFILE`，并通过该机器的依赖和控制权预检。
-
-### 2.1 S3 环境示例
-
-同样使用当前`main`和原厂遥操作。以下以347为例，编号、数据路径和解释器应按实际机器修改：
-
-```bash
-cd /home/ubuntu/CB_Autolife_Data_Collector
-unset HG_DAGGER_ROBOT_ID VR_CONTROL SUBTASKS_JSON ACTION_MODE
-export ROBOT_ID=347 ROS_DOMAIN_ID=0 ROBOT_TYPE=autolife_s3
-source scripts/source_ros_env.sh
-set +u
-export OUTPUT_BASE_DIR=/home/ubuntu/nas
-export WITH_HEAD=1 WITH_UPPER_WAIST=1 WITH_WAIST=0 WITH_DEPTH=0
-export START_HAND_PRODUCER=0 ACTION_MODE=status_target
-export TASK_TEXT='Pick the laundry bag.'
-COLLECTOR_MODE=vr bash start_lerobot_official_collect.sh s3_vr_rgb
-```
-
-若LeRobot装在独立venv，启动前将`LEROBOT_PY`设为该环境的Python绝对路径；
-原厂辅助环境不同则同时设置`ROBOT_PY`。启动器从各解释器的`sys.base_prefix`选择动态库，
-不再假定必须使用默认Conda目录。具体版本和依赖仍需预先安装。
-
-**不需要额外安装一套“S3 Collector环境”。** 已有兼容的ROS、`robot_env`和LeRobot环境就直接使用；
-例如345的现有环境已通过导入和隔离回归，无需新建venv。`ros2_ws`只在依赖其中的包时才需要，
-原厂已直接发布ROS话题/SHM的机器不必为了source脚本而创建空工作空间。
-环境兼容代码不改变录制数据或关节方向；`ROBOT_TYPE`只标记数据，不能替代DAgger的型号/控制器校验。
-
-S3可使用相同的EEF录制开关和离线转换工具，但必须先确认实测/目标位姿报告存在、坐标语义正确；
-345原厂遥操作期间的保存/回读结果见[验证记录](docs/validation/20261019_s3_345.md)，不替代EEF坐标标定。
-S2与S3的数据、归一化参数和模型不能仅因维度相同就直接混用。
+`set +u` 只关闭Shell未定义变量报错，不改变电机使能。
+S2/S3共用main和已有兼容环境，不需要专门的S3推理预览；无ros2_ws时只加载系统ROS。
+启动首行显示实际代码目录，请据此排除旧副本。
 
 <a id="modes"></a>
-## 3. 四种模式使用哪套遥操作
+## 3. 模式与遥操作版本
 
-**采集按键控制与机器人遥操作不是同一个东西。** `vr` 表示Collector由手柄操作，
-不表示它会启动或切换一套V4遥操作。
-
-| Collector模式 | 实际使用的遥操作版本 | 头显入口 | Collector负责什么 |
+| 模式 | 机器人遥操作 | 头显入口 | 录制控制 |
 |---|---|---|---|
-| `keyboard` | **Autolife原厂遥操作** | 原厂独立App，填写机器人服务地址 | 终端控制开始/保存/丢弃，原厂负责手臂遥操作。 |
-| `vr` | **同一套Autolife原厂遥操作** | 同上，不用8447 | 监听原厂手柄话题，增加单人录制按键及语音；不替换原厂控制器。 |
-| `subtask` | **同一套Autolife原厂遥操作** | 同上，不用8447 | 在单人录制基础上标记有序子任务，手臂仍由原厂控制。 |
-| `dagger` | **适配后的 `openarmx_teleop_vr_306_v4` 增量遥操作运行副本** | 我们的HTTPS/WebXR扩展页，默认8447 | 管理模型/人工权限、增量接管、录制和回执，不使用原厂遥操作执行这条任务。 |
+| `keyboard` | Autolife原厂 | 原厂独立App，机器人地址:3000 | 终端Enter/S/D/Q |
+| `vr` | Autolife原厂，不替换控制器 | 同上，不使用8447 | GL+GR加面键 |
+| `subtask` | Autolife原厂，不替换控制器 | 同上，不使用8447 | GL+GR加面键，B标注 |
+| `dagger` | 适配后的V4增量运行副本 | 浏览器 `https://机器人IP:8447` | 面键与Grip接管 |
 
-300原厂App的连接地址示例为 `192.168.10.2:3000`；Wi-Fi网口当前为
-`192.168.8.122:3000`。按头显可达的网络选择，IP会变化。
-**3000是原厂App的服务地址；8447是DAgger浏览器页面，两者不能混用。**
-
-前三种模式保持原厂遥操作运行，不要另开V4控制器或8446/8447来“补充”控制。
-DAgger `owned` 启动前先正常退出其他手臂控制任务；原厂管理界面可保留，
-但其关节控制模块可能占用发布端点。冲突时核对具体任务，不要清错或重启ARM服务绕过检查。
-
-`DAGGER_BACKEND=attach` 只接入已有的适配宿主：
-**不是兼容任意原厂App，也不是直接接入未修改的同事版本。**
-`teleop_snapshot/` 是审查用的已打补丁快照，不应充当启动器要再次打补丁的原始依赖目录。
+前三种保持原厂遥操作运行。**3000是原厂App服务，不是DAgger网页。**
+DAgger owned要求独占控制；attach仅连接已适配兼容宿主，不兼容任意原厂/同事旧程序。
+控制冲突时核实具体任务，不通过重启ARM、清错、换端口或跳过校验绕过保护。
 
 <a id="keyboard"></a>
 ## 4. 键盘数采
 
-**遥操作：Autolife原厂App。录制控制：当前终端。**
-先完成[环境准备](#setup)，确认原厂遥操作、关节反馈和三路RGB正常。
+完成环境准备后：
 
 ```bash
-unset VR_CONTROL SUBTASKS_JSON
-COLLECTOR_MODE=keyboard \
+COLLECTOR_MODE=keyboard ACTION_MODE=status_target \
 WITH_HEAD=0 WITH_UPPER_WAIST=0 WITH_WAIST=0 WITH_DEPTH=0 \
-ACTION_MODE=status_target COLLECT_FPS=30 \
+WITH_EEF_STATE=0 WITH_EEF_ACTION=0 \
 TASK_TEXT="Pick up the water bottle." \
-bash start_lerobot_official_collect.sh pick_water_rgb
+bash start_lerobot_official_collect.sh pick_water
 ```
 
-这是16维、三路RGB、不带深度的示例。等待启动器打印有效相机和交互提示后：
+等待有效相机和操作提示，再按Enter开始遥操作。
 
-| 终端按键 | 功能 |
+| 终端键 | 作用 |
 |---|---|
-| Enter | 开始新episode，再进行遥操作。 |
-| S | 保存当前条目并暂停，等待成功回执和累计条数。 |
-| D | 丢弃当前条目并暂停，不删除以前保存的数据。 |
-| Q | 保存有效待处理数据并正常退出；建议先S确认，再Q收尾。 |
-| Ctrl+C | 中断并尝试清理；不要将它当作保存成功保证。 |
+| Enter | 开始新episode，不自动开启下一条 |
+| S | 保存并暂停，等待 `[SAVED]` 和各任务累计条数 |
+| D | 丢弃当前条，不影响以前保存的数据 |
+| N | 仅有子任务计划时标记当前片段 |
+| Q | 收尾退出；有效待处理数据尝试保存，invalid不保存 |
+| Ctrl+C | 请求正常收尾，不等于已经保存成功 |
 
-一条完成后按S，确认成功再布置下一条场景，按Enter继续。启动后不会自动开始下一条。
+推荐：**S确认保存 → Q → 等待正常退出 → 下一批 → 重新启用控制 → Enter**。
+编码可能需要较长时间，退出会等待完成，不再因固定30秒期限终止录制器。
+录制/编码时不要删除目录、关机或强杀。
 
-### 常见四种录制配置
+四种组合替换上述开关，不同schema使用不同目录：
 
-以下分别使用独立目录，避免不同schema混写。每次只运行一组，退出后再测试下一组。
-总任务以 `TASK_TEXT` 显式设置；这些关节/深度组合也适用于 `vr / subtask`。
-
-```bash
-# 16维：手臂+夹爪，不带深度
-COLLECTOR_MODE=keyboard WITH_HEAD=0 WITH_UPPER_WAIST=0 WITH_WAIST=0 WITH_DEPTH=0 \
-TASK_TEXT="Pick up the water bottle." \
-bash start_lerobot_official_collect.sh bottle_16d_rgb
-
-# 16维：手臂+夹爪，带深度
-COLLECTOR_MODE=keyboard WITH_HEAD=0 WITH_UPPER_WAIST=0 WITH_WAIST=0 WITH_DEPTH=1 \
-TASK_TEXT="Pick up the water bottle." \
-bash start_lerobot_official_collect.sh bottle_16d_rgbd
-
-# 23维：全量关节，不带深度
-COLLECTOR_MODE=keyboard WITH_HEAD=1 WITH_UPPER_WAIST=0 WITH_WAIST=1 WITH_DEPTH=0 \
-TASK_TEXT="Pick up the water bottle." \
-bash start_lerobot_official_collect.sh bottle_23d_rgb
-
-# 23维：全量关节，带深度
-COLLECTOR_MODE=keyboard WITH_HEAD=1 WITH_UPPER_WAIST=0 WITH_WAIST=1 WITH_DEPTH=1 \
-TASK_TEXT="Pick up the water bottle." \
-bash start_lerobot_official_collect.sh bottle_23d_rgbd
-```
-
-只要腰部俯仰/旋转、不需要腿部时，将最后两组改为
-`WITH_HEAD=1 WITH_UPPER_WAIST=1 WITH_WAIST=0`，得到21维，并使用新的目录名。
+| 组合 | WITH_HEAD | WITH_UPPER_WAIST | WITH_WAIST | WITH_DEPTH | joint维度 |
+|---|---:|---:|---:|---:|---:|
+| 手臂+夹爪、RGB | 0 | 0 | 0 | 0 | 16 |
+| 手臂+夹爪、RGB-D | 0 | 0 | 0 | 1 | 16 |
+| 全关节、RGB | 1 | 0 | 1 | 0 | 23 |
+| 全关节、RGB-D | 1 | 0 | 1 | 1 | 23 |
 
 <a id="vr"></a>
-## 5. 单人 VR 数采
+## 5. 单人VR数采
 
-**遥操作：Autolife原厂App，不是V4。录制控制：双Grip+面键。**
-头显进入原厂沉浸式遥操作后，Collector读取 `/control_topic_0_300`。
-停在菜单时即使话题有消息，按键也可能始终是松开状态。
+连接**原厂App**并确认遥操作正常；Collector只增加录制控制：
 
 ```bash
-unset VR_CONTROL SUBTASKS_JSON
-COLLECTOR_MODE=vr \
-WITH_HEAD=1 WITH_UPPER_WAIST=1 WITH_WAIST=0 WITH_DEPTH=0 \
-ACTION_MODE=status_target COLLECT_FPS=30 \
-VR_INPUT_TOPIC=/control_topic_0_300 VR_SPEECH=1 VR_START_DELAY_SEC=3 \
+unset VR_CONTROL SUBTASKS_JSON ACTION_MODE
+COLLECTOR_MODE=vr WITH_HEAD=1 WITH_UPPER_WAIST=1 WITH_WAIST=0 \
+WITH_DEPTH=0 WITH_EEF_STATE=0 WITH_EEF_ACTION=0 \
+VR_START_DELAY_SEC=3 VR_SPEECH=1 \
 TASK_TEXT="Put the towel in the basket." \
-bash start_lerobot_official_collect.sh towel_vr_21d_rgb
+bash start_lerobot_official_collect.sh towel_vr
 ```
 
-这是21维、三路RGB的示例；需要深度时设置 `WITH_DEPTH=1` 并换相应数据目录。
-启动后应看到 `[VR] Listening: /control_topic_0_300`。
+全程按住 **GL+GR**，点按并松开一个面键：
+- A：倒计时后开始，B/Y可取消倒计时。
+- B：保存并暂停，收到成功提示后才开始下一条。
+- Y：只丢弃，不复位。
+- X：原厂复位尚未接入，只提示不可用；先保存/丢弃，再使用原厂复位。
 
-保持 **GL+GR 两个握持键按住**，点按并松开面键；面键松开时双Grip仍需按住：
-
-| 面键 | 功能 |
-|---|---|
-| A | 倒计时后请求开始；收到录制回执后提示开始。 |
-| B | 保存当前条目；先提示保存中，成功后播报条数和帧数。 |
-| Y | 丢弃当前条目，不复位、不退出。 |
-| X | 原厂复位接口尚未接入，使用原厂自己的复位功能；不会启动另一套控制器补偿。 |
-
-B/Y可取消倒计时。等待保存/丢弃回执后再开始下一条。
-语音通过机器人现有TTS服务播放；实际音量/扬声器需现场确认。
-终端Enter/S/D/Q仍可用，退出时先保存或丢弃，再Q。
-当前原厂独立App没有Collector的可视进度面板，不要以为更新Collector就会出现HUD。
+终端键盘仍可用，Q退出；未确认的命令不重复排队。
+语音使用机器人TTS。**原厂App暂不支持本工具的振动或子任务进度叠加**；
+发布反馈事件不等于头显实际收到反馈。
 
 <a id="subtask"></a>
 ## 6. 子任务数采
 
-**遥操作：Autolife原厂App，与单人数采相同。**
-一条episode保持一个总任务，内部连续分段标注；不会在每个子任务间停止录制。
+仍使用原厂App，提前定义子任务顺序：
 
 ```bash
-unset VR_CONTROL SUBTASKS_JSON
-COLLECTOR_MODE=subtask \
-WITH_HEAD=1 WITH_UPPER_WAIST=1 WITH_WAIST=0 WITH_DEPTH=0 \
-ACTION_MODE=status_target COLLECT_FPS=30 \
-VR_INPUT_TOPIC=/control_topic_0_300 VR_SPEECH=1 VR_START_DELAY_SEC=3 \
-VR_A_LONG_PRESS_SEC=1.0 \
+unset VR_CONTROL ACTION_MODE
+COLLECTOR_MODE=subtask WITH_HEAD=1 WITH_UPPER_WAIST=1 WITH_WAIST=0 \
+WITH_DEPTH=0 WITH_EEF_STATE=0 WITH_EEF_ACTION=0 \
 TASK_TEXT="Put the towel in the basket." \
 SUBTASKS_JSON='["右手拿起毛巾","双手交接毛巾","左手放下毛巾"]' \
-bash start_lerobot_official_collect.sh towel_subtask_21d_rgb
+VR_A_LONG_PRESS_SEC=1.0 \
+bash start_lerobot_official_collect.sh towel_subtask
 ```
 
-启动后应看到 `VR annotation` 和原厂输入话题。仍需GL+GR；短按/长按均在 **B松开时**判定：
+GL+GR+A开始；每完成一个子任务，GL+GR+**短按B并松开**。
+中间标记不暂停、不编码，继续下一动作；最后一次标记自动保存整条。
+GL+GR+**长按B达到阈值后松开**可提前保存；终端N标记、S提前保存。
 
-| 操作 | 功能 |
-|---|---|
-| A | 倒计时后开始整条录制。 |
-| 第一次短B | 将已采集片段标为“右手拿起毛巾”，继续第二阶段，确认后播报“下一步”。 |
-| 第二次短B | 标记“双手交接毛巾”，继续第三阶段。 |
-| 最后阶段短B | 标记“左手放下毛巾”，自动保存整条；等待保存成功回执。 |
-| 长B达到阈值后松开 | 提前保存；不同时执行短B标记，未确认尾段留待人工审核。 |
-| Y | 丢弃整条；下一条从第一个阶段开始。 |
-| X | 与普通VR相同，原厂复位未接入。 |
-| 终端N / S / D / Q | 标记当前阶段 / 提前保存 / 丢弃 / 收尾退出。 |
-
-忘记标记或没有完成全部阶段时，可长B提前保存，不要为补标而连续点按伪造边界。
-标记以**录制器处理请求时已经写入的帧**为边界，不是精确的手柄硬件按下时间。
-
-数据中 `task` 仍为总任务；`subtask_index=0/1/2` 表示已确认阶段，未确认尾段为 `-1`。
-阶段文本、帧边界和 `needs_review` 保存在
-`dataset/annotations/subtasks/episode_*.json`。
-此标注不意味着训练器自动使用子任务损失或自动将子任务文本替换总任务。
-
-开启/关闭标注或修改计划时使用新数据目录，不将不同计划混进同一旧目录。
-原厂App没有显示进度列表；当前以“下一步/已保存/标注未完成”等语音和终端回执确认。
+总任务为 `TASK_TEXT`。`subtask_index` 是本条计划局部序号，边界以录制器已接受帧为准，
+不是手柄硬件时间。未标记尾段为-1，`annotations/subtasks/episode_XXXXXX.json` 标记需人工复核。
+漏按/晚按需人工清洗，完成标记不证明任务成功；启用/关闭标注必须换目录。
+声音为短提示，无头显进度列表。Y丢弃、X限制及退出方式同普通VR。
 
 <a id="dagger"></a>
-## 7. DAgger 纠错数采
+## 7. DAgger纠错采集
 
-**遥操作：经过适配的V4增量控制副本，不是原厂App。**
-`owned` 会启动一套独占宿主；头显使用浏览器进入8447扩展网页。
-默认不发布硬件动作。支持按编号/型号配置，保持21维和三路RGB；depth可选但不送入当前模型。
-S2与S3现在共用main中的编号路由、逐维纠错掩码和环境适配。
-300旧命令继续使用S2配置。其他S2-v2.2示例：`ROBOT_ID=328 DAGGER_ROBOT_PROFILE=s2_v2_2`。
-S3-v3.1示例：`ROBOT_ID=347 DAGGER_ROBOT_PROFILE=s3_v3_1 ROBOT_TYPE=autolife_s3`；
-截至2026-10-16的记录，347的增量控制器和独立控制权接口尚未部署；本次源码合并不改变部署状态。
-独立8779只读预览仍会被执行入口拒绝，不能当作可执行的S3模型服务。
-每台机器先完成依赖/型号预检，再现场验收，不得只改编号绕过检查。
-同一主机同一ROS域仍只允许一个DAgger宿主，控制权话题没有改成多机器人命名空间。
+使用**经审核的V4增量副本和匹配Thor服务**，不是原厂App。
+固定21维joint+3RGB；depth/EEF可额外录制，不改变模型输入。
+S3普通采集通过不等于S3 DAgger验收通过，仍需核对URDF、控制权接口和模型。
 
-### 7.1 准备与只读预检
-
-先正常结束其他手臂控制任务，并确认Thor服务已经由维护人员启动。
-Collector不会因为端口不同就允许两个控制器同时控制机器人。
-依赖或哈希校验失败时检查版本，不使用跳过校验方式继续。
+以下为已配置 **S2-300** 示例，不能原样用于345：
 
 ```bash
 unset VR_CONTROL SUBTASKS_JSON ACTION_MODE
 export COLLECTOR_MODE=dagger DAGGER_BACKEND=owned
-export ROBOT_ID=300 ROS_DOMAIN_ID=0
+export ROBOT_ID=300 ROS_DOMAIN_ID=0 DAGGER_ROBOT_PROFILE=s2_v2_2
 export WITH_HEAD=1 WITH_UPPER_WAIST=1 WITH_WAIST=0 WITH_DEPTH=0
-export COLLECT_FPS=30 IMAGE_POLL_FPS=60
+export WITH_EEF_STATE=0 WITH_EEF_ACTION=0
 export DAGGER_SERVER_URL=http://192.168.8.224:8777
 export DAGGER_TOKEN_FILE=/home/ubuntu/.config/autolife_hg_dagger/groot_server.token
 export DAGGER_DEPENDENCY_ROOT=/home/ubuntu/ros2_ws/src
-export DAGGER_TOOLS_ROOT=/home/ubuntu/Autolife_VLA_Tools
-export DAGGER_WEB_PORT=8447
-export OUTPUT_BASE_DIR=/home/ubuntu/nas/dagger
+export DAGGER_WEB_PORT=8447 OUTPUT_BASE_DIR=/home/ubuntu/nas/dagger
 export TASK_TEXT='Pick the laundry bag.'
 
-# 只读检查依赖、ROS图和Thor协议；不启动控制器、录制器或运动。
 DAGGER_PUBLISH=0 bash start_lerobot_official_collect.sh dagger_check --check
-```
-
-### 7.2 无动作与真实控制
-
-```bash
-# 启动无硬件发布的待命会话，检查完在这个终端用Q退出。
 DAGGER_PUBLISH=0 bash start_lerobot_official_collect.sh dagger_dryrun
 ```
 
-无动作模式不等于实机任务验证。确认上述会话已退出、机器人周围安全、急停可用后，
-才启动真实控制：
+`--check` 只读检查依赖/ROS冲突/Thor协议；第二条启动无硬件发布的待命会话。
+Q退出后，仅在现场安全、急停可用且获运动授权时启动真实控制：
 
 ```bash
-DAGGER_PUBLISH=1 bash start_lerobot_official_collect.sh dagger_live_01
+DAGGER_PUBLISH=1 bash start_lerobot_official_collect.sh dagger_live
 ```
 
-头显浏览器打开 `https://<机器人当前IP>:8447`，300当前示例为
-`https://192.168.8.122:8447`，不是原厂App中的3000地址。
-进入或重连保持待命，必须主动按A才开始。
+浏览器连接 `https://机器人当前IP:8447`，等待就绪后主动按A。
 
-| VR操作 | 功能 |
+| VR键 | 作用 |
 |---|---|
-| A | 确认录制就绪后开始模型推理，不使用普通VR的倒计时。 |
-| 任一GL/GR | 立即选择人工控制权限；握持时增量遥操作，模型请求在后台退出。 |
-| B | 保存当前有效条目，不自动复位。 |
-| Y | 丢弃当前条目，不自动复位。 |
-| X | 仅全身复位并张开夹爪；仍有未处理数据时拒绝。会真实运动，先保存/丢弃并释放Grip。 |
+| A | 等待录制回执及硬件就绪后放行模型 |
+| 任一Grip新按下 | 立即切人工权限，增量控制，不等待HTTP；之后不自动交还模型 |
+| B | 保存并停用本轮，不复位 |
+| Y | 丢弃本轮，不复位 |
+| X | 全身复位并张开夹爪；有待处理数据/忙碌时拒绝，先B/Y并释放Grip |
 
-面键无需双Grip组合；Grip专门用于接管。接管后由人完成本条，不自动交还模型；
-下一条再次主动按A。只有接管振动，其余状态/错误显示在扩展头显界面。
-终端键位是 **C开始、A保存、X/D丢弃、R复位、Q退出**，
-与普通采集的Enter/S/D不同。
+面键无需双Grip；终端为 **C开始、A保存、X/D丢弃、R复位、Q退出**。
+DAgger退出丢弃未确认条目，要保留必须先B确认。接管振动依赖WebXR支持。
+控制回执不证明到位，保存不证明任务成功；训练须显式使用 `dagger.action_train_mask`。
 
-DAgger退出会丢弃未确认条目；想保留时先B保存并确认。
-保存结果未知时先查状态，不重复提交。DAgger不是对子任务标注模式的叠加开关。
-
-### 7.3 接入已有兼容宿主
-
-只有已经运行我们适配后的宿主时才能用 `attach`；
-它不会停止同事的程序，也不会将未适配的程序自动变成兼容版本。
-`OUTPUT_BASE_DIR`、任务目录、任务文本、depth和硬件发布权限必须与宿主匹配。
-
-另开终端并先完成环境准备，以下示例连接上面允许真实控制的 `dagger_live_01`：
+接入已有兼容宿主，另开终端并匹配机器人、目录、任务、发布权限：
 
 ```bash
-unset VR_CONTROL SUBTASKS_JSON ACTION_MODE
-export COLLECTOR_MODE=dagger DAGGER_BACKEND=attach
-export ROBOT_ID=300 ROS_DOMAIN_ID=0
-export OUTPUT_BASE_DIR=/home/ubuntu/nas/dagger
-export TASK_TEXT='Pick the laundry bag.'
-export WITH_DEPTH=0 DAGGER_PUBLISH=1
-
-# 只检查匹配关系，不发控制指令。
-bash start_lerobot_official_collect.sh dagger_live_01 --check
-
-# 交互接入；C/A/X或D/R的含义与owned终端一致。
-bash start_lerobot_official_collect.sh dagger_live_01
+COLLECTOR_MODE=dagger DAGGER_BACKEND=attach \
+DAGGER_PUBLISH=1 WITH_DEPTH=0 OUTPUT_BASE_DIR=/home/ubuntu/nas/dagger \
+TASK_TEXT='Pick the laundry bag.' \
+bash start_lerobot_official_collect.sh dagger_live --check
 ```
 
-attach终端的 **Q只断开本终端，宿主和VR继续运行**，不会退出整套DAgger。
-不能通过attach修改已有宿主的帧率、关节维度或模型地址；需按正常流程结束后重新配置宿主。
-`--serve` 仅供owned后台宿主使用，没有交互终端，不要与attach组合。
+去掉 `--check` 进入交互；**attach的Q仅断开本终端，宿主继续运行**。
+`--serve` 只用于owned后台宿主；旧程序需一次性迁移，不能热替换。
+便捷 `start_dagger.sh` 默认开启depth，桌面入口 `scripts/open_dagger_launcher.sh` 同属DAgger；
+其预设不等于统一入口默认值，使用前明确设置。
 
-### 7.4 便捷入口、桌面与Thor限制
-
-`start_dagger.sh` 使用同一套后端，但有[前文列出的环境预设](#parameters)。
-例如明确关闭其默认depth并做只读检查：
-
-```bash
-WITH_DEPTH=0 DAGGER_PUBLISH=0 bash start_dagger.sh dagger_quick --check
-```
-
-桌面启动器：
-
-```bash
-DAGGER_PUBLISH=1 bash scripts/open_dagger_launcher.sh
-```
-
-打开窗口本身不开始推理，但设置1允许后续按钮触发运动。省略时默认无动作模式；
-已安装桌面快捷方式可能预设为1，应核对启动提示。
-桌面Shift+A开始、Shift+B保存、Shift+X复位、Shift+Y丢弃，退出前先处理当前数据。
-该窗口用于DAgger，不是原厂单人采集或子任务采集入口。
-
-Thor必须提供 `controller_submission_receipts=true`。
-当前阶段夹爪策略 `phase_aware` 仅接受以下完整任务文本：
-- `Pick the laundry bag.`
-- `Place the laundry bag in the upper compartment of the delivery robot.`
-
-该策略抓取实测达到120°后锁持，放置明确预测≤60°时释放，左右独立判断。
-动作修改发生在服务端digest前，机器人端不改写模型动作或ACK前缀；
-`/controller_ack` 只证明提交目标，不证明电机到位。
-新任务需先核对模型和夹爪策略，不能仅替换文本就宣称支持。
-
-`tools/start_thor_baseline.sh` 会启动Thor服务，`GROOT_GRIPPER_PHASE_AWARE=0`
-可选择连续夹爪模式。这属于服务维护操作，不是每次采集都要运行的步骤。
+Thor须支持 `controller_submission_receipts=true`；阶段夹爪策略只支持审核过的完整任务文本。
+详情见 [DAgger实现](INSTRUCTION_zh.md#dagger)，不是任意任务通用策略。
 
 <a id="data"></a>
 ## 8. 续录、输出和故障处理
 
-### 8.1 保存位置与续录
+同一输出父目录、目录名和schema，在S保存、Q正常退出后再次启动即续录。
+目录名不必等于任务文本；交替修改 `TASK_TEXT` 可将多任务按episode顺序存入同一目录：
+
+```bash
+TASK_TEXT="Pick up the water bottle." COLLECTOR_MODE=keyboard \
+bash start_lerobot_official_collect.sh hotel_water
+# 第一场S保存、Q正常退出后：
+TASK_TEXT="Put the water bottle in the box." COLLECTOR_MODE=keyboard \
+bash start_lerobot_official_collect.sh hotel_water
+```
+
+`task_index` 区分总任务。每条Parquet/视频可独立成文件，官方meta负责索引，**不需手动拼接**。
+改变FPS、关节/EEF、相机、depth、Action来源、子任务或DAgger字段时换新目录。
 
 ```text
-<OUTPUT_BASE_DIR>/<task_name>/
-├── dataset/
-│   ├── meta/
-│   ├── data/
-│   ├── videos/
-│   ├── annotations/subtasks/    # 仅启用子任务时
-│   └── sync_log.jsonl
-└── logs/
-    ├── 1.record_lerobot_official.log
-    └── 1.vr_control.log         # 单人/子任务辅助程序启用时
+task_name/
+  dataset/
+    meta/                   信息、任务、episode索引、统计、collector_schema.json
+    data/                   Parquet
+    videos/                 RGB / 可选depth
+    annotations/subtasks/   可选子任务侧文件
+    sync_log.jsonl          软件同步诊断
+    .collector-work/        当前私有暂存，运行时禁止删除
+    .collector-commit.json  仅提交/恢复期间存在
+  logs/                     每次启动独立数字序号，不覆盖旧日志
+  .official_*               进程、FIFO、回执及锁
 ```
-
-停止后用相同目录和兼容配置启动可续录，episode编号接续。
-日志按启动次数递增。同一数据根目录不能同时运行两个采集器；
-不要并发编辑/训练正在发布的数据集，也不要在运行中删除目录或日志。
-
-`task_name` 决定目录，`TASK_TEXT` 决定任务标签。不同总任务要保存在同一兼容数据集中时，
-可**串行**复用同一个目录名、改变 `TASK_TEXT`，由LeRobot的 `task_index` 区分。
-例如普通模式完成“拿瓶子”后先S、Q并等待完全退出，再运行“放瓶子”：
-
-```bash
-COLLECTOR_MODE=keyboard WITH_HEAD=0 WITH_UPPER_WAIST=0 WITH_WAIST=0 WITH_DEPTH=0 \
-TASK_TEXT="Pick up the water bottle." \
-bash start_lerobot_official_collect.sh water_tasks
-
-# 上一次已保存、Q退出后再执行；中间导航不录入这两个操作episode。
-COLLECTOR_MODE=keyboard WITH_HEAD=0 WITH_UPPER_WAIST=0 WITH_WAIST=0 WITH_DEPTH=0 \
-TASK_TEXT="Put the water bottle in the box." \
-bash start_lerobot_official_collect.sh water_tasks
-```
-
-以上要求帧率、schema、action模式和相机配置兼容。子任务计划不同应分目录，
-不要把这条总任务续录示例套用于混合不同标注计划。
-
-每条episode先写入 `dataset/.collector-work/`，编码及文件关闭成功后再发布到正式目录。
-新episode使用新的Parquet/视频文件，不追加覆盖已提交的旧文件。
-LeRobot按元数据读取连续episode，**无需手工拼接MP4**。
-
-DAgger保存整条模型和人工过程，附加控制来源、会话/接管标记及两种训练掩码：
-
-- `dagger.train_mask`：保留原来的 joint 整帧规则；只有身体和夹爪均来自当前人工权限时为1，不证明追加 EEF 的来源。
-- `dagger.action_train_mask`：与`action`等长、同顺序的int64掩码。默认21维，开启EEF action后35维。身体命令有效时0–13、16–20为1；夹爪命令有效时14–15为1；EEF的21–34维固定为0。模型段、保持段和过期权限对应维度为0。
-- `expert_frames`：现在统计至少一个动作维度有效的人工帧，包含部分维度有效的纠错。
-
-例如只接管移动手臂、夹爪仍保持模型指令：整帧掩码仍是0，动作掩码为`[1×14, 0, 0, 1×5]`。
-新训练流程应筛选`action_train_mask.any(-1)`，在逐动作维度的loss上乘该掩码后按有效元素数归一化；
-不能先用旧的`train_mask=1`筛选，否则这些部分纠错仍会被丢弃，也不能对整帧无掩码计算loss。
-当前来源粒度是身体命令组与双夹爪命令组，不声称逐关节独立识别人工意图。
-
-**升级后DAgger请用新任务目录。** 新增字段与旧数据schema不同，拒绝直接续录混写；旧文件不修改，旧训练代码仍可按整帧掩码保守使用。
-工具不自动训练、回填历史掩码或上传数据。
 
 <a id="recovery"></a>
-### 8.2 常见报错与恢复
+### 故障处理
 
-| 现象 | 优先检查 | 不应采取的做法 |
-|---|---|---|
-| `Recorder exited before camera initialization completed` | 读取本次 `logs/<序号>.record_lerobot_official.log` 的最后异常；检查完整状态包、所选相机、库版本和数据schema。 | 只根据启动器这一行判断是“相机损坏”。 |
-| `missing_camera` / `stale_camera` / `unsynchronized_camera` | 查看 `sync_log.jsonl` 中具体相机、接收年龄、时间差；检查源流更新及负载。 | 反复提高同步容差或降低所需相机数掩盖故障。 |
-| `image_buffer_overflow` | 图像FIFO积压、处理吞吐和源时间戳更新；与写图队列区分。 | 把FIFO无限增大，或静默丢帧继续保存。 |
-| 存储限额、写图队列满、写入/编码失败 | 剩余磁盘、当前episode预算、写图积压及编码日志。 | 删除正在使用的暂存文件、重复提交未知结果的保存。 |
-| 手柄按键不生效 | 原厂沉浸式遥操是否激活，输入话题是否正确，面键松开时是否仍按着GL+GR。 | 普通模式临时启动第二套V4控制器。 |
-| 语音没有声音 | `VR_SPEECH`、原厂TTS服务和实际输出声卡/音量。 | 把日志中“已发送TTS”当作现场已经听到。 |
-| DAgger依赖/命令发布者冲突 | 依赖哈希及正在运行的控制任务，按正常流程退出占用者。 | 跳过校验、清错、重启ARM服务来绕过冲突。 |
+| 现象 | 处理 |
+|---|---|
+| 初始化前退出 | 看 `logs/N.record_lerobot_official.log` 最后异常；外层提示只是结果 |
+| 相机不足/右手缺流 | 核实原厂JPEG SHM持续更新，不靠降低MIN_CAMERAS绕过 |
+| `EPISODE INVALID` | 停止本条操作，D/Y丢弃；查sync_log中的reason，解决源流/同步/存储问题 |
+| 保存回执超时 | 结果未知，查原请求回执和日志，不重发save、删暂存或复位 |
+| 同步日志写入失败 | 本条无效且禁止再开始；解决空间/权限后正常退出、重启采集 |
+| 写入/编码失败 | 仅当前暂存无效，已保存文件不变；能否续采以回执为准 |
+| 提交结果不确定/遗留journal | 停止会话，重启按journal恢复；不能删标记假装成功 |
+| `.collector-interrupted-*` | 未提交暂存，需人工检查；占空间但不计入已保存数据 |
+| 重复启动被拒绝 | 原终端正常退出，等待保存子进程结束，不删锁文件绕过 |
 
-出现 `EPISODE INVALID` 后，当前条目不算保存成功，已保存数据保留。
-先处理故障，再按普通键盘D或VR的Y丢弃并确认；DAgger使用其专用丢弃键位。
-只有收到可继续的回执才开始下一条；要求退出重启或结果未知时先核查日志。
-
-异常退出后，重启先检查保存事务；未提交暂存可能保留为
-`.collector-interrupted-<时间戳>`，不计为已保存数据。
-确认无需恢复且采集完全退出后再清理；不能在运行中删除
-`.collector-work` 或 `.collector-commit.json`。
-容量预算不是操作系统磁盘配额，其他进程仍可能抢占空间。
+30FPS要求参考源流接近30FPS，软件不能补回相机未产生的帧。
+`waiting ticks` 只表示等待匹配，不等于跳帧；软件时间差不证明硬件曝光同步。
+结束并确认无写入者后才可删除整组目录；只删logs不删除正式数据。
 
 <a id="conversion"></a>
-### 8.3 Joint / EEF 离线转换
+### Joint / EEF离线转换
 
-先保存并 **Q正常退出**，再使用 `lerobot` 环境运行 [convert_dataset.py](convert_dataset.py)。
-两个位置参数是**数据集根目录**，不是任务目录；源目录应直接包含 `meta/info.json`。
-目标必须是不存在的新目录，不得位于源目录内部；正在被 Collector 使用的数据集会被拒绝转换。
-
-`--state` 和 `--action` **分别选择**以下任一值，默认都是 `all`：
-
-| 值 | 保留内容 |
-|---|---|
-| `joint` | 原有 joint 部分，包括实际采集的手臂、夹爪及可选头/腰。 |
-| `eef` | 仅双臂14维位姿，不含夹爪。 |
-| `eef+gripper` | 双臂14维位姿，后接左、右夹爪2维，共16维。适合仍需控制夹爪的末端策略。 |
-| `all` | 保留该向量的所有现有维度及原顺序。 |
+结束源数据采集，用LeRobot环境运行；目标必须是不存在、非嵌套的新目录：
 
 ```bash
-conda activate lerobot
-cd /home/ubuntu/CB_Autolife_Data_Collector
+PY=/home/ubuntu/miniconda3/envs/lerobot/bin/python
 SRC=/home/ubuntu/nas14/towel_joint_eef/dataset
-
-# 纯 joint state + joint action
-python convert_dataset.py "$SRC" /home/ubuntu/nas14/towel_joint/dataset \
-  --state joint --action joint
-
-# 纯 EEF，state/action 都只有双臂位姿
-python convert_dataset.py "$SRC" /home/ubuntu/nas14/towel_eef/dataset \
-  --state eef --action eef
-
-# joint state + EEF action，并保留夹爪开合
-python convert_dataset.py "$SRC" /home/ubuntu/nas14/towel_joint_to_eef/dataset \
-  --state joint --action eef+gripper
-
-# EEF state + joint action，或完整 state + EEF action
-python convert_dataset.py "$SRC" /home/ubuntu/nas14/towel_eef_to_joint/dataset \
-  --state eef+gripper --action joint
-python convert_dataset.py "$SRC" /home/ubuntu/nas14/towel_all_to_eef/dataset \
-  --state all --action eef+gripper
-
-python convert_dataset.py --help
+"$PY" convert_dataset.py "$SRC" /home/ubuntu/nas14/export_joint --state joint --action joint
+"$PY" convert_dataset.py "$SRC" /home/ubuntu/nas14/export_eef --state eef --action eef
+"$PY" convert_dataset.py "$SRC" /home/ubuntu/nas14/export_mixed --state joint --action eef+gripper
 ```
 
-工具只做字段选择，**不会删除episode/帧、重采样、计算IK/FK、转换相对动作或自动清洗失败示范**。
-源数据不修改；Parquet 数组、`features.shape/names`、全局统计量、逐episode统计量同步按索引裁剪，
-包括 quantile，`count` 不变。`dagger.action_train_mask` 及其统计信息按 action 同步选择、重排，名称和维度保持一致；
-其余DAgger标签、总任务、子任务、episode/frame索引和时间戳保持不变。
-纯EEF转换后的DAgger逐维掩码仍全0，不会根据旧的joint整帧掩码推断EEF专家身份。
-RGB/depth视频逐字节复制，不重编码、不拼接，保留原LeRobot v3偏移索引。
-输出需要足够磁盘容纳完整视频副本。运行日志、IPC文件及未提交临时episode不复制。
+state/action分别选择 `joint | eef | eef+gripper | all`：
+joint保留已录关节/夹爪，eef仅14维，eef+gripper为16维，all不裁剪。
+未录制EEF不能生成EEF；需要collector_schema，不猜历史索引。
 
-写入在私有临时目录完成，最后原子发布；磁盘写入失败不会留下一个冒充完整数据集的目标目录，
-也不影响源数据。源数据缺少所选字段或缺少 `collector_schema.json` 时直接报错，不靠维度猜测历史格式。
-转换后的目录用于训练，不作为任意改动采集schema后的续录目录。
-
-不同 state/action 组合并不自动适配所有模型。训练配置需要对应新维度；joint 与 EEF 含义不同，
-**不能直接逐维相减**。即使两边都是 EEF，四元数也不能按普通关节标量相减；
-应使用适合位姿的相对动作处理，或保持绝对动作并排除相应通道。
-现有 joint 部署脚本不会因此自动获得 EEF/IK 控制能力。
+转换同步更新数据、统计、Arrow/HF维度及逐维action mask；任务/子任务、帧顺序、视频偏移不变，
+视频独立复制、不重编码。不做IK/FK、失败示范筛除、重新标注或重采样，不自动适配推理工具。
 
 <a id="references"></a>
 ## 9. 更多说明
 
-- [实现与数据格式（中文）](INSTRUCTION_zh.md) / [Technical details](INSTRUCTION.md)
-- [官方 LeRobot v3 数据格式](https://huggingface.co/docs/lerobot/lerobot-dataset-v3)
-- [VR语音、文字及振动反馈边界](VR_FEEDBACK.md)
-- [300测试与验收流程](ROBOT300_TESTING_zh.md)
-- [S3 环境适配、测试与使用](S3_TESTING_zh.md)
-- [S3 推理预览、验证结果与回滚](docs/validation/20261016_s3_inference.md)
-- [345部署、静止采集与action来源核查](docs/validation/20261019_s3_345.md)
-- [存储保护测试记录](docs/validation/20261012_storage_guards.md)
-- [已适配V4源码快照](teleop_snapshot/README.md)
+- [中文实现](INSTRUCTION_zh.md) / [English design](INSTRUCTION.md)
+- [300测试与历史](ROBOT300_TESTING_zh.md)
+- [本次重构与345五组静止采集验证](docs/validation/20261019_refactor_345.md)
+- [345 Action来源与EEF实测](docs/validation/20261019_s3_345.md)
+- [S3历史采集记录](docs/validation/20261016_s3_collection.md)
+- [遥操作快照来源](teleop_snapshot/README.md)
 
-本地测试、模拟回执、无动作预检和真实运动验收不是同一层证据。
-现场长时间稳定性、极端负载及硬件断线应单独验证，不能用一次预检通过替代。
+历史验证只适用于其版本、机器和配置，不代替当前机器的现场验收。

@@ -34,11 +34,14 @@ class ProvenancePublisher:
 
 class CollectorDaggerSupervisor(HgDaggerSupervisor):
     def __init__(self):
+        # Reject identity/model errors before the base creates ROS entities,
+        # services and worker resources. A failed constructor cannot clean up
+        # a partially owned control stack reliably.
+        robot = resolve_robot(os.environ)
         self._cancel_start = False
         self._closing = False
         super().__init__()
         self._feedback_pub = self.create_publisher(String, "/collector/feedback", 10)
-        robot = resolve_robot(os.environ)
         self._speech_pub = self.create_publisher(String, f"/topic_tts_{robot.suffix}", 10)
         self._command_origins = {False: None, True: None}
         self._collector_arm_pub = ProvenancePublisher(self, self._collector_arm_pub, False)

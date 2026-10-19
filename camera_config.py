@@ -18,8 +18,8 @@ from dataclasses import dataclass
 # newer SHM2 ring/double-buffer protocol used by current robot SDK releases.
 SHM_METADATA_FORMAT = "<qiiiii"
 
-# Runtime defaults shared by the recorder and its documentation. The shell
-# launcher repeats these values because it must pass them to the LeRobot process.
+# Runtime defaults used by recorder_config and parameter help. The launcher
+# preserves these values unless a session explicitly overrides them.
 DEFAULT_IMAGE_POLL_FPS = 120.0
 DEFAULT_SYNC_IMAGE_BUFFER_SIZE = 16
 DEFAULT_SYNC_SIGNAL_BUFFER_SIZE = 64

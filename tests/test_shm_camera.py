@@ -2,6 +2,7 @@ import struct
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import cv2
@@ -19,6 +20,28 @@ from shm_camera import (
 
 
 class ShmCameraTest(unittest.TestCase):
+    def test_corrupt_header_or_changed_generation_never_yields_a_frame(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec = CameraSpec('test', str(root / 'meta'), str(root / 'buffer'), '/test', 'test')
+            Path(spec.buffer_path).write_bytes(b'abcdef')
+            stable = (1700000000000000000, 2, 1, 3, 1, 6)
+            Path(spec.meta_path).write_bytes(struct.pack(SHM_METADATA_FORMAT, *stable))
+            for bad in (stable[:3], (stable[0], 10**10, 10**10, 3, 1, 10**22),
+                        (*stable, -1, 1, 1), (*stable, 6, 1, 1)):
+                self.assertIsNone(read_shm_frame(spec, bad))
+            with patch('shm_camera.read_shm_metadata', return_value=(stable[0] + 1, *stable[1:])):
+                self.assertIsNone(read_shm_frame(spec, stable))
+
+    def test_shm2_cannot_read_past_its_published_slot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec = CameraSpec('test', str(root / 'meta'), str(root / 'buffer'), '/test', 'test')
+            raw = struct.pack(SHM2_HEADER_FORMAT, b'SHM2', 2, 2, 0, 2, 1,
+                              2, 1, 3, 1, 7, struct.unpack('<I', b'BGR\0')[0], 0, 6, 0, 0)
+            Path(spec.meta_path).write_bytes(raw)
+            self.assertIsNone(read_shm_metadata(spec))
+
     def test_reader_requires_a_stable_metadata_pair(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

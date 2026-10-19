@@ -30,11 +30,11 @@ methods = [item for cls in tree.body if isinstance(cls, ast.ClassDef)
            for item in cls.body if isinstance(item, ast.FunctionDef)
            and item.name in {'start_episode', '_reset_episode_state', 'mark_subtask',
                              'save_current_episode', 'discard_current_episode', 'finish', '_clear_warmup_images',
-                             '_invalidate_episode', '_record_tick'}]
+                             '_invalidate_episode', '_record_tick', '_log_sync', '_flush_sync_log'}]
 methods.extend(item for cls in tree.body if isinstance(cls, ast.ClassDef)
                for item in cls.body if isinstance(item, ast.FunctionDef)
                and item.name in {'_write_command_status', 'process_control_commands', '_validate_resume_schema', '_poll_shm_images'})
-namespace = {'time': time, 'Path': Path, 'os': os, 'prepare_annotation': prepare_annotation,
+namespace = {'time': time, 'Path': Path, 'os': os, 'json': json, 'prepare_annotation': prepare_annotation,
              'Any': Any, 'Empty': Empty, 'validate_dagger_features': validate_dagger_features,
              'shutil': shutil, 'StorageLimitError': StorageLimitError}
 exec(compile(ast.Module(body=methods, type_ignores=[]), str(SOURCE), 'exec'), namespace)
@@ -126,6 +126,7 @@ class RecorderControlsTest(unittest.TestCase):
         node.dataset = object()
         node.subtasks = SubtaskAnnotations(())
         node.save_failed = False
+        node.sync_log_failed = False
         node.storage_budget = Mock()
         node.is_recording = False
         node.episode_invalid = False
@@ -142,6 +143,35 @@ class RecorderControlsTest(unittest.TestCase):
         node._clear_warmup_images = lambda: namespace['_clear_warmup_images'](node)
         node._reset_episode_state = lambda: namespace['_reset_episode_state'](node)
         return node
+
+    def test_failed_sync_log_never_acknowledges_start_or_allows_a_retry(self):
+        node = self.recorder()
+        node.args = SimpleNamespace(episode_event_file=None)
+        node.sync_log = Mock()
+        node.sync_log.write.side_effect = OSError('disk full')
+        node._log_sync = lambda event: namespace['_log_sync'](node, event)
+        node._flush_sync_log = lambda: namespace['_flush_sync_log'](node)
+        node._invalidate_episode = lambda *a, **kw: namespace['_invalidate_episode'](node, *a, **kw)
+        self.assertFalse(namespace['start_episode'](node, 'start', 'request'))
+        self.assertTrue(node.sync_log_failed)
+        self.assertFalse(node.is_recording)
+        self.assertTrue(node.episode_invalid)
+        self.assertEqual(node._write_command_status.call_args.args, ('start', False, 'request'))
+        namespace['_reset_episode_state'](node)
+        self.assertFalse(namespace['start_episode'](node, 'retry', 'second'))
+        self.assertIn('sync log failed', node._write_command_status.call_args.kwargs['message'])
+
+    def test_buffered_log_failure_prevents_publication_but_preserves_saved_data(self):
+        with tempfile.TemporaryDirectory() as root:
+            node = self.annotation_recorder(root)
+            node.sync_log = Mock()
+            node.sync_log.flush.side_effect = OSError('late disk failure')
+            node._flush_sync_log = lambda: namespace['_flush_sync_log'](node)
+            self.assertFalse(node.save_current_episode('save', 'failed'))
+            node.episode_store.commit.assert_not_called()
+            self.assertTrue(node.episode_invalid)
+            self.assertTrue(node.sync_log_failed)
+            self.assertEqual(node.saved_episodes, 3)
 
     def test_warmup_reset_keeps_latest_neighbor_even_after_previous_clear(self):
         node = self.recorder()

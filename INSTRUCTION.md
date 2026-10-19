@@ -1,592 +1,223 @@
 # Collector Design
 
-This document describes implementation constraints. Daily commands belong in
-[README.md](README.md).
+For commands and environment parameters see [README](README.md).
+[中文实现说明](INSTRUCTION_zh.md). Dated hardware evidence belongs in `docs/validation/`,
+not in the description of current behavior.
 
-## Architecture
+## Modules
 
 | Module | Responsibility |
-| --- | --- |
-| `start_lerobot_official_collect.sh` | Resolves session configuration, owns process lifecycle, and maps keyboard input to IPC commands. |
-| `collector_modes.py` | Resolves exclusive workflows before startup and rejects conflicting flags. |
-| `dagger/` | Version-checked V4/HG adapter, exclusive stack launcher, Thor session fencing, VR feedback and asynchronous diagnostic traces. |
-| `dagger_labels.py` | Validates causal action origins and builds per-frame DAgger training masks. |
-| `record_lerobot_official.py` | Buffers ROS/SHM signals, synchronizes a dataset row, and owns `LeRobotDataset`. |
-| `episode_storage.py` | Enforces capture budgets, owns the dataset lock, and publishes finalized episodes with a recovery journal. |
-| `dagger/capture_image_writer.py` | Shared bounded asynchronous image writer; propagates worker failures in every mode. |
-| `robot_schema.py` | Owns joint names, canonical policy order, physical q23 conversion, and command parsing. |
-| `eef_schema.py` | Validates measured/target EEF reports, performs pose interpolation, and declares explicit channel groups. |
-| `convert_dataset.py` | Independently projects state/action into a new v3 dataset with consistent per-channel metadata/statistics. |
-| `camera_config.py` | Owns camera names, SHM paths, ROS topics, and shared defaults. |
-| `shm_camera.py` | Reads stable legacy/SHM2 metadata/image pairs and decodes JPEG, native color or uint16 depth. |
-| `time_sync.py` | Provides timestamp normalization, FIFO selection, and interpolation primitives. |
-| `collector_control.py` | Implements launcher-to-recorder IPC, status reports, and dataset summaries. |
-| `vr_collector_control.py` | Optional guarded VR gestures, nonblocking countdown, recorder receipts, and TTS feedback. |
-| `subtask_annotations.py` | Validates ordered plans, tracks spans, and materializes labels/sidecar metadata at save. |
-
-Default direct-SHM runtime:
-
-```text
-launcher
-├── recorder          LeRobot + ROS2 Python
-└── hand producer     robot_env, when hand cameras are enabled
-```
-
-`IMAGE_SOURCE=ros` adds `shm_camera_topic_bridge.py` between SHM and the
-recorder. Direct SHM is preferred because it avoids image serialization and DDS
-queueing.
-
-## S2 / S3 compatibility
-
-Both families use `main`; no S3 branch switch is required. The ROS helper keeps
-an explicit `ROS_DOMAIN_ID` (default 0) and resolves the robot ID from
-`HG_DAGGER_ROBOT_ID`, then `ROBOT_ID`, then the hostname suffix, then 300.
-It restores the caller's nounset setting even if sourcing ROS fails. The vendor
-ROS workspace is optional; system ROS is still required. The launcher resolves
-library roots from each configured interpreter's `sys.base_prefix`, including
-venvs, without changing the recorder's data layout.
-
-Set `ROBOT_TYPE=autolife_s3` for new S3 datasets. The historical default
-`autolife_s1` is preserved for compatibility; this is metadata, not a kinematic
-conversion or DAgger controller profile. Existing datasets keep their original
-label on resume. Optional EEF capture and conversion are shared, but the vendor
-pose reports and their semantics must be verified on each robot.
-
-`s3_thor_preview.py` is an optional read-only inference entry point requiring
-the tools repository's `deploy.groot_n1_7` runtime with the reviewed phase-gripper
-patch (`tools/patch_cb_thor_gripper.py`). It checks that API before loading model
-weights; ordinary collection neither imports it nor requires that patch.
-Its health response forbids hardware execution and its execution ACK
-endpoints reject requests. Joint-sign conversion is not trajectory retargeting;
-it does not prove that an S2 policy can control an S3 robot. Historical evidence
-and remaining acceptance work are in [S3_TESTING_zh.md](S3_TESTING_zh.md).
-
-## Data contract
-
-The policy schema always starts with 16 dimensions:
-
-```text
-left arm (7), right arm (7), left gripper (1), right gripper (1)
-```
-
-`WITH_HEAD=1` appends neck roll/pitch/yaw. `WITH_UPPER_WAIST=1` appends only
-waist pitch/yaw, while `WITH_WAIST=1` appends ankle, knee, waist pitch, and
-waist yaw. The two waist modes are mutually exclusive. Joint state and joint
-action use this exact order because LeRobot relative actions are index-based.
-
-The ROS controller uses physical q23 order instead:
-
-```text
-waist (4), left arm (7), right arm (7), grippers (2), head (3)
-```
-
-Only `robot_schema.py` converts between these orders. A policy that does not
-enable head or waist leaves those physical joints at their latest measured
-positions.
-
-### Action sources
-
-Regular `keyboard`, `vr`, and `subtask` collection uses
-`ACTION_MODE=status_target` by default. Arm/head/waist actions are targets
-reported in the joint status packet; gripper actions are measured positions
-because that packet has no separate gripper target fields.
-
-DAgger requires `ACTION_MODE=joint` and forbids state fallback. Its launcher
-selects `/hg_dagger/collector/arm_action` and
-`/hg_dagger/collector/gripper_action`, populated from the patched V4 controller's
-publication audit with session, authority and original-command timestamps.
-This proves command publication, not physical completion. The per-action mask
-excludes model, held and stale-authority labels from expert training.
-Outside DAgger, `joint` remains a low-level integration/test option requiring
-verified body AND gripper command publishers, not a factory-App recording preset.
-The recorder subscribes to joint command topics only in `joint` mode.
-
-The legacy 15-D `ACTION_MODE=eef` and `--action-height-topic` were removed.
-Old commands fail explicitly before recording, and existing data is not rewritten.
-Legacy 15-D episodes cannot be resumed with this recorder. Use the independent
-EEF append flags below and project a new dataset for pure EEF training.
-
-### Optional EEF capture and projection
-
-`WITH_EEF_STATE` and `WITH_EEF_ACTION` default to zero and independently append
-14 pose values after the full joint vector. Each arm contributes XYZ in metres
-and quaternion XYZW, left arm first, in the vendor controller's robot frame.
-The controller defines the EEF point; no TCP offsets or map transforms are
-applied. Grippers remain in the joint block. Both flags remain available with
-either supported action source; they do not change the joint action contract.
-
-State subscribes to `current_robot_eef_pose`; action subscribes to
-`target_robot_eef_pose`, with the usual domain/robot suffix. The vendor String
-JSON contains `left_eef_pose`/`right_eef_pose`, each with `position[3]` and
-`rotation[4]`. Partial/nonfinite payloads and zero quaternions are rejected;
-valid quaternions are normalized. This does not start vendor services, publish
-commands, call SDK controllers, or substitute FK/zero/measured-state actions.
-Robot 345 lacked these reports during the earlier inspection. On 2026-10-19,
-both complete streams were observed at about 100 Hz. After an authorized vision
-service restart, a 480-frame, 30 FPS RGB-D episode with 37-D state/action passed
-full video decoding and LeRobot readback. A separate capture failed on a joint
-stream stall; this is not long-duration or moving-EEF calibration acceptance.
-The user confirmed factory-App teleoperation during the saved capture; the
-recorded joint changes rule out classifying it as a static test.
-See the [345 validation record](docs/validation/20261019_s3_345.md).
-Joint feedback alone remains insufficient evidence that EEF collection is ready.
-
-During the same factory-App test, status targets changed but neither default
-joint command topic delivered messages. `ACTION_MODE=joint` requires both
-fresh body and gripper commands; a publisher listed in the ROS graph is not
-proof that it sends them. Use `status_target` on this observed factory path,
-with its measured-gripper limitation; do not synthesize missing joint commands.
-DAgger's dedicated command proxies are a separate, independently checked path.
-
-EEF state has a separate bounded telemetry buffer. XYZ is interpolated linearly,
-rotation uses shortest-arc SLERP, and both use the image anchor and existing
-state age/bracket limits. A pending right endpoint retains the image for retry;
-missing/stale history invalidates the episode. EEF action holds only a causal
-target within `MAX_ACTION_HOLD_SEC`. Timestamp alignment uses the same payload
-timestamp/receive-time fallback as joint telemetry, not hardware synchronization.
-The optional callbacks do no disk I/O, RPCs, IK, or model work.
-
-`meta/collector_schema.json` describes names, joint/EEF/gripper indices and EEF
-semantics. It survives the first empty writer and every episode transaction.
-Resume rejects an incompatible recorded layout/source. Legacy joint datasets
-without this manifest retain their existing names and remain resumable without
-EEF, but conversion refuses to infer EEF indices from array widths.
-
-`convert_dataset.py SOURCE DEST --state joint|eef|all|eef+gripper
---action joint|eef|all|eef+gripper` independently chooses both vectors. Pure EEF
-means 14-D; `eef+gripper` means poses followed by two existing gripper channels.
-It never adds unrecorded channels or removes rows. Source locking excludes an
-active collector. Bounded Arrow batches rewrite vectors and their Hugging Face
-schema, while global and per-episode statistics (including quantiles) are
-projected exactly; count stays unchanged. The per-action DAgger mask and its
-statistics use the same action projection; other labels, tasks, sidecars, timestamps
-and v3 shard references are preserved. Videos, including depth, are copied
-byte-for-byte. The Linux output directory is atomically published with
-RENAME_NOREPLACE only after completion; source and existing destinations are
-never overwritten. Logs, IPC and uncommitted workspaces are not training data.
-
-DAgger still controls the original 21-D joint model. Its origin/epoch labels
-prove the joint proxy commands, not the independent vendor EEF target report.
-The appended EEF action mask is therefore zero, not inferred from joint origin.
-EEF expert training needs independently verified targets and explicit labels.
-Capture does not add
-EEF deployment support: model I/O, IK and relative rotation processing must be
-configured separately. Quaternion components must not be subtracted like joints.
-
-## Image and synchronization path
-
-Each camera exposes:
-
-```text
-/dev/shm/camera_metadata_struct_<name>
-/dev/shm/camera_image_buffer_<name>
-```
-
-For hands, the physical `<name>` is `hand_left_jpeg` / `hand_right_jpeg`.
-Only these JPEG streams are read and decoded locally to BGR; the old decoded
-hand SHM streams are never probed. Missing or stalled JPEG cannot fall back to
-BGR. Dataset keys and ROS topics remain `hand_left` / `hand_right`.
-
-Legacy metadata is `"<qiiiii"`: timestamp, width, height, channels, pixel format,
-and byte count. SHM2 metadata additionally selects the published buffer slot;
-double/ring-buffer support is unchanged. A frame is accepted only when metadata
-before and after copying matches. Native head color is unchanged; all color
-inputs become RGB HWC for LeRobot. Depth remains little-endian uint16 millimetres.
-The optional hand producer forwards original V4L2 JPEG packets without per-frame
-decoding/re-encoding and refuses capture backends that cannot supply raw JPEG.
-It must not run concurrently with the vision service owning those devices.
-
-The recorder batch-reads metadata, copies only new frames, and stores each
-camera in a bounded FIFO. A saved dataset row is built as follows:
-
-1. Take the oldest mature frame from the reference camera.
-2. Select nearest frames from all other cameras within `MAX_SYNC_DELTA_SEC`.
-3. Interpolate state at the reference timestamp.
-4. Select a causal action at or before that timestamp.
-5. Add the complete row to the pending LeRobot episode.
-
-If a required image, state bracket, or causal action is missing or stale, the
-current episode is invalidated. FIFO overflow during recording also invalidates
-the episode. A reference frame still waiting for peers only increments
-`waiting ticks`; it does not mean a source frame was dropped and does not
-invalidate the episode by itself.
-
-## Session lifecycle
-
-The launcher starts the recorder before camera producers so state history is
-ready when image anchors arrive. `Enter` clears the reference FIFO and keeps at
-most one matching neighbor per other camera (still subject to age/delta checks).
-Only a new reference frame can start the dataset rows of a
-new episode. `S` saves it, `D` clears it, and `Q` saves only a valid pending
-episode before finalizing the dataset.
-
-IPC is intentionally file-based under the task directory: a named command FIFO,
-an atomic status JSON, a readiness JSON, an episode-event JSON, and a PID file.
-The files are transient; dataset files and logs are retained.
-
-Resuming a dataset requires the same FPS, camera features, depth mode, joint
-schema, and action mode. LeRobot may split videos into multiple files; metadata
-indexes them, so they must not be concatenated.
-
-## Storage isolation and limits
-
-All modes require LeRobot 0.6+ with `DatasetWriter` and `LeRobotDataset.resume`.
-The official dataset is read-only to the active writer: only its metadata is
-copied into `.collector-work`. Historical data/video files are not copied or
-opened for append. Empty datasets use `create`, since they have no tasks Parquet
-to resume. Each episode gets a fresh writer and new data/video file indices.
-
-Publication drains image workers, encodes videos sequentially, closes Parquet
-writers, and completes subtask sidecars inside the workspace. `EpisodeStore`
-fsyncs staged files/directories, writes a prepared journal, links new output files
-without replacing existing ones, preserves old metadata, installs new metadata,
-then records the commit. A failure before that commit restores old metadata and
-removes only matching newly linked files. Unresolved recovery stops the session.
-A completed commit is not undone or reported failed because cleanup or preparation
-of the next episode failed. The brief metadata replacement window is not a
-concurrent-reader transaction: do not train/edit this root during recording.
-
-Disk checks run on a background thread every 0.5 s. Frame admission uses cached
-free bytes minus newly admitted bytes; a snapshot older than 2 s fails closed.
-The defaults are 2 GiB minimum free space plus an extra raw-episode reserve,
-8 GiB cumulative estimated raw image bytes/overhead per episode, and 600 s per
-episode. The first limit reached invalidates the episode. These are estimates,
-not a filesystem quota or a promise of 600 s at any resolution. Images consume
-most of the budget; other processes can still exhaust space between checks.
-
-The image writer bounds all cameras together to 64 unfinished jobs and 256 MiB
-of retained raw input bytes. Worker conversion buffers, camera FIFOs, LeRobot
-numeric columns and encoders are additional memory. It never silently drops a
-queued frame. DAgger keeps uncompressed temporary PNGs; other modes use light
-PNG compression. Both paths propagate disk/codec errors, including delayed worker
-errors behind a slow first job. Capture checks are nonblocking; save/discard
-explicitly join workers before publishing/deleting files.
-
-An error invalidates the current episode even if only part of its first frame
-was submitted. Invalid data cannot be saved; explicit discard closes workers and
-removes only its workspace. No automatic save retry occurs. Confirmed invalid
-DAgger failures allow Y discard; ambiguous results retain their request ID and
-remain blocked. Diagnostic/receipt write failure cannot undo a committed episode
-or manufacture a success acknowledgement. RAM invalidation still works when disk
-space is exhausted, but file-based notifications can be unavailable.
-
-An advisory lock allows one cooperating collector per dataset. A prepared journal
-is rolled back on restart; a committed journal is cleaned without replay. Other
-interrupted work is renamed `.collector-interrupted-<timestamp>` for inspection,
-not counted as saved, and never deleted automatically. These leftovers still use
-disk space. Do not remove journals/workspaces while a collector runs. Storage must
-support same-filesystem hard links, rename, flock and fsync; unsupported mounts
-fail rather than weaken the protocol. This protects against tested software I/O
-failures; it is not a guarantee against hardware failure or all power-loss cases.
-
-`BATCH_ENCODING_SIZE=1` and `STREAMING_ENCODING=0` are required. File-size options
-do not merge separate episode files. Historical datasets remain unchanged until
-a new episode is successfully published.
-
-## VR control protocol
-
-`COLLECTOR_MODE=vr` or `subtask` enables the following controls. Unset mode
-preserves `VR_CONTROL=1`. This is the existing collection protocol, **not an
-implementation of DAgger using the new incremental teleoperation**.
-
-`VR_CONTROL=1` starts the helper only after recorder/camera initialization, using
-`ROBOT_PY` and the same ROS domain/robot suffix as the recorder. It subscribes to
-`/control_topic_<domain>_<robot>` (`std_msgs/String` JSON); `l/r.b[1].p` are grips,
-indices 4/5 are X/Y on the left and A/B on the right. It publishes speech
-requests to `/topic_tts_<domain>_<robot>` and structured events to `/collector/feedback`.
-Factory X reset is currently unavailable and reports that limitation; DAgger X
-uses the guarded V4 reset services, never guessed raw joint targets.
-It does not infer ASYNC/HOME/SYNC or alter the factory teleoperation mode.
-
-Gestures require neutral, a single face press, and release with both grips held.
-Malformed packets, multiple face buttons, grip loss, and input gaps cancel the
-gesture. Start has a configurable countdown and requires recent VR input
-(within 0.75 seconds). Countdown cancellation sends no recorder command.
-
-One worker waits for command receipts while ROS callbacks continue processing
-button releases. Extra commands during a pending operation are ignored, except
-terminal quit, which waits until that operation returns. A only starts. Keyboard and VR
-clients share `.official_control.lock` (flock held through the acknowledgement)
-to prevent overwriting each other's single status file. Busy clients fail fast.
-The empty lock file remains on disk to preserve its inode; it is not a running
-session indicator. Start now acknowledges rejection as well as success.
-
-The background receipt cache stats files at 10 Hz and parses only replacements
-or changed content. ROS callbacks never perform NAS status-file reads. Missing,
-malformed or blocked files cannot manufacture a success receipt. The web uses
-one SSE connection for feedback; cached UI assets avoid repeated source reads.
-
-Each camera has one SHM source. An unchanged timestamp causes no image read,
-decode, or FIFO insertion. No decoded/JPEG source switching is performed;
-FIFO and invalidation limits are unchanged.
-After dataset creation, only schema cameras are polled; late unselected cameras
-cannot waste decoding work or overflow unused queues. OMP/MKL/OpenBLAS default
-to one thread unless explicitly configured; recorder OpenCV uses one thread.
-LeRobot image/video worker settings and capture FPS remain unchanged.
-
-Only the helper observes the atomic invalid-episode event in VR mode; the shell
-does not delete it. Events and receipts are deduplicated, not inferred from
-human-readable logs. Save of invalid data receives a discard acknowledgement
-and is announced as discarded. A timeout means unknown outcome, not failure to
-execute: never resend automatically. Check the recorder before restarting.
-
-Discard joins all image workers and removes only `.collector-work`; partially
-submitted first frames are included. An unresolved publication journal blocks
-discard and requires recovery before proceeding.
-
-Launcher shutdown stops its own VR helper before recorder finalization. Helper
-failure stops the session through normal cleanup. No SDK service is restarted,
-no audio mixer is changed, and the colleague's separate HG-DAgger pre-roll
-extension is not required or incorporated into ordinary collection.
-
-## DAgger Integration
-
-### Host and attachment ownership
-
-`DAGGER_BACKEND=owned` starts one complete stack; `attach` only subscribes to
-fresh control state and calls the compatible host's operator service. The
-versioned contract binds host instance, robot, DDS domain and dataset FIFO.
-Commands have request IDs and a 30-second validity window. Duplicate requests
-are cached; uncertain outcomes are not replayed. This is local coordination,
-not an authentication mechanism. Attach Q leaves the host and current task
-running. The GUI copy builder preserves the original file, replaces its launch
-entry with our persistent `--serve` host, and rejects unreviewed source versions.
-A legacy running stack must be stopped once before starting that copy.
-
-
-`COLLECTOR_MODE=dagger` selects the **new incremental V4 stack**, not factory VR.
-The adapter depends on the inspected robot-300 sources under
-`/home/ubuntu/ros2_ws/src/openarmx_teleop_vr_306_v4`, plus the bundled `dagger/control/` and `dagger/assets/` directories.
-Critical files/configs are SHA-256 checked. Changes require review and new tests;
-there is no bypass switch. Existing controllers, unknown command publishers,
-or any observed command during the startup window cause preflight rejection.
-Only the audited vendor nodes may retain idle endpoints. The vendor's
-`target_robot_eef_pose`/`target_robot_height_z` reports are not command inputs;
-actual `move_*`, joint and gripper command topics are checked. The guarded
-hold-only SYNC service and motor subscribers must also be available. The V4
-controller retains continuous command arbitration and heartbeat checks.
-Conda-based IK/Web virtualenvs receive their own interpreter's library path;
-system ROS processes do not inherit that override.
-An enable service acknowledgement is not hardware readiness. The start worker
-waits up to 20 seconds for a fresh `ARMED` status with both `hardware_enabled`
-and `hardware_ready`, and no pending enable, before granting policy authority.
-Cancellation, a fault or timeout stops this start attempt without publishing
-policy targets; ROS button callbacks remain independent of the wait.
-Do not run the normal Thor robot client
-alongside this stack; its policy bridge owns the remote proposal/ACK session.
-`runtime_copy.py` creates a content-identified V4 copy in `.runtime/`, applies
-`v4_controller.patch` only there, then validates cached-copy hashes on reuse.
-The original V4 directory is never patched. Mapper, IK algorithms, limits
-and collision checks remain from the inspected version, not replaced with guessed parameters.
-
-Robot ID/domain routing and `DAGGER_ROBOT_PROFILE` are configurable; 300 defaults
-to `s2_v2_2`. Other robots need an explicit reviewed model, matching dependencies
-and their own hardware acceptance. Configurable routing is not proof of a
-deployed S3 controller. The model still uses 21-D arms+grippers+head+upper waist, three RGB
-inputs and GR00T `policy_only_baseline`/`policy_only_frame`. Depth can be recorded,
-but is not fed to this RGB-only model contract. PI0.5 and causal EDVA/SOMA Outcome
-history are not integrated here. The pinned `dagger/control/` snapshot supplies
-the DAgger supervisor, incremental gripper/pickup, full-body reset, FIFO and GR00T
-capture/21-D mapping/chunk execution. `SOURCE.json` records provenance and changes.
-Thin adapters add collection controls, provenance, session/epoch fencing and
-controller-submission receipts. Received actions are never clipped or rewritten.
-
-Our Thor server gains `/controller_ack`, limited to policy-only baseline/frame.
-It retires the exact digest-bound **submitted target prefix**, not a claim that
-the physical robot published/reached every target. It cannot advance verifier
-history. Update the Thor server too; preflight requires the advertised capability.
-Ordinary execution `/ack` and training behavior are unchanged. Lost HTTP replies
-are never replayed; uncertain controller receipts latch failure rather than invent
-executed actions. Takeover revokes local output while a slow HTTP request finishes.
-
-A first waits for the recorder's correlated start receipt, then enables policy
-authority. Hardware startup may take time: the recorder waits up to 30 s for
-fresh action provenance before accepting its first frame. This visible initial
-barrier is not a skipped frame inside an episode. After it, ordinary FIFO,
-interpolation, freshness and whole-episode invalidation rules remain unchanged.
-A new press of either Grip immediately selects expert authority and publishes a
-new epoch. No inference result or hold acknowledgement is awaited. The existing
-V4 controller atomically replaces old policy goals with measured joints and
-invalidates in-flight IK; the existing mapper re-anchors the held Grip against
-current pose and tags expert inputs with that epoch. Late policy/expert packets
-from an older epoch are rejected, not relabelled. Fault/reset barriers remain.
-Actual hardware latency still includes DDS delivery, mapper ticks and IK.
-A held button does not repeatedly request takeover. Y only discards the episode.
-Human control does not automatically return to policy.
-
-Policy messages must match the active session and authority epoch. HTTP results
-from an earlier generation are discarded by the bridge and rejected again at
-the supervisor. The V4 controller remains the sole hardware publisher and retains
-its joint/configuration, trajectory, watchdog and collision guards. The supervisor
-does not impose an additional 8/10-degree target-to-measurement cutoff: tracking
-lag is not an adjacent-action jump. Finite 21-D action/state validation, authority
-checks and rejection of gripper targets outside [10,360] degrees remain enabled.
-This does not bypass the V4 controller's command-lead caps or mechanical limits.
-Software stopping cannot replace a physical E-stop.
-On exit, the controller keeps ROS alive until its owned hold/lease release is
-sent. A disabled controller sends no new motor targets just to shut down.
-
-B revokes output and saves the entire accepted trajectory without reset.
-Y discards without reset. X only resets the full body and opens grippers; open
-or unresolved data blocks it without changing data. All require a new A to start.
-B/Y trigger once per press. Unknown receipts retain the original request ID;
-reconcile before reset, never blindly repeat save/discard.
-
-Q/Ctrl+C closes only this launcher's children and discards unconfirmed data.
-Recorder invalidation revokes control on the next state update; process death
-closes the stack. The default `DAGGER_PUBLISH=0` does not authorize hardware motion.
-
-Custom features are int64 `[1]`, except the per-action mask described below;
-they are separate dataset features, not additional state/action channels:
+|---|---|
+| start_lerobot_official_collect.sh | Mode dispatch, session lock, environment, owned child processes and keyboard |
+| collector_modes.py | Side-effect-free mode and legacy-flag validation |
+| recorder_config.py / launcher_help.py / cli_help.py | Standard-library argument validation and full/single-parameter help |
+| record_lerobot_official.py | Single-threaded ROS sampling, image FIFOs, alignment and episode lifecycle |
+| robot_schema.py / eef_schema.py | Joint order, physical mapping, pose validation/interpolation and layout manifest |
+| camera_config.py / shm_camera.py / time_sync.py | Camera definitions, consistent SHM snapshots, decoding and time matching |
+| episode_storage.py | Storage budget, private workspace, commit journal, rollback and writer lock |
+| dagger/capture_image_writer.py | Bounded asynchronous image writer shared by ALL modes |
+| collector_control.py | Nonblocking FIFO, correlated receipts, readiness and reports |
+| vr_collector_control.py / vr_reset.py | Gestures, countdown, asynchronous confirmation, TTS and guarded compatible-V4 reset |
+| subtask_annotations.py | Ordered boundaries, frame labels and annotation sidecars |
+| dagger/ / dagger_labels.py | Owned/attach host, authority, Thor bridge, provenance and training masks |
+| convert_dataset.py | Independent state/action projection into a new v3 dataset |
+| hand_camera_producer.py / shm_camera_topic_bridge.py | Optional fallback JPEG producer and SHM-to-ROS bridge |
+| tests/ | Hardware-free regression, isolated ROS and explicitly invoked robot checks |
+
+`dagger/control/` is the inspected control base; `dagger/assets/` contains pinned Web/config resources.
+`teleop_snapshot/` is an already-patched review snapshot, not an input for patching again.
+SOURCE.json and dependency hashes preserve provenance and must not be deleted as temporary files.
+Python caches and .runtime are generated, untracked artifacts; do not remove a live runtime.
+
+## Startup and Environment
+
+Keyboard, VR and subtask modes retain factory teleoperation. DAgger uses an exclusive incremental copy.
+The launcher validates modes, switches and task-directory names before startup. A session lock prevents
+two launchers replacing each other's FIFO/PID files. A separate dataset writer lock protects data, and
+a command-client lock covers the complete request/receipt exchange. These locks are not interchangeable.
+
+The recorder receives complete joint state before the optional camera producer starts. Existing SHM
+may be probed earlier, but recording stays paused. Current-process camera initialization, not old
+metadata, enables controls. No automatic hardware enable, reset or service restart occurs in ordinary collection.
+
+S2/S3 share main. ROBOT_ID/ROS_DOMAIN_ID route topics; ROBOT_TYPE labels new datasets only.
+Existing compatible venv/Conda environments can be reused. DAgger separately requires the inspected
+model profile, description, authority interfaces and policy. A robot number is not a model identifier.
+DDS precedence is COLLECT_CYCLONEDDS_URI, then CYCLONEDDS_URI, then the local-loopback default.
+
+## Data Contract
+
+Canonical policy order: left arm 7, right arm 7, left/right grippers, optional head 3,
+optional upper waist 2 OR full waist/legs 4. Base=16, head+upper-waist=21, full=23.
+Joint state/action use the same order; legacy names remain only when physical layout is compatible.
+Physical q23 order is waist/legs 4, left arm 7, right arm 7, grippers 2, head 3; robot_schema owns conversion.
+
+| Action source | Meaning |
+|---|---|
+| status_target | Default for ordinary modes: body targets from status; measured grippers because status has no independent gripper target |
+| joint | Required by DAgger: verified controller body/gripper target publication receipts; otherwise only for verified command integrations |
+
+Factory VR movement does not prove the default joint-command topics carry messages.
+DAgger forbids state-as-action fallback. The retired 15-D eef action mode is rejected, never reinterpreted.
+RGB keys are observation.images.rgbd_head_color/hand_left/hand_right, with optional rgbd_head_depth.
+Colors become RGB HWC. Depth enters LeRobot's native depth encoder as uint16 millimetres, with configured quantization.
+
+WITH_EEF_STATE/ACTION independently append 14 values: left XYZ+XYZW, then right XYZ+XYZW.
+The joint prefix is unchanged. Inputs are vendor measured/target reports in robot-frame metres and
+unit quaternions, with no extra TCP transform or FK. Reject incomplete, nonfinite or zero-quaternion poses.
+Measured XYZ is linearly interpolated and orientation uses shortest-arc SLERP; target poses are held causally.
+Missing targets never become measured values or zero. The 14 pose values do not include grippers.
+
+meta/collector_schema.json records names, indices, units and sources. Resume verifies FPS/features,
+depth, joint/EEF layout, subtask and DAgger schema. Matching vector widths do not establish semantic
+calibration, model compatibility, or permission to mix S2/S3 data.
+
+## Image and Time Path
+
+The factory vision process writes SHM; the collector reads it. The optional fallback hand producer
+is only for unowned devices. Hands exclusively read hand_left_jpeg/hand_right_jpeg, decode JPEG to
+BGR, then convert to RGB. There is no fallback to unreliable direct-BGR hand streams.
+
+The reader recognizes legacy `<qiiiii` and SHM2. SHM2 uses metadata's active published slot, not an
+SDK sequential API or a traversal of every historical slot. Metadata must match before/after copying;
+a raced snapshot is rejected until a later poll. This does not prove every producer frame was read.
+Reference-interval checks enforce the configured continuity tolerance.
+Each poll batches metadata reads and image copies before decoding; duplicate timestamps never re-enter FIFOs.
+
+Plausible epoch times are normalized; unknown camera clocks or untrusted telemetry stamps fall back
+to receive time. Receive time includes polling/scheduling delay. Software delta is not exposure synchronization.
+
+1. Select the oldest reference frame newer than the previous anchor after its matching wait.
+2. Select nearest peer images within sync tolerance and freshness limits.
+3. Interpolate bracketed joint/EEF state, checking endpoint ages and span.
+4. Hold a fresh action at or before the image time, never a future target.
+5. Admit a complete row to the private episode, then consume matched images.
+
+The wait is max(sync tolerance, state interpolation span), normally 50 ms; it is not a 30 ms compute deadline.
+At 30 FPS, the default 45% interval tolerance accepts about 18.3-48.3 ms.
+Changing dataset FPS does not automatically downsample the camera. Default image FIFO=16 per camera,
+signal history=64 per stream. Start clears reference warmup and retains at most one peer boundary neighbor;
+normal freshness checks apply, and no pre-start reference row is written.
+
+Waiting for a future state endpoint/reference increments waiting ticks. Stalled/stale/missing streams,
+noncausal actions, failed alignment, bad reference intervals or active FIFO overflow invalidate the WHOLE
+episode. Rolling warmup buffers while paused is not dropping accepted episode frames.
+
+## Storage and Fault Isolation
+
+All modes use a bounded image writer: 64 unfinished jobs / 256 MiB raw inputs by default.
+Overflow fails immediately rather than blocking or silently dropping. DAgger uses uncompressed PNG,
+ordinary capture light PNG compression, depth TIFF; background errors reach the recorder.
+The queue budget excludes camera FIFOs, encoder memory and other process allocations.
+
+Disk space refreshes in a background thread every 0.5 s; frame callbacks read a cached snapshot and
+account for admitted bytes. A snapshot older than 2 s fails closed. Defaults reserve 2 GiB plus one raw
+episode estimate for encoding; per-episode limits are 8 GiB and 600 s, whichever is reached first.
+These are conservative estimates, not filesystem quotas or a promise to record 600 s at any resolution.
+
+Only .collector-work is writable during an episode. It copies metadata, not old Parquet/video shards.
+Save joins writers, encodes, closes writers, completes annotations and flushes sync diagnostics before commit:
+- fsync new files/directories and create the commit journal;
+- publish new files via no-overwrite hardlinks and install new metadata with a backup;
+- mark committed, then clean up; cleanup failure never reverses a confirmed commit.
+
+Pre-commit failure restores old metadata and removes only new links with matching workspace inodes.
+An uncertain result stops the session without retry/discard; restart recovers the journal.
+Uncommitted leftovers are preserved as collector-interrupted directories, not silently deleted.
+The filesystem must support same-filesystem hardlinks, rename, flock and fsync.
+Concurrent training/editing during metadata publication is unsupported. This is not a guarantee against
+arbitrary power loss or physical disk failure.
+
+Invalidation is latched in memory even if the first row was only partially written. D/Y discards only
+the current workspace. Sync logs remain buffered to avoid per-frame flushes; start and pre-commit flush
+detect late errors. A failed log prevents further starts until restart, rather than silently collecting
+without diagnostics. Diagnostic failure after publication never rolls back already-saved data.
+
+Normal Q/EOF/interruption stops owned VR input, then waits for recorder finalization without a fixed
+30-second encoder kill. DAgger has its own outer safety shutdown and does not auto-save unconfirmed data.
+Factory services and unrelated processes are not stopped. Starting another episode is always explicit.
+
+## Commands and Subtasks
+
+FIFO messages must be single atomic writes. Ordinary files, symlinks, multiline injection and payloads
+larger than PIPE_BUF are rejected. Receipts require the matching request_id; busy clients reject new
+commands, and timeout means unknown, never automatic retry. JSON receipts are atomically replaced.
+If receipt/event storage also fails, in-memory invalidation still prevents continued capture.
+
+Factory VR requires both Grips and a single face-button release: A=start, B=save, Y=discard.
+Factory X reset is NOT integrated. Malformed/stale input, multiple buttons or released Grips cancel
+the gesture. Countdown is nonblocking and requires fresh input. A worker waits for recorder receipts;
+ROS input continues, and receipt-cache disk reads stay outside callbacks.
+TTS uses the factory service; no factory vibration protocol or in-App progress overlay is integrated.
+
+Subtask short B marks; long B release saves early; the last mark saves automatically.
+Boundaries are exclusive accepted-frame counts. Intermediate marks only append a boundary and enqueue
+a small receipt; no image scan, encoding, pause or FIFO reset occurs. Labels and sidecars materialize on save.
+Unconfirmed tails have subtask_index=-1 and needs_review=true. task_index is always the overall task;
+subtask_index is local to the episode's plan. Stock LeRobot does not automatically turn it into subtask language.
+
+## DAgger
+
+Owned starts one compatible host; attach reads fresh host state and calls its operation interfaces,
+without a second controller. Host/session, robot, domain and FIFO are bound; requests have IDs and
+expiry, and unknown operations are never replayed. Attach exit only detaches. Old unmodified hosts
+need a one-time migration; the hash-checked runtime copy never modifies the colleague's originals.
+
+Preflight checks actual move/joint/gripper inputs and exclusive services, not target EEF output reports.
+An enable ACK is not hardware readiness: require fresh ARMED, enabled, ready, nonpending state.
+A waits for the correlated recorder start receipt; a fresh action/provenance barrier may wait up to
+30 s BEFORE the first row. It does not relax synchronization inside a recorded episode.
+
+A new Grip press switches authority epoch immediately and revokes local model output without waiting for HTTP.
+The sole V4 publisher clears old targets/in-flight IK under its lock and reanchors the incremental mapper.
+Late model, human and release messages with an old session/epoch are rejected. Takeover never auto-returns control.
+V4 mechanical/collision/trajectory/watchdog protections remain; following error is not an adjacent-action jump.
+
+Only V4 publishes hardware targets and emits controller_output receipts with original time/provenance.
+Proxy refreshes cannot relabel held model targets as new expert actions. B revokes then saves; Y discards;
+X resets only with no pending data/busy operation. An uncertain save retains its request ID for reconciliation.
 
 | Field | Meaning |
-| --- | --- |
-| `dagger.control_source` | 0=policy, 1=human active, 2=hold/transfer. |
-| `dagger.is_intervention` | Whether this trial has seen human intervention. Not a loss mask. |
-| `dagger.intervention_id` | Episode-local human segment number. |
-| `dagger.authority_epoch` | Authority generation for auditing transitions. |
-| `dagger.train_mask` | 1 only for human-active frames whose arm AND gripper commands originate at/after this authority boundary and match its epoch. |
-| `dagger.action_train_mask` | Same width/order as action: 21 joint channels, or 35 with EEF. Body and gripper origins are masked separately; appended EEF channels stay zero because their origin is unproven. |
-| `dagger.anchor_timestamp_ns` | Image-aligned frame anchor on the robot timebase. |
-| `dagger.arm_command_timestamp_ns`, `dagger.gripper_command_timestamp_ns` | Original observed command times; republishing a latched gripper target does not make it new expert supervision. |
+|---|---|
+| dagger.control_source | 0=model, 1=active human, 2=hold/handoff |
+| dagger.is_intervention / intervention_id | Intervention occurrence and segment number, not loss masks |
+| dagger.authority_epoch | Authority generation |
+| dagger.train_mask | Frame-level AND: body and grippers must all qualify as expert |
+| dagger.action_train_mask | Action-width/order mask; body and grippers verified separately; appended EEF entries always zero |
+| dagger.anchor_timestamp_ns | Image anchor |
+| dagger.arm_command_timestamp_ns / gripper_command_timestamp_ns | Original command times, never proxy refresh times |
 
-Use a separate dataset root; schema checks prohibit mixing ordinary, older HG
-and current DAgger features. A policy-only saved trajectory has mask=0 throughout.
-Saving does not establish task success. Training must explicitly apply the mask
-at **each action-chunk timestep**; stock training does not automatically consume
-these fields. The legacy scalar mask proves only the original joint commands.
-For partial corrections, select `action_train_mask.any(-1)` and apply the
-per-dimension mask before reduction, not the scalar mask as a row filter.
-No automatic fine-tuning/DAgger iteration is implemented.
+Training must apply masks at every chunk time/dimension. Partial corrections must not be filtered first
+by the legacy scalar AND mask. Model-only episodes can be saved but have zero expert mask.
+Saving or submitting targets is not evidence of hardware completion or task success.
 
-FIFO/encoding waits run in workers; X does not wait for either. Diagnostic traces
-use a bounded 2048-entry background queue, with drops/errors recorded in the
-trial manifest; training labels never rely on this best-effort trace. WebXR
-haptics and a 70 ms browser beep provide best-effort feedback after state/receipt
-changes, subject to headset and browser audio permission. No robot mixer or
-factory TTS settings are changed. This is not hard real-time control.
+Thor GR00T baseline/frame must advertise controller_submission_receipts. controller_ack verifies
+submitted target prefixes/digests, not motor execution, and does not advance verifier history.
+Clients do not rewrite actions. The phase_aware gripper policy is task-specific:
+`Pick the laundry bag.` and `Place the laundry bag in the upper compartment of the delivery robot.`.
+It latches after measured 120 degrees during pickup and releases on predicted <=60 degrees for placement.
+Other tasks require independent policy validation.
 
-Recorder-status files are read by a 20 Hz worker; control callbacks read memory
-only. A blocked reader older than 1 s revokes output. Trace open/flush/close also
-run on one bounded worker. V4 DDS discovery runs at 5 Hz outside its control
-lock; a guard snapshot older than 600 ms fails closed at the next guard check. The copied controller
-checks authority both before and after kinematic validation and fences pending
-policy targets as soon as the authority change arrives. Old clutch and release
-packets are rejected before mutating controller state. These changes do not remove watchdogs.
+Recorder status reads run at 20 Hz off the control path; >1 s stale revokes output. DDS graph cache
+updates at 5 Hz; >600 ms stale rejects output. Trace uses a bounded 2048 queue with separate loss/error
+accounting; training labels do not depend on diagnostic traces. Only takeover triggers WebXR vibration,
+subject to device support. Model chunks remain serial: no RTC or zero-stall guarantee is implied.
 
-After a successful vendor publish, the copied controller emits a separate
-`/collector_dagger/controller_output` receipt with timestamp and target-origin
-epoch; vendor JSON is unchanged. Dataset actions use these receipts, not untagged
-DDS echoes. Old held targets keep their original epoch and cannot become expert
-supervision merely because control mode changed. This still proves publication,
-not physical task success. Missing/stale receipts follow the normal invalidation rules.
+## Offline Projection and Verification
 
-Inference is chunked and sequential; a chunk boundary can still wait for Thor.
-This change removes avoidable control-path I/O stalls, not GPU inference time.
-It does not claim RTC overlap, hard deadlines, or zero motion jitter.
-
-Validation: isolated-domain ROS supervisor/FIFO tests with fake hardware, and
-real LeRobot 0.6.0 Parquet/video write/resume/read tests using synthetic frames.
-Neither validates physical takeover latency, collision behavior, audible/haptic
-feedback, or closed-loop task success. Basic operator acceptance was reported on
-2026-10-08; release regressions and remaining checks are in `ROBOT300_TESTING_zh.md`.
-
-## Subtask annotation and latency
-
-A nonempty `SUBTASKS_JSON` enables a custom `subtask_index` feature (`int64`,
-shape `[1]`). `task` / `task_index` still identify the overall task throughout
-the episode. Subtask IDs are **episode-local** plan ordinals, not global task
-IDs and not new state/action dimensions. Resolve their texts via each episode's
-sidecar before combining labels across different plans.
-
-B uses monotonic hold duration and fires only on release, never both a short
-mark and a long save. Grip loss, mixed buttons, malformed input and stream gaps
-cancel the gesture. Receipts reset unfinished gestures across state transitions.
-The existing FIFO delivers `mark_subtask` to the same recorder thread as
-`add_frame`. Its current accepted frame count is the exclusive end of a span;
-the next span starts at that end. Empty or excess marks are rejected. The final
-mark saves the whole episode, without splitting data or video files per subtask.
-
-Intermediate marks append one boundary and construct a small receipt. They do
-not encode video, traverse images, sleep, reset image FIFOs or pause recording.
-Receipt file I/O runs on a single background worker, important for NAS roots.
-While it is pending, subsequent commands wait but recording timers keep running.
-Labels and sidecar files are materialized only when saving. A separate VR worker
-polls receipts every 10 ms for the first second, then 100 ms for longer saves.
-Completed-command checks run every 20 ms; keyboard receipts/health checks remain
-at 100 ms. No feedback playback is awaited.
-
-`Recorder acknowledgement latency` measures local command submission to receipt
-handling, **not** camera skew, button-to-speaker delay or haptic delay. This is
-not hard real-time: Linux, DDS, NAS and camera scheduling can add jitter. At
-30 FPS frame granularity alone is about 33.3 ms, plus synchronization and command
-processing effects. Camera frames still waiting in FIFOs are outside the marked
-span. Brief TTS cues replace long spoken task texts during continuous work; the
-external TTS service may still queue them. Verify audible feedback on hardware.
-Factory single-operator haptics are not integrated. The DAgger web UI vibrates
-only on takeover; no feedback is sent to motion topics.
-
-Each `annotations/subtasks/episode_<six-digit-index>.json` contains:
-
-| Field | Meaning |
-| --- | --- |
-| `task`, `episode_index`, `frames`, `fps` | Overall task and episode identity. |
-| `subtasks` | Ordered plan; array positions match subtask IDs. |
-| `segments` | Confirmed text/ID and episode-local `[start_frame,end_frame)` spans, also in FPS-based seconds. |
-| `unannotated_ranges` | Unconfirmed tail, labelled `-1` in Parquet. |
-| `annotation_complete`, `needs_review` | Operator annotation completeness, **not physical task success**. |
-| `save_reason`, `boundary_basis` | Final-mark/manual/shutdown save reason and boundary convention. |
-
-For 300 frames, marks at 90, 180, 300 label `[0,90)=0`, `[90,180)=1`,
-`[180,300)=2`. Saving after only the first two marks leaves `[180,300)=-1`.
-An unfinished plan requires review even with no unlabelled tail. A missed press
-can incorrectly merge real actions into a confirmed span; the collector cannot
-infer this semantic error. Review all boundaries when cleaning such episodes.
-
-Before LeRobot saves, write a `.pending.json` marker inside the private workspace;
-rename it after finalization, and publish it with the episode. Failed-save markers
-stay private and disappear only on explicit discard. Legacy pending markers in
-the official dataset still block resume for manual inspection. Discard publishes
-no sidecar. Annotation-incomplete episodes may be saved; invalid episodes cannot.
-
-Changing the annotation switch requires a new dataset root. Plans may change
-between annotated episodes because each sidecar stores its own plan. Standard
-LeRobot reading preserves the extra numeric feature but does not automatically
-use it as language conditioning. Overall-task training is unchanged; subtask-
-conditioned training needs explicit text/span sampling and appropriate action-
-chunk boundary handling.
-
-## Extension rules
-
-- Add cameras in `camera_config.py`, then cover them with configuration and SHM tests.
-- Add joints in `robot_schema.py`; never duplicate joint order in the recorder or deployer.
-- Add signals as timestamped buffers with an explicit causal or interpolation rule.
-- Keep direct-SHM validation and FIFO matching. Replacing them with latest-frame reuse changes the data contract.
-
-## Verification
+Conversion takes the source dataset shared lock, rejects unfinished transactions/symlinks/existing or nested
+destinations, and rewrites bounded Parquet batches, Arrow/HF schemas and global/episode statistics.
+Count is not sliced; action masks use the same projection. Tasks, annotations, order and video offsets stay
+unchanged; video bytes are copied independently. fsync precedes Linux RENAME_NOREPLACE publication.
+Only the converter's private failed output is removed. This is selection, not IK/FK or expert relabeling.
 
 ```bash
-python -B -m unittest discover -s tests -p 'test_*.py'
+PYTHONPATH=. /path/to/lerobot/python -B -m unittest discover -s tests -p 'test_*.py'
+node tests/test_feedback.js
 bash -n start_lerobot_official_collect.sh
-# Optional: ROS transport only, isolated topics + fake recorder, no motion/audio.
-ROS_DOMAIN_ID=211 python tests/vr_ros_smoke.py
-# Optional subtask gestures; still private topics and a fake recorder.
-ROS_DOMAIN_ID=211 python tests/vr_ros_smoke.py --subtasks
 ```
 
-Core regression tests are development-only and never loaded by the launcher.
-Historical validation is in `docs/validation/`; opt-in diagnostics are in `tests/remote/`.
-The supported live inference probe is `dagger_pinned_readonly.py`: it uses the
-current Collector bridge, discards proposals, and never executes them. Run it
-only against an idle Thor session. `dagger_rgbd_recording_smoke.py` checks live
-cameras with synthetic joint signals; `dagger_thor_receipts.py` checks the
-separate Thor source's receipt/gripper contract. These require their documented
-environments and are not part of automatic local discovery.
-`tools/patch_*` are hash-pinned offline migrations, not startup dependencies;
-they preview by default and back up sources only with explicit `--apply`.
-SSE tests require aiohttp in the VR web environment; the rest run without it.
-Do not infer robot acceptance or minimum CPU usage from these software tests.
-
-On the robot, also verify ROS discovery, SHM files, camera source FPS, video
-encoder availability, CPU load, disk throughput, and `sync_log.jsonl` before
-collecting production demonstrations.
+ROS tests belong in isolated domain 211. Real recordings use a dedicated NOT TRAINING DATA directory.
+Software regression, real-sensor stationary capture, and physical VR/DAgger motion are distinct evidence.
+Schema, pinned assets, storage transactions and authority changes need corresponding regression coverage.
+Never remove safety tests or loosen synchronization/resource thresholds merely to obtain a passing run.

@@ -1,6 +1,8 @@
-# S3 collector 测试与使用
+# S3采集历史验收记录
 
-S2 / S3 现在共用 `main`，日常参数和启动命令见 [README](README.md#setup)。
+S2 / S3 现在共用 `main`，日常参数和启动命令统一见 [README](../../README.md#setup)。
+2026-10-19精简后，本记录从顶层使用说明归档到此处；S3实验推理预览及回放脚本已删除。
+以下旧环境路径、IP、命令和验收结果仅用于追溯，不是当前部署步骤。
 下文保留的是 **2026-10-16 的部署与验收记录**：当时在 `s3-collector` 分支，基于 main `04621f13c62a1f79228af3248336d381a930bb38`。
 当时部署目标 S3-347：`ubuntu@192.168.8.28`。S3-346（`192.168.8.27`）已完成一次静态采集验证；S3-345（`192.168.8.176`）未验证。地址和服务状态可能变化，每台机器的验收结论以各自 `validation.json` 为准；合并源码不等于重新部署或完成运动验收。
 
@@ -121,16 +123,15 @@ export LD_LIBRARY_PATH="/home/ubuntu/miniconda3/envs/robot_env/lib:${LD_LIBRARY_
 
 分支提交前回归：347隔离域211中227项Python测试全部通过；网页反馈测试通过，确认仅接管振动；两个启动环境脚本语法检查通过。
 
-## 统一主分支与推理隔离
+## 统一主分支与后续精简
 
 - S3适配已合入 `main`，使用S3无需切换分支；原 `s3-collector` 历史提交保留。S2默认参数不变，机器人部署不自动随GitHub更新。
 - S3采集适配与最新EEF采集、转换功能共同保留。S3需显式设置 `ROBOT_TYPE=autolife_s3`，但这只设置数据集元数据，不转换关节或末端坐标约定。
-- `s3_thor_preview.py` 仍是独立入口，不由Collector自动启动。仅运行预览时才需要集合仓库的 `deploy.groot_n1_7` runtime及已有夹爪补丁，见[依赖准备](docs/validation/20261016_s3_inference.md#复现)；普通、VR和子任务不新增推理依赖。
-- S3预览已完成状态/动作方向转换、夹爪阶段逻辑和真实观测回放；**S3 DAgger真机接管、复位、排他控制与运动验收仍未完成**。
-- 预览使用Thor独立容器和8779端口；原8777/8778服务、源码和checkpoint没有替换。预览容器验证后已停止，不持续占用GPU。
-- 详细结果、复现方式和限制见 [S3推理验证记录](docs/validation/20261016_s3_inference.md)。
+- 2026-10-19按采集工具职责精简，删除独立S3推理预览、回放脚本及其专属测试；不删除通用环境适配、型号标签、EEF或DAgger控制校验。
+- 此前预览完成的方向转换和真实观测回放不构成真机运动验收；**S3 DAgger真机接管、复位、排他控制与运动验收仍需独立进行**。
+- 旧预览容器和8779端口属于历史独立部署；删除本地源码不会启停任何远端服务。历史结果见 [已退役的S3推理验证记录](20261016_s3_inference.md)。
 
 ## 多机器人入口与训练掩码修复
 
-历史修复详见[修复验证记录](docs/validation/20261016_dagger_profiles_masks.md)。
-当前 `dagger.action_train_mask` 与action同宽同序，身体和双夹爪按各自来源屏蔽；启用 `WITH_EEF_ACTION=1` 时扩为35维，追加14维EEF掩码固定为0，不能从joint控制权推断EEF专家来源。旧整帧掩码不变。升级schema后请用新DAgger任务目录，旧数据不自动修改。完整说明见 [README](README.md#dagger)。
+历史修复详见[修复验证记录](20261016_dagger_profiles_masks.md)。
+当前 `dagger.action_train_mask` 与action同宽同序，身体和双夹爪按各自来源屏蔽；启用 `WITH_EEF_ACTION=1` 时扩为35维，追加14维EEF掩码固定为0，不能从joint控制权推断EEF专家来源。旧整帧掩码不变。升级schema后请用新DAgger任务目录，旧数据不自动修改。完整说明见 [README](../../README.md#dagger)。

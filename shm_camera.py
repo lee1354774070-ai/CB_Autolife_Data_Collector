@@ -11,6 +11,7 @@ same validation rules.
 from __future__ import annotations
 
 import struct
+import os
 import time
 from dataclasses import dataclass
 
@@ -79,6 +80,8 @@ def _decode_shm2_metadata(raw: bytes) -> tuple[int, ...] | None:
         or slot_count < 2
         or active_slot >= slot_count
         or slot_stride <= 0
+        or max_frame_size <= 0
+        or max_frame_size > slot_stride
     ):
         return None
 
@@ -134,11 +137,11 @@ def read_shm_frame(
     """
 
     first = metadata if metadata is not None else read_shm_metadata(spec)
-    if first is None:
+    if first is None or len(first) not in (6, 9):
         return None
     timestamp_ns, width, height, channels, pixel_format, buffer_size = first[:6]
     data_offset = first[6] if len(first) > 6 else 0
-    if width <= 0 or height <= 0 or channels <= 0 or buffer_size <= 0:
+    if width <= 0 or height <= 0 or channels <= 0 or buffer_size <= 0 or data_offset < 0:
         return None
 
     if pixel_format == PIXEL_FORMAT_MJPEG:
@@ -150,6 +153,10 @@ def read_shm_frame(
         return None
     try:
         with open(spec.buffer_path, "rb") as stream:
+            # Validate before allocating: a torn/corrupt header must not ask
+            # Python for a multi-gigabyte buffer or read outside the SHM file.
+            if expected_size > os.fstat(stream.fileno()).st_size - data_offset:
+                return None
             stream.seek(data_offset)
             data = stream.read(expected_size)
     except (FileNotFoundError, OSError):

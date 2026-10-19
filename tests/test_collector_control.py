@@ -19,6 +19,9 @@ from collector_control import (
     format_status,
     format_sync_report,
     run_command,
+    read_recorder_pid,
+    process_is_running,
+    send_fifo_command,
     wait_for_status,
     wait_for_active_cameras,
     wait_for_ready_file,
@@ -26,6 +29,58 @@ from collector_control import (
 
 
 class CollectorControlTest(unittest.TestCase):
+    def test_invalid_pid_never_addresses_a_process_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'pids'
+            for pid in ('0', '-1', 'oops'):
+                path.write_text(f'recorder {pid} recorder.log\n')
+                with self.assertRaisesRegex(RuntimeError, 'Invalid recorder PID'):
+                    read_recorder_pid(path)
+            with patch('collector_control.os.kill') as kill:
+                self.assertFalse(process_is_running(0))
+                self.assertFalse(process_is_running(-1))
+                kill.assert_not_called()
+
+    def test_control_path_must_be_a_real_fifo(self):
+        with tempfile.TemporaryDirectory() as directory:
+            regular = Path(directory) / 'file'
+            regular.write_text('preserve me')
+            link = Path(directory) / 'link'
+            link.symlink_to(regular)
+            for path in (regular, link):
+                with self.assertRaises(RuntimeError):
+                    send_fifo_command(path, 'save')
+            self.assertEqual(regular.read_text(), 'preserve me')
+
+    def test_fifo_rejects_injection_and_oversize_without_writing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fifo = Path(directory) / 'fifo'
+            os.mkfifo(fifo)
+            reader = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
+            try:
+                for command, request in [('start\nquit', None), ('start', 'id\nquit'),
+                                         ('start', 'x' * 100000)]:
+                    with self.assertRaises(RuntimeError):
+                        send_fifo_command(fifo, command, request)
+                with self.assertRaises(BlockingIOError):
+                    os.read(reader, 1024)
+            finally:
+                os.close(reader)
+
+    def test_bad_timeout_never_sends_a_command(self):
+        with patch('collector_control.send_fifo_command') as send:
+            for value in (0, -1, float('nan'), float('inf')):
+                with self.assertRaisesRegex(RuntimeError, 'timeout'):
+                    run_command(Path('/unused'), 'start', wait=True, timeout_sec=value)
+            send.assert_not_called()
+
+    def test_non_object_receipt_is_ignored_not_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'status.json'
+            path.write_text('[]')
+            with self.assertRaises(TimeoutError):
+                wait_for_status(path, 'expected', os.getpid(), .01)
+
     def test_old_metadata_does_not_mark_current_recorder_ready(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
