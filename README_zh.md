@@ -8,5 +8,6 @@
 - [键盘数采](README.md#keyboard) / [原厂单人VR](README.md#vr) / [子任务数采](README.md#subtask)
 - [V4增量遥操作与DAgger](README.md#dagger)
 - [续录、输出与故障处理](README.md#data)
+- [WITH_EEF_STATE / WITH_EEF_ACTION 与 Joint/EEF 自由组合转换](README.md#conversion)
 - [300测试与验收](ROBOT300_TESTING_zh.md)
 - [实现与数据格式](INSTRUCTION_zh.md)

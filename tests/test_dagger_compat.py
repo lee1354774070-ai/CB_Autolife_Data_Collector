@@ -59,11 +59,17 @@ class CompatibilityTest(unittest.TestCase):
         state = dict(collector_compat=contract, collector_fifo='/tmp/task/.official_recording_control')
         fifo = state['collector_fifo']
         self.assertEqual(check_host(state, fifo=fifo), contract)
+        self.assertEqual(check_host(state, fifo=fifo, eef_state=False, eef_action=False), contract)
         for options in ({'fifo': '/tmp/other'}, {'fifo': fifo, 'task_text': 'other'},
                         {'fifo': fifo, 'publish': True}, {'fifo': fifo, 'depth': True},
+                        {'fifo': fifo, 'eef_state': True}, {'fifo': fifo, 'eef_action': True},
                         {'fifo': fifo, 'domain': '211'}):
             with self.assertRaises(ValueError):
                 check_host(state, **options)
+        contract.update(with_eef_state=True, with_eef_action=True)
+        self.assertEqual(check_host(state, fifo=fifo, eef_state=True, eef_action=True), contract)
+        with self.assertRaisesRegex(ValueError, 'WITH_EEF_STATE'):
+            check_host(state, fifo=fifo, eef_state=False)
         for invalid in ({}, {'collector_compat': {}},
                         {**state, 'collector_compat': {**contract, 'features': []}}):
             with self.assertRaises(ValueError):

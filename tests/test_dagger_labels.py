@@ -2,7 +2,8 @@
 
 import unittest
 
-from dagger_labels import DaggerLabels, FEATURES, validate_features
+from dagger_labels import DaggerLabels, FEATURES, features_for_actions, validate_features
+from eef_schema import EEF_NAMES
 
 
 STAMP = 1_800_000_000_000_000_000
@@ -60,6 +61,22 @@ class DaggerLabelsTest(unittest.TestCase):
             features = {**FEATURES, "dagger.action_train_mask": {**FEATURES["dagger.action_train_mask"], **change}}
             with self.assertRaises(ValueError):
                 validate_features(features, True)
+
+    def test_eef_mask_stays_zero_without_independent_pose_provenance(self):
+        names = FEATURES['dagger.action_train_mask']['names'] + list(EEF_NAMES)
+        labels = DaggerLabels(action_names=names)
+        labels.ingest(packet())
+        labels.ingest(packet(), gripper=True)
+        values = self.frame(labels)
+        self.assertEqual(values['dagger.action_train_mask'], [1] * 21 + [0] * 14)
+        self.assertEqual(values['dagger.train_mask'], 1)  # Joint-only legacy contract.
+        features = {**features_for_actions(names), 'action': {'names': names}}
+        validate_features(features, True)
+        with self.assertRaises(ValueError):
+            validate_features({**features, 'dagger.action_train_mask': FEATURES['dagger.action_train_mask']}, True)
+        with self.assertRaises(ValueError):
+            DaggerLabels(action_names=list(reversed(names)))
+        self.assertEqual(FEATURES['dagger.action_train_mask']['shape'], (21,))
 
     def test_missing_future_stale_and_fallback_provenance_fail_closed(self):
         for delta in ({}, {"action_state_fallback": 0}, {"action_body": 1, "action_gripper": -10}):

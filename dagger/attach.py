@@ -37,6 +37,12 @@ def main():
     depth = os.environ.get('WITH_DEPTH')
     if depth not in (None, '0', '1'):
         parser.error('WITH_DEPTH must be 0 or 1')
+    eef = {}
+    for key in ('state', 'action'):
+        value = os.environ.get(f'WITH_EEF_{key.upper()}')
+        if value not in (None, '0', '1'):
+            parser.error(f'WITH_EEF_{key.upper()} must be 0 or 1')
+        eef['eef_' + key] = None if value is None else value == '1'
     if Path(args.task_name).name != args.task_name or args.task_name in ('', '.', '..'):
         parser.error('task_name must be a single directory name')
     fifo = Path(os.environ.get('OUTPUT_BASE_DIR', '/home/ubuntu/nas14')) / args.task_name / '.official_recording_control'
@@ -73,7 +79,7 @@ def main():
                 raise RuntimeError('Expected exactly one authority publisher; attachment refused')
             return check_host(latest, fifo=fifo, task_text=expected_text,
                               publish=publish == '1', depth=None if depth is None else depth == '1',
-                              domain=robot.domain, robot_id=robot.robot_id, robot_profile=robot.model)
+                              domain=robot.domain, robot_id=robot.robot_id, robot_profile=robot.model, **eef)
         identity = host()['instance_id']
         if not client.wait_for_service(timeout_sec=2):
             raise RuntimeError('Compatible command endpoint unavailable')

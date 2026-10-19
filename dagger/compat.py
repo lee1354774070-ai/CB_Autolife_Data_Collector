@@ -17,7 +17,8 @@ COMMANDS = {'start', 'finish', 'discard', 'reset'}
 FEATURES = ['immediate_takeover', 'epoch_fencing', 'single_controller']
 
 
-def check_host(state, *, fifo, task_text=None, publish=False, depth=None, domain='0', robot_id='300', robot_profile='s2_v2_2'):
+def check_host(state, *, fifo, task_text=None, publish=False, depth=None, domain='0',
+               robot_id='300', robot_profile='s2_v2_2', eef_state=None, eef_action=None):
     host = state.get('collector_compat', {})
     if (not isinstance(host, dict) or host.get('version') != VERSION
             or host.get('command_service') != SERVICE
@@ -34,6 +35,9 @@ def check_host(state, *, fifo, task_text=None, publish=False, depth=None, domain
         raise ValueError('TASK_TEXT differs from the running host')
     if depth is not None and host.get('with_depth') != depth:
         raise ValueError('WITH_DEPTH differs from the running host')
+    for key, requested in (('with_eef_state', eef_state), ('with_eef_action', eef_action)):
+        if requested is not None and host.get(key, False) != requested:
+            raise ValueError(f'{key.upper()} differs from the running host')
     if publish and host.get('hardware_publish') is not True:
         raise ValueError('Host was launched without hardware publishing; attachment cannot enable it')
     return host

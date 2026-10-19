@@ -11,6 +11,7 @@
 - [6. 子任务数采](#subtask)
 - [7. DAgger 纠错数采](#dagger)
 - [8. 续录、输出和故障处理](#data)
+- [Joint / EEF 数据转换](#conversion)
 - [9. 更多说明](#references)
 
 <a id="parameters"></a>
@@ -33,7 +34,7 @@ export WITH_DEPTH=1
 `export` 的值会一直保留在当前终端；关节、深度开关建议在每次启动命令中显式写出，
 避免上一场采集的设置被带入下一场。开关使用 `0` / `1`，不要写 `true` / `false`。
 
-### 1.1 录制内容：深度、头部、腰部
+### 1.1 录制内容：深度、头部、腰部、末端位姿
 
 默认录制 **14维手臂 + 2维夹爪 + 三路 RGB**。头部、腰部和深度均为可选扩展。
 
@@ -43,6 +44,10 @@ export WITH_DEPTH=1
 | `WITH_HEAD` | `0` | `1` 追加 `neck_roll, neck_pitch, neck_yaw`，共3维。 |
 | `WITH_UPPER_WAIST` | `0` | `1` 仅追加 `waist_pitch, waist_yaw`，即腰部俯仰、旋转；**不包含腿部升降相关关节**。 |
 | `WITH_WAIST` | `0` | `1` 追加 `leg_ankle, leg_knee, waist_pitch, waist_yaw`，共4维，包含腿部关节。 |
+| `WITH_EEF_STATE` | `0` | `1` 在 `observation.state` 的完整 joint 向量后追加双臂实测末端位姿，共14维。不会删除原来的关节/夹爪数据。 |
+| `WITH_EEF_ACTION` | `0` | `1` 在 `action` 的完整 joint 向量后追加双臂目标末端位姿，共14维。与 `WITH_EEF_STATE` 独立；不会把实测位姿当成目标。 |
+| `STATE_EEF_TOPIC` | `/topic_arm_current_robot_eef_pose_<domain>_<robot>` | 实测位姿报告。覆盖时必须保持相同的机器人坐标系、米、XYZW四元数语义，不能传入控制指令话题。 |
+| `ACTION_EEF_TOPIC` | `/topic_arm_target_robot_eef_pose_<domain>_<robot>` | 目标位姿报告。该报告不等于 VR 手柄位姿，也不是本工具根据 joint action 做 FK 算出的位姿。 |
 | `ACTION_MODE` | `status_target` | `status_target` 从状态包读取目标，适合普通遥操作采集；`joint` 从关节/夹爪命令话题读取；`eef` 为15维末端目标调试格式，不能当作同维关节 action 使用。DAgger **必须为 `joint`**，由启动器设置。 |
 
 `WITH_UPPER_WAIST=1` 与 `WITH_WAIST=1` **不能同时出现**。
@@ -63,8 +68,60 @@ export WITH_DEPTH=1
 | 手臂+夹爪+头+上腰 | 1 | 1 | 0 | 21 |
 | 全量关节，含腿部 | 1 | 0 | 1 | 23 |
 
-每个组合都可另加 `WITH_DEPTH=0/1`。**当前 DAgger 只接受21维组合**，不是23维。
-新建数据集后，改变关节、相机、深度、action格式或标注字段时，应换新目录，不能直接追加到旧 schema。
+每个组合都可另加 `WITH_DEPTH=0/1`。**当前 DAgger 的关节控制只接受21维组合**，不是23维。
+EEF 是录制扩展，不改变 DAgger 模型输入、控制命令或接管逻辑。
+新建数据集后，改变关节、EEF开关、相机、深度、action格式或标注字段时，应换新目录，不能直接追加到旧 schema。
+
+#### EEF 布局与前提
+
+两个 EEF 开关只适用于 `ACTION_MODE=status_target` 或 `joint`，不能与旧的 `ACTION_MODE=eef` 混用。
+`WITH_EEF_ACTION=1` 也不能搭配 `FALLBACK_ACTION_TO_STATE=1`，以免把实测joint混作目标action。
+以基础16维 joint 为例：
+
+| `WITH_EEF_STATE` | `WITH_EEF_ACTION` | state维度 | action维度 |
+|---:|---:|---:|---:|
+| 0 | 0 | 16 | 16 |
+| 1 | 0 | 30 | 16 |
+| 0 | 1 | 16 | 30 |
+| 1 | 1 | 30 | 30 |
+
+21维 joint 加 EEF 后对应35维；23维 joint 加 EEF 后对应37维。相机字段不变。
+追加部分顺序为：
+
+```text
+left_eef_x, left_eef_y, left_eef_z, left_eef_qx, left_eef_qy, left_eef_qz, left_eef_qw,
+right_eef_x, right_eef_y, right_eef_z, right_eef_qx, right_eef_qy, right_eef_qz, right_eef_qw
+```
+
+XYZ 使用原厂机器人坐标系下的绝对位置（米），姿态为单位四元数 `x,y,z,w`。
+末端点/机器人坐标系沿用控制器定义，工具不额外添加 TCP 偏移，也不转换到地图坐标系。
+夹爪开合仍在 joint 部分，**14维 EEF 本身不包含夹爪**。
+
+必须先有持续更新的原厂 current/target 位姿报告。协议为 `std_msgs/msg/String` 的 JSON：
+`left_eef_pose` 和 `right_eef_pose` 各包含 `position[3]`、`rotation[4]`。
+普通 joint 状态存在，不代表 EEF 报告一定存在；截至本次只读检查，345 尚未发布这两个话题。
+开启缺失的 EEF 输入会在初始化时报错，不会填0或自动启动新的控制器。
+
+EEF state 按图像时间进行 XYZ 线性插值与四元数最短弧 SLERP，复用
+`MAX_STATE_AGE_SEC`、`MAX_STATE_INTERPOLATION_GAP_SEC`；EEF action 取参考时刻之前的目标，
+复用 `MAX_ACTION_HOLD_SEC`。数据不完整、过旧或没有有效匹配时作废本条episode。
+DAgger 的专家 mask 证明的是原有 joint 命令来源，**不额外证明原厂 EEF 报告的控制权/IK来源**；
+因此追加的14维 EEF action 对应 `dagger.action_train_mask` 固定为0，不自动当作专家标签。
+用于 EEF 纠错训练前，需另行核对目标及控制权来源并显式标注，不能用 joint mask 给 EEF 自动赋值。
+
+```bash
+# 仍使用原厂单人遥操作；同时保留 joint 和 EEF，需先确认两路位姿输出。
+COLLECTOR_MODE=vr WITH_HEAD=0 WITH_UPPER_WAIST=0 WITH_WAIST=0 WITH_DEPTH=0 \
+WITH_EEF_STATE=1 WITH_EEF_ACTION=1 \
+TASK_TEXT="Put the towel in the basket." \
+bash start_lerobot_official_collect.sh towel_joint_eef
+
+# 单项帮助，无需启动机器人服务。
+bash start_lerobot_official_collect.sh WITH_EEF_STATE --help
+```
+
+新建的 joint 数据集包含 `meta/collector_schema.json`，记录 joint、夹爪、EEF 的索引、名称和位姿来源。
+续录会检查该布局。历史数据仍可按原 schema 续录，但没有 EEF 的旧数据不会被自动“补出”末端位姿。
 
 ### 1.2 模式、任务和保存位置
 
@@ -87,8 +144,8 @@ export WITH_DEPTH=1
 | `SYNC_REFERENCE_CAMERA` | 活跃的 `hand_left`，否则首个活跃相机 | 时间基准。可填 `hand_left`、`hand_right`、`rgbd_head_color`，开深度后也可选活跃的 `rgbd_head_depth`。换基准仍须匹配其他相机，不是忽略它们。 |
 | `MAX_SYNC_DELTA_SEC` | `0.03` 秒 | 非参考相机与参考帧允许的最大时间差，即默认30ms；也参与等待/动作新鲜度判断。关节插值跨度及action保持另有下列独立限制。 |
 | `MAX_IMAGE_AGE_SEC` | `0.15` 秒 | 图像接收后的最大允许年龄，用于判定旧帧和相机停流；不是跨相机同步误差。 |
-| `MAX_STATE_AGE_SEC` | `0.15` 秒 | 关节数据接收后的新鲜度限制；限制插值端点过旧及关节流停滞。 |
-| `MAX_STATE_INTERPOLATION_GAP_SEC` | `0.05` 秒 | 用于关节插值的前、后两个状态样本之间最大跨度。扩大后可跨更长缺口插值，但时间准确性下降。 |
+| `MAX_STATE_AGE_SEC` | `0.15` 秒 | joint 和可选 EEF state 接收后的新鲜度限制；限制插值端点过旧及状态流停滞。 |
+| `MAX_STATE_INTERPOLATION_GAP_SEC` | `0.05` 秒 | joint/EEF state 插值的前、后两个样本之间最大跨度。扩大后可跨更长缺口插值，但时间准确性下降。 |
 | `MAX_ACTION_HOLD_SEC` | `0.5` 秒 | 参考时刻前最近一条有效目标最多保持多久；不使用未来命令作为当前帧标签，也不是允许无新指令无限续录。 |
 | `MAX_FRAME_INTERVAL_ERROR_RATIO` | `0.45` | 参考帧间隔相对 `1/COLLECT_FPS` 的最大误差比例，取值大于0、小于1。30FPS下允许约18.3～48.3ms；不是每帧代码运行超时。 |
 | `SYNC_IMAGE_BUFFER_SIZE` | `16` | **每路相机**的图像 FIFO 上限，单位帧，至少2；录制时溢出使当前episode无效。增大占用更多内存，不能修复源流缺帧或长期处理落后。 |
@@ -617,8 +674,8 @@ LeRobot按元数据读取连续episode，**无需手工拼接MP4**。
 
 DAgger保存整条模型和人工过程，附加控制来源、会话/接管标记及两种训练掩码：
 
-- `dagger.train_mask`：保留原来的严格整帧规则；只有身体和夹爪均来自当前人工权限时为1。
-- `dagger.action_train_mask`：新增21维int64掩码，顺序与`action`完全一致。身体命令有效时0–13、16–20为1；夹爪命令有效时14–15为1。模型段、保持段和过期权限对应维度为0。
+- `dagger.train_mask`：保留原来的 joint 整帧规则；只有身体和夹爪均来自当前人工权限时为1，不证明追加 EEF 的来源。
+- `dagger.action_train_mask`：与`action`等长、同顺序的int64掩码。默认21维，开启EEF action后35维。身体命令有效时0–13、16–20为1；夹爪命令有效时14–15为1；EEF的21–34维固定为0。模型段、保持段和过期权限对应维度为0。
 - `expert_frames`：现在统计至少一个动作维度有效的人工帧，包含部分维度有效的纠错。
 
 例如只接管移动手臂、夹爪仍保持模型指令：整帧掩码仍是0，动作掩码为`[1×14, 0, 0, 1×5]`。
@@ -652,10 +709,70 @@ DAgger保存整条模型和人工过程，附加控制来源、会话/接管标�
 `.collector-work` 或 `.collector-commit.json`。
 容量预算不是操作系统磁盘配额，其他进程仍可能抢占空间。
 
+<a id="conversion"></a>
+### 8.3 Joint / EEF 离线转换
+
+先保存并 **Q正常退出**，再使用 `lerobot` 环境运行 [convert_dataset.py](convert_dataset.py)。
+两个位置参数是**数据集根目录**，不是任务目录；源目录应直接包含 `meta/info.json`。
+目标必须是不存在的新目录，不得位于源目录内部；正在被 Collector 使用的数据集会被拒绝转换。
+
+`--state` 和 `--action` **分别选择**以下任一值，默认都是 `all`：
+
+| 值 | 保留内容 |
+|---|---|
+| `joint` | 原有 joint 部分，包括实际采集的手臂、夹爪及可选头/腰。 |
+| `eef` | 仅双臂14维位姿，不含夹爪。 |
+| `eef+gripper` | 双臂14维位姿，后接左、右夹爪2维，共16维。适合仍需控制夹爪的末端策略。 |
+| `all` | 保留该向量的所有现有维度及原顺序。 |
+
+```bash
+conda activate lerobot
+cd /home/ubuntu/CB_Autolife_Data_Collector
+SRC=/home/ubuntu/nas14/towel_joint_eef/dataset
+
+# 纯 joint state + joint action
+python convert_dataset.py "$SRC" /home/ubuntu/nas14/towel_joint/dataset \
+  --state joint --action joint
+
+# 纯 EEF，state/action 都只有双臂位姿
+python convert_dataset.py "$SRC" /home/ubuntu/nas14/towel_eef/dataset \
+  --state eef --action eef
+
+# joint state + EEF action，并保留夹爪开合
+python convert_dataset.py "$SRC" /home/ubuntu/nas14/towel_joint_to_eef/dataset \
+  --state joint --action eef+gripper
+
+# EEF state + joint action，或完整 state + EEF action
+python convert_dataset.py "$SRC" /home/ubuntu/nas14/towel_eef_to_joint/dataset \
+  --state eef+gripper --action joint
+python convert_dataset.py "$SRC" /home/ubuntu/nas14/towel_all_to_eef/dataset \
+  --state all --action eef+gripper
+
+python convert_dataset.py --help
+```
+
+工具只做字段选择，**不会删除episode/帧、重采样、计算IK/FK、转换相对动作或自动清洗失败示范**。
+源数据不修改；Parquet 数组、`features.shape/names`、全局统计量、逐episode统计量同步按索引裁剪，
+包括 quantile，`count` 不变。`dagger.action_train_mask` 及其统计信息按 action 同步选择、重排，名称和维度保持一致；
+其余DAgger标签、总任务、子任务、episode/frame索引和时间戳保持不变。
+纯EEF转换后的DAgger逐维掩码仍全0，不会根据旧的joint整帧掩码推断EEF专家身份。
+RGB/depth视频逐字节复制，不重编码、不拼接，保留原LeRobot v3偏移索引。
+输出需要足够磁盘容纳完整视频副本。运行日志、IPC文件及未提交临时episode不复制。
+
+写入在私有临时目录完成，最后原子发布；磁盘写入失败不会留下一个冒充完整数据集的目标目录，
+也不影响源数据。源数据缺少所选字段或缺少 `collector_schema.json` 时直接报错，不靠维度猜测历史格式。
+转换后的目录用于训练，不作为任意改动采集schema后的续录目录。
+
+不同 state/action 组合并不自动适配所有模型。训练配置需要对应新维度；joint 与 EEF 含义不同，
+**不能直接逐维相减**。即使两边都是 EEF，四元数也不能按普通关节标量相减；
+应使用适合位姿的相对动作处理，或保持绝对动作并排除相应通道。
+现有 joint 部署脚本不会因此自动获得 EEF/IK 控制能力。
+
 <a id="references"></a>
 ## 9. 更多说明
 
 - [实现与数据格式（中文）](INSTRUCTION_zh.md) / [Technical details](INSTRUCTION.md)
+- [官方 LeRobot v3 数据格式](https://huggingface.co/docs/lerobot/lerobot-dataset-v3)
 - [VR语音、文字及振动反馈边界](VR_FEEDBACK.md)
 - [300测试与验收流程](ROBOT300_TESTING_zh.md)
 - [存储保护测试记录](docs/validation/20261012_storage_guards.md)

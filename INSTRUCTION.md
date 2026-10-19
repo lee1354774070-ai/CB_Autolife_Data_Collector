@@ -15,6 +15,8 @@ This document describes implementation constraints. Daily commands belong in
 | `episode_storage.py` | Enforces capture budgets, owns the dataset lock, and publishes finalized episodes with a recovery journal. |
 | `dagger/capture_image_writer.py` | Shared bounded asynchronous image writer; propagates worker failures in every mode. |
 | `robot_schema.py` | Owns joint names, canonical policy order, physical q23 conversion, and command parsing. |
+| `eef_schema.py` | Validates measured/target EEF reports, performs pose interpolation, and declares explicit channel groups. |
+| `convert_dataset.py` | Independently projects state/action into a new v3 dataset with consistent per-channel metadata/statistics. |
 | `camera_config.py` | Owns camera names, SHM paths, ROS topics, and shared defaults. |
 | `shm_camera.py` | Reads stable legacy/SHM2 metadata/image pairs and decodes JPEG, native color or uint16 depth. |
 | `time_sync.py` | Provides timestamp normalization, FIFO selection, and interpolation primitives. |
@@ -56,6 +58,59 @@ waist (4), left arm (7), right arm (7), grippers (2), head (3)
 Only `robot_schema.py` converts between these orders. A policy that does not
 enable head or waist leaves those physical joints at their latest measured
 positions.
+
+### Optional EEF capture and projection
+
+`WITH_EEF_STATE` and `WITH_EEF_ACTION` default to zero and independently append
+14 pose values after the full joint vector. Each arm contributes XYZ in metres
+and quaternion XYZW, left arm first, in the vendor controller's robot frame.
+The controller defines the EEF point; no TCP offsets or map transforms are
+applied. Grippers remain in the joint block. The flags cannot be combined with
+the old 15-D `ACTION_MODE=eef` debugging mode.
+
+State subscribes to `current_robot_eef_pose`; action subscribes to
+`target_robot_eef_pose`, with the usual domain/robot suffix. The vendor String
+JSON contains `left_eef_pose`/`right_eef_pose`, each with `position[3]` and
+`rotation[4]`. Partial/nonfinite payloads and zero quaternions are rejected;
+valid quaternions are normalized. This does not start vendor services, publish
+commands, call SDK controllers, or substitute FK/zero/measured-state actions.
+Robot 345 did not publish these reports during the read-only inspection; joint
+feedback alone is not evidence that EEF collection is ready.
+
+EEF state has a separate bounded telemetry buffer. XYZ is interpolated linearly,
+rotation uses shortest-arc SLERP, and both use the image anchor and existing
+state age/bracket limits. A pending right endpoint retains the image for retry;
+missing/stale history invalidates the episode. EEF action holds only a causal
+target within `MAX_ACTION_HOLD_SEC`. Timestamp alignment uses the same payload
+timestamp/receive-time fallback as joint telemetry, not hardware synchronization.
+The optional callbacks do no disk I/O, RPCs, IK, or model work.
+
+`meta/collector_schema.json` describes names, joint/EEF/gripper indices and EEF
+semantics. It survives the first empty writer and every episode transaction.
+Resume rejects an incompatible recorded layout/source. Legacy joint datasets
+without this manifest retain their existing names and remain resumable without
+EEF, but conversion refuses to infer EEF indices from array widths.
+
+`convert_dataset.py SOURCE DEST --state joint|eef|all|eef+gripper
+--action joint|eef|all|eef+gripper` independently chooses both vectors. Pure EEF
+means 14-D; `eef+gripper` means poses followed by two existing gripper channels.
+It never adds unrecorded channels or removes rows. Source locking excludes an
+active collector. Bounded Arrow batches rewrite vectors and their Hugging Face
+schema, while global and per-episode statistics (including quantiles) are
+projected exactly; count stays unchanged. The per-action DAgger mask and its
+statistics use the same action projection; other labels, tasks, sidecars, timestamps
+and v3 shard references are preserved. Videos, including depth, are copied
+byte-for-byte. The Linux output directory is atomically published with
+RENAME_NOREPLACE only after completion; source and existing destinations are
+never overwritten. Logs, IPC and uncommitted workspaces are not training data.
+
+DAgger still controls the original 21-D joint model. Its origin/epoch labels
+prove the joint proxy commands, not the independent vendor EEF target report.
+The appended EEF action mask is therefore zero, not inferred from joint origin.
+EEF expert training needs independently verified targets and explicit labels.
+Capture does not add
+EEF deployment support: model I/O, IK and relative rotation processing must be
+configured separately. Quaternion components must not be subtracted like joints.
 
 ## Image and synchronization path
 
@@ -263,7 +318,10 @@ alongside this stack; its policy bridge owns the remote proposal/ACK session.
 The original V4 directory is never patched. Mapper, IK algorithms, limits
 and collision checks remain from the inspected version, not replaced with guessed parameters.
 
-Current scope: robot 300/domain 0, 21-D arms+grippers+head+upper waist, three RGB
+Robot ID/domain routing and `DAGGER_ROBOT_PROFILE` are configurable; 300 defaults
+to `s2_v2_2`. Other robots need an explicit reviewed model, matching dependencies
+and their own hardware acceptance. Configurable routing is not proof of a
+deployed S3 controller. The model still uses 21-D arms+grippers+head+upper waist, three RGB
 inputs and GR00T `policy_only_baseline`/`policy_only_frame`. Depth can be recorded,
 but is not fed to this RGB-only model contract. PI0.5 and causal EDVA/SOMA Outcome
 history are not integrated here. The pinned `dagger/control/` snapshot supplies
@@ -317,7 +375,8 @@ Q/Ctrl+C closes only this launcher's children and discards unconfirmed data.
 Recorder invalidation revokes control on the next state update; process death
 closes the stack. The default `DAGGER_PUBLISH=0` does not authorize hardware motion.
 
-All custom features are int64 `[1]`, separate from state/action dimensions:
+Custom features are int64 `[1]`, except the per-action mask described below;
+they are separate dataset features, not additional state/action channels:
 
 | Field | Meaning |
 | --- | --- |
@@ -326,6 +385,7 @@ All custom features are int64 `[1]`, separate from state/action dimensions:
 | `dagger.intervention_id` | Episode-local human segment number. |
 | `dagger.authority_epoch` | Authority generation for auditing transitions. |
 | `dagger.train_mask` | 1 only for human-active frames whose arm AND gripper commands originate at/after this authority boundary and match its epoch. |
+| `dagger.action_train_mask` | Same width/order as action: 21 joint channels, or 35 with EEF. Body and gripper origins are masked separately; appended EEF channels stay zero because their origin is unproven. |
 | `dagger.anchor_timestamp_ns` | Image-aligned frame anchor on the robot timebase. |
 | `dagger.arm_command_timestamp_ns`, `dagger.gripper_command_timestamp_ns` | Original observed command times; republishing a latched gripper target does not make it new expert supervision. |
 
@@ -333,7 +393,10 @@ Use a separate dataset root; schema checks prohibit mixing ordinary, older HG
 and current DAgger features. A policy-only saved trajectory has mask=0 throughout.
 Saving does not establish task success. Training must explicitly apply the mask
 at **each action-chunk timestep**; stock training does not automatically consume
-these fields. No automatic fine-tuning/DAgger iteration is implemented.
+these fields. The legacy scalar mask proves only the original joint commands.
+For partial corrections, select `action_train_mask.any(-1)` and apply the
+per-dimension mask before reduction, not the scalar mask as a row filter.
+No automatic fine-tuning/DAgger iteration is implemented.
 
 FIFO/encoding waits run in workers; X does not wait for either. Diagnostic traces
 use a bounded 2048-entry background queue, with drops/errors recorded in the

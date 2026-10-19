@@ -36,6 +36,7 @@ ROS_DOMAIN_ID=211 DAGGER_DEPENDENCY_ROOT=/home/ubuntu/ros2_ws/src /usr/bin/pytho
 - 原厂X复位未接入，不调用另一套控制器补偿；错误和未确认结果不能显示成功。
 - 21维顺序、相机字段、FIFO回执、epoch/session门控与训练mask不得随意修改。
 - `dagger.train_mask`保留整帧AND语义；`dagger.action_train_mask`按身体/双夹爪来源分别屏蔽。新旧DAgger schema不能在同一数据目录混写。
+- 可选EEF action追加在joint后；逐维mask同步扩展，EEF部分保持0，不能从joint来源推断EEF专家身份。离线转换必须同步投影action mask及统计量。
 - 模型动作只在Thor端digest前修改；客户端不能裁剪或重写proposal/ACK前缀。
 - 保留低CPU写入器、队列上限和同步阈值；不能通过丢帧或放宽阈值掩盖异常。
 - 不清错、不停止或重启ARM服务来规避冲突。真机运动、服务切换需当前任务明确授权。

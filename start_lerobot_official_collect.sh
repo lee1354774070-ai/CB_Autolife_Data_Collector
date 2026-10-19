@@ -100,6 +100,23 @@ show_help() {
                 echo "Usage: WITH_DEPTH=1 bash start_lerobot_official_collect.sh task_name"
                 echo "Record rgbd_head_depth in addition to the three default RGB cameras. Default: 0"
                 ;;
+            WITH_EEF_STATE|WITH_EEF_ACTION)
+                echo "${parameter}"
+                echo "Usage: WITH_EEF_STATE=1 WITH_EEF_ACTION=1 bash start_lerobot_official_collect.sh task_name"
+                echo "Independent 0/1 switches, default 0. Append 14 dual-arm pose values after the existing joint vector."
+                echo "STATE uses measured current_robot_eef_pose; ACTION uses reported target_robot_eef_pose, never measured state."
+                echo "Robot frame, metres, quaternion x/y/z/w; left XYZ+XYZW then right XYZ+XYZW. Grippers stay in the joint block."
+                echo "Requires fresh pose publishers; missing/stale data invalidates capture, no zero/FK fallback."
+                echo "Use ACTION_MODE=status_target or joint and a NEW dataset root when changing either switch."
+                echo "Offline selection: python convert_dataset.py SOURCE DEST --state joint|eef|all|eef+gripper --action joint|eef|all|eef+gripper"
+                ;;
+            STATE_EEF_TOPIC|ACTION_EEF_TOPIC)
+                echo "${parameter}"
+                echo "Override a vendor EEF report topic (std_msgs/String JSON with left_eef_pose/right_eef_pose position[3], rotation[4])."
+                echo "Defaults: /topic_arm_current_robot_eef_pose_<domain>_<robot> and /topic_arm_target_robot_eef_pose_<domain>_<robot>."
+                echo "Usage: WITH_EEF_STATE=1 STATE_EEF_TOPIC=/my/current_pose bash start_lerobot_official_collect.sh task_name"
+                echo "The replacement must use the SAME robot frame, metres and XYZW semantics. Motion-command topics are not pose reports."
+                ;;
             VR_CONTROL)
                 echo "VR_CONTROL"
                 echo "Usage: VR_CONTROL=1 bash start_lerobot_official_collect.sh task_name"
@@ -273,6 +290,10 @@ Common parameters:
   WITH_UPPER_WAIST           Add only waist pitch/yaw. Cannot combine with WITH_WAIST. Default: 0
   WITH_WAIST                 Add 4 leg/waist joints. Default: 0
   WITH_DEPTH                 Add rgbd_head_depth. Default: 0
+  WITH_EEF_STATE             Append 14-D measured EEF poses to joint state. Default: 0
+  WITH_EEF_ACTION            Append 14-D EEF targets to joint action. Default: 0
+  STATE_EEF_TOPIC            Override the vendor current EEF report topic.
+  ACTION_EEF_TOPIC           Override the vendor target EEF report topic.
   VR_CONTROL                 Enable VR episode buttons alongside keyboard controls. Default: 0
   VR_START_DELAY_SEC         VR start countdown, 0 through 30 seconds. Default: 3
   VR_SPEECH                  Use existing robot TTS service; does not change volume. Default: 1
@@ -348,6 +369,18 @@ export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
 WITH_HEAD="${WITH_HEAD:-0}"
 WITH_UPPER_WAIST="${WITH_UPPER_WAIST:-0}"
 WITH_WAIST="${WITH_WAIST:-0}"
+WITH_EEF_STATE="${WITH_EEF_STATE:-0}"
+WITH_EEF_ACTION="${WITH_EEF_ACTION:-0}"
+for parameter in WITH_EEF_STATE WITH_EEF_ACTION; do
+    if [[ ! "${!parameter}" =~ ^[01]$ ]]; then
+        echo "ERROR: ${parameter} must be 0 or 1." >&2
+        exit 2
+    fi
+done
+if [[ "${ACTION_MODE:-status_target}" = "eef" && ( "${WITH_EEF_STATE}" = "1" || "${WITH_EEF_ACTION}" = "1" ) ]]; then
+    echo "ERROR: WITH_EEF_* requires ACTION_MODE=status_target or joint, not legacy eef." >&2
+    exit 2
+fi
 VR_CONTROL="${VR_CONTROL:-}"
 VR_SPEECH="${VR_SPEECH:-1}"
 if [[ ! "${VR_SPEECH}" =~ ^[01]$ ]]; then
@@ -549,6 +582,12 @@ RECORDER_FEATURE_ARGS=()
 if [ "${WITH_HEAD}" = "1" ]; then
     RECORDER_FEATURE_ARGS+=(--with-head)
 fi
+if [ "${WITH_EEF_STATE}" = "1" ]; then
+    RECORDER_FEATURE_ARGS+=(--with-eef-state)
+fi
+if [ "${WITH_EEF_ACTION}" = "1" ]; then
+    RECORDER_FEATURE_ARGS+=(--with-eef-action)
+fi
 if [ "${WITH_WAIST}" = "1" ]; then
     RECORDER_FEATURE_ARGS+=(--with-waist)
 elif [ "${WITH_UPPER_WAIST}" = "1" ]; then
@@ -573,6 +612,7 @@ MIN_CAMERAS="${MIN_CAMERAS:-${#BRIDGE_CAMERAS[@]}}"
 
 echo "  joint data  : head=${WITH_HEAD}, upper_waist=${WITH_UPPER_WAIST}, waist=${WITH_WAIST}"
 echo "  depth data  : ${WITH_DEPTH}"
+echo "  EEF data    : state=${WITH_EEF_STATE}, action=${WITH_EEF_ACTION} (appended after joints)"
 echo "  cameras req : ${MIN_CAMERAS}/${#BRIDGE_CAMERAS[@]}"
 echo "  image FIFO  : ${SYNC_IMAGE_BUFFER_SIZE:-16} frames/camera"
 
@@ -620,7 +660,8 @@ RECORDER_ARGS=(
     --state-topic "/topic_arm_whole_body_and_gripper_current_joints_status_${TOPIC_NODE_ID}"
     --action-arm-topic "/topic_arm_whole_body_target_joints_position_${TOPIC_NODE_ID}"
     --action-gripper-topic "/topic_arm_gripper_target_joints_position_${TOPIC_NODE_ID}"
-    --action-eef-topic "/topic_arm_target_robot_eef_pose_${TOPIC_NODE_ID}"
+    --state-eef-topic "${STATE_EEF_TOPIC:-/topic_arm_current_robot_eef_pose_${TOPIC_NODE_ID}}"
+    --action-eef-topic "${ACTION_EEF_TOPIC:-/topic_arm_target_robot_eef_pose_${TOPIC_NODE_ID}}"
     --action-height-topic "/topic_arm_target_robot_height_z_${TOPIC_NODE_ID}"
     --control-fifo "${CONTROL_FIFO}"
     --status-file "${STATUS_FILE}"

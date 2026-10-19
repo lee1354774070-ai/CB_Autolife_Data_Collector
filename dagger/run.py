@@ -33,7 +33,8 @@ from dagger.robot_profile import resolve_robot, recorder_cpus
 def environment(task: str, text: str | None, source: dict[str, str]) -> dict[str, str]:
     env = dict(source)
     for name, default in (("DAGGER_PUBLISH", "0"), ("WITH_HEAD", "1"),
-                          ("WITH_UPPER_WAIST", "1"), ("WITH_WAIST", "0"), ("WITH_DEPTH", "0")):
+                          ("WITH_UPPER_WAIST", "1"), ("WITH_WAIST", "0"), ("WITH_DEPTH", "0"),
+                          ("WITH_EEF_STATE", "0"), ("WITH_EEF_ACTION", "0")):
         env.setdefault(name, default)
         if env[name] not in ("0", "1"):
             raise ValueError(f"{name} must be 0 or 1")

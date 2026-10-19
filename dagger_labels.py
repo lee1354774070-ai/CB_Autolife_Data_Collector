@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import math
 
 from dagger.control.groot_bridge_core import EXPECTED_FEATURES
+from eef_schema import EEF_NAMES
 
 
 FIELDS = ("control_source", "is_intervention", "intervention_id", "train_mask",
@@ -20,6 +21,16 @@ FIELDS = ("control_source", "is_intervention", "intervention_id", "train_mask",
 FEATURES = {f"dagger.{key}": {"dtype": "int64", "shape": (1,), "names": [key]} for key in FIELDS}
 FEATURES["dagger.action_train_mask"] = {"dtype": "int64", "shape": (21,),
                                          "names": list(EXPECTED_FEATURES)}
+
+
+def features_for_actions(action_names=EXPECTED_FEATURES):
+    """Keep masks aligned; independent EEF reports do not prove expert origin."""
+    names = tuple(action_names)
+    joints = tuple(EXPECTED_FEATURES)
+    if names not in (joints, joints + EEF_NAMES):
+        raise ValueError("DAgger requires the original 21-D joint order, optionally followed by EEF")
+    return {**FEATURES, "dagger.action_train_mask": {
+        "dtype": "int64", "shape": (len(names),), "names": list(names)}}
 
 
 def timestamp_ns(value: object) -> int:
@@ -37,7 +48,9 @@ class ActionOrigin:
 
 
 class DaggerLabels:
-    def __init__(self, capacity: int = 64):
+    def __init__(self, capacity: int = 64, *, action_names=EXPECTED_FEATURES):
+        mask = features_for_actions(action_names)["dagger.action_train_mask"]
+        self.eef_action_size = mask["shape"][0] - len(EXPECTED_FEATURES)
         self.labels: deque[dict] = deque(maxlen=capacity)
         self.arms: deque[ActionOrigin] = deque(maxlen=capacity)
         self.grippers: deque[ActionOrigin] = deque(maxlen=capacity)
@@ -111,7 +124,7 @@ class DaggerLabels:
                          for x in origins]
         # Preserve the old whole-frame contract; a held policy gripper must not
         # suppress valid body correction dimensions or become an expert label.
-        action_mask = [body] * 14 + [gripper] * 2 + [body] * 5
+        action_mask = [body] * 14 + [gripper] * 2 + [body] * 5 + [0] * self.eef_action_size
         expert = body and gripper
         values = {key: int(label[key]) for key in
                   ("control_source", "is_intervention", "intervention_id", "authority_epoch")}
@@ -127,8 +140,9 @@ def validate_features(features: dict, enabled: bool) -> None:
     if present != (set(FEATURES) if enabled else set()):
         raise ValueError("DAgger schema differs (including action_train_mask); use a new dataset directory; existing data is unchanged")
     if enabled:
-        for key in FEATURES:
-            if features[key].get("dtype") != "int64" or list(features[key].get("shape", [])) != list(FEATURES[key]["shape"]):
+        expected = features_for_actions(features.get("action", {}).get("names", EXPECTED_FEATURES))
+        for key in expected:
+            if features[key].get("dtype") != "int64" or list(features[key].get("shape", [])) != list(expected[key]["shape"]):
                 raise ValueError(f"incompatible DAgger feature: {key}")
-            if key == "dagger.action_train_mask" and features[key].get("names") != FEATURES[key]["names"]:
+            if key == "dagger.action_train_mask" and features[key].get("names") != expected[key]["names"]:
                 raise ValueError("DAgger action mask joint order differs")

@@ -50,11 +50,17 @@ class DaggerLaunchTest(unittest.TestCase):
         self.assertEqual(env["WITH_HEAD"], "1")
         self.assertEqual(env["WITH_UPPER_WAIST"], "1")
         self.assertEqual(env["WITH_WAIST"], "0")
+        self.assertEqual(env["WITH_EEF_STATE"], "0")
+        self.assertEqual(env["WITH_EEF_ACTION"], "0")
+        pose_env = self.env(WITH_EEF_STATE="1", WITH_EEF_ACTION="1")
+        self.assertEqual(pose_env['WITH_EEF_ACTION'], '1')
+        self.assertEqual(pose_env['ACTION_MODE'], 'joint')
 
     def test_unsupported_settings_are_rejected(self):
         for updates in ({"WITH_WAIST": "1"}, {"WITH_HEAD": "0"}, {"WITH_UPPER_WAIST": "0"},
                         {"ROBOT_ID": "283"}, {"ROS_DOMAIN_ID": "233"}, {"DAGGER_PUBLISH": "true"},
                         {"ACTION_MODE": "status_target"}, {"FALLBACK_ACTION_TO_STATE": "1"},
+                        {"WITH_EEF_STATE": "true"}, {"WITH_EEF_ACTION": "2"},
                         {"DAGGER_SERVER_URL": ""}):
             with self.subTest(updates=updates), self.assertRaises(ValueError):
                 self.env(**updates)

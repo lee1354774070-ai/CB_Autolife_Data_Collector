@@ -56,6 +56,8 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             command_service=SERVICE, features=FEATURES,
             hardware_publish=os.environ.get('DAGGER_PUBLISH', '0') == '1',
             with_depth=os.environ.get('WITH_DEPTH', '0') == '1',
+            with_eef_state=os.environ.get('WITH_EEF_STATE', '0') == '1',
+            with_eef_action=os.environ.get('WITH_EEF_ACTION', '0') == '1',
             task_text=os.environ.get('TASK_TEXT', '')))
         self.create_service(SetParametersAtomically, SERVICE, self._on_attached_command)
         self.get_logger().info("AutoLife DAgger: A=start, GL/GR=takeover, B=save, Y=discard, X=reset")

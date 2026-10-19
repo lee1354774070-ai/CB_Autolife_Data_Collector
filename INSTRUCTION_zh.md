@@ -23,6 +23,8 @@
 | `dagger_labels.py` | 检查动作的原始时间和控制权，生成逐帧纠错训练 mask。 |
 | `record_lerobot_official.py` | 缓存 ROS/SHM 信号、同步 dataset 行并管理 `LeRobotDataset`。 |
 | `robot_schema.py` | 维护关节名称、canonical policy 顺序、物理 q23 转换和命令解析。 |
+| `eef_schema.py` | 校验双臂位姿报告，完成位置/四元数插值，定义 joint/EEF/夹爪索引。 |
+| `convert_dataset.py` | 独立选择 state/action 表示，生成元数据和统计量一致的新v3数据集。 |
 | `camera_config.py` | 维护相机名称、SHM 路径、ROS topic 和共享默认值。 |
 | `shm_camera.py` | 读取稳定的 legacy/SHM2 metadata 与图像，解码 JPEG、原始彩色和 uint16 depth。 |
 | `time_sync.py` | 提供时间戳归一化、FIFO 选择和插值函数。 |
@@ -62,6 +64,44 @@ ROS 控制器的物理 q23 顺序不同：
 
 只有 `robot_schema.py` 可以在两种顺序间转换。policy 没有启用头部或腰部时，
 部署端会保留这些物理关节的最新实测值。
+
+### 可选 EEF 与数据转换
+
+`WITH_EEF_STATE`、`WITH_EEF_ACTION` 独立控制实测/目标末端位姿追加，默认0。
+原 joint 前缀及夹爪位置不变，每侧 EEF 为 XYZ（米）+单位四元数 XYZW，左臂后右臂，共14维。
+坐标系和末端点沿用原厂报告，不额外添加 TCP 偏移、地图变换或 FK 推算。
+不能与旧的15维调试模式 `ACTION_MODE=eef` 混用。
+
+来源分别为 `/topic_arm_current_robot_eef_pose_<domain>_<robot>` 和
+`/topic_arm_target_robot_eef_pose_<domain>_<robot>`，均为输出报告，不是控制输入。
+只接受双臂完整 JSON 中的 `position[3]`、`rotation[4]`；拒绝非有限值和零四元数。
+有效四元数归一化。工具不自动开启原厂位姿服务；345本次只读检查没有这两路输出，
+因此不能将“关节数据正常”当作“EEF已能录制”的证据。
+
+EEF state 单独使用有界时间缓存，在同一个图像锚点做位置线性插值和最短弧 SLERP。
+缺未来端点时保留参考图像等待；缺历史、过期或插值跨度过大时整条episode无效。
+EEF action 只接受图像时间之前且未超过 `MAX_ACTION_HOLD_SEC` 的目标，绝不退化为实测位姿。
+时间戳归一化/时钟偏差回退到接收时间的规则与 joint 相同，不声称硬件同步。
+关闭开关时不订阅新增位姿流；回调不执行磁盘、RPC、IK或模型推理。
+
+`meta/collector_schema.json` 明确记录两条向量的名称、joint/EEF/夹爪索引、单位、坐标系和来源。
+首条episode和续录事务都会保留该文件；改变布局/来源必须换数据集目录。
+历史 joint 数据没有这个清单时仍保留原名称续录，但转换工具不会按宽度猜测历史 EEF 语义。
+
+转换使用 `convert_dataset.py SOURCE DEST --state ... --action ...`，两者分别选
+`joint / eef / all / eef+gripper`。纯EEF为14维，EEF+夹爪为16维，不生成未录制的字段。
+源数据锁与录制器一致，转换期间禁止源数据续录。分批改写Parquet及Arrow/HF维度，
+全局和逐episode的均值/标准差/极值/分位数按同一索引精确裁剪，count不变。
+`dagger.action_train_mask` 及其统计量按 action 同步选择/重排；其余DAgger标签、
+任务、子任务、帧顺序及视频偏移保持原样；RGB/depth视频直接复制，不重编码。
+完整写入并落盘后以Linux `RENAME_NOREPLACE` 原子发布新目录，绝不覆盖源或已有目标。
+日志、IPC和未提交暂存不属于转换输出。此工具不负责失败示范筛除、IK/FK、重采样或相对动作计算。
+
+DAgger仍使用21维joint控制，原有mask只证明joint命令来源，不证明独立原厂EEF目标的控制权/IK来源。
+追加EEF的逐维掩码固定为0；EEF纠错训练需要独立核实目标/权限来源并显式标注。
+新增录制能力也不自动扩展部署脚本的EEF/IK接口；
+不同state/action表示不能直接逐维相减，四元数尤其不能按关节标量相减。
+完整命令见 [README的转换章节](README.md#conversion)。
 
 ## 图像与同步
 
@@ -216,7 +256,9 @@ V4 运行中的命令仲裁、心跳和安全限制继续生效。
 复用时再次核对文件哈希。同事的 V4 原目录不改动。保留原版 mapper、IK 算法、
 限位和碰撞检查，不通过猜测参数或放宽保护来降低延迟。
 
-当前范围：300 机器人、ROS domain 0、21 维手臂+夹爪+头+上腰、三路 RGB，
+机器人编号、ROS domain和`DAGGER_ROBOT_PROFILE`可配置；300默认`s2_v2_2`。
+其他编号必须明确已审查型号并具备匹配依赖，完成各自现场验收；支持路由不等于S3控制器已部署。
+模型范围仍为21 维手臂+夹爪+头+上腰、三路 RGB，
 GR00T 的 `policy_only_baseline` / `policy_only_frame`。depth 可以录制，但不作为
 这个 RGB 模型的输入。尚未接入 PI0.5 或 EDVA/SOMA 的因果 Outcome 历史。
 `dagger/control/` 保存已验证的 supervisor、GR00T bridge、FIFO 和状态机。
@@ -256,7 +298,7 @@ X 仅请求官方全身复位，包含夹爪；有未处理条目或忙碌时拒
 Q/Ctrl+C 仅关闭本启动器的子进程并丢弃未确认条目。recorder 作废事件会在下一次状态
 更新撤销控制；进程退出则关闭整套子进程。默认 `DAGGER_PUBLISH=0` 不授权硬件动作。
 
-以下自定义字段均为 int64 `[1]`，不占 state/action 维度：
+以下自定义字段为 int64 `[1]`，逐维action掩码除外；它们是独立字段，不占 state/action 维度：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -265,12 +307,15 @@ Q/Ctrl+C 仅关闭本启动器的子进程并丢弃未确认条目。recorder �
 | `dagger.intervention_id` | episode 内人工控制段编号。 |
 | `dagger.authority_epoch` | 控制权代次，用于审计切换。 |
 | `dagger.train_mask` | 仅在人工有效控制，且手臂和夹爪的原始动作都晚于本次控制权边界、epoch 匹配时为 1。 |
+| `dagger.action_train_mask` | 与action同宽同序，默认21维，含EEF时35维。身体与夹爪分别按来源屏蔽；追加EEF的来源未经证明，14维固定为0。 |
 | `dagger.anchor_timestamp_ns` | 图像对齐帧的机器人时基时间戳。 |
 | `dagger.arm_command_timestamp_ns`、`dagger.gripper_command_timestamp_ns` | 原始控制指令时间；刷新夹爪代理时间不能把旧动作变成人工新标签。 |
 
 必须使用独立数据根目录，不可与普通数采、旧 HG 字段混写。仅模型执行但按 B 保存的
 条目，其 mask 全为 0。保存不是任务成功判据。训练需要显式地对 **action chunk 每个时间步**
 应用 mask；stock LeRobot 训练不会自动理解这些字段。本次不包含自动微调和 DAgger 迭代训练。
+旧的标量mask只证明joint命令。训练部分维度纠错时按`action_train_mask.any(-1)`筛选，
+逐维loss乘mask后再归一化，不能先按旧标量mask筛掉部分纠错，也不能据此标记EEF。
 
 FIFO/编码等待在线程中处理，不阻塞按键回调；忙碌时 X 拒绝复位。诊断 trace 改为容量 2048 的有界后台队列，
 丢弃数量/写盘错误写入 trial manifest；逐帧训练标签不依赖此诊断队列。WebXR 振动和浏览器
