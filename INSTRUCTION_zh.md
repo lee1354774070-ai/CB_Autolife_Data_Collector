@@ -162,7 +162,10 @@ V4关节/碰撞/轨迹/watchdog保护保留，不能用较小目标跟随误差�
 
 只有V4出口发布硬件指令，并发出含原始时间/来源的controller_output回执。
 代理动作保留原时间和权限，旧保持目标不会因刷新代理时间变成人工示范。
-B撤销输出后保存；Y丢弃；X只复位，有待处理数据或忙碌则拒绝。
+B确认任务成功并撤销输出后保存；Y丢弃；X只复位，有待处理数据或忙碌则拒绝。
+操作员确认的成功结果写入annotations/dagger/episode_XXXXXX.json，与数据事务一起提交：
+task_success=true，success_source为autonomous（本条从未接管）或human_intervention（曾接管）。
+原有逐帧纠错掩码不改；失败/丢弃不发布成功标注，历史无标注条目保持未知。
 结果不确定时保留原请求ID核对，不重复save，也不在保存中复位。
 
 | 字段 | 训练语义 |

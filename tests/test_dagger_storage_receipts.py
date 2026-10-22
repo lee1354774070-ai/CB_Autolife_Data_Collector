@@ -1,6 +1,7 @@
 """Confirmed invalid workspaces are discardable; unknown saves are not replayed."""
 import ast
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -27,6 +28,27 @@ class StorageReceiptTest(unittest.TestCase):
                 result = fifo.wait_for_result(False, 'save', 'save-1', .1)
                 self.assertTrue(result.acknowledged and result.episode_invalid)
                 self.assertEqual(result.publication_uncertain, uncertain)
+
+
+    def test_fifo_preserves_legacy_requests_and_transports_compact_success_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'commands'
+            os.mkfifo(path)
+            fd=os.open(path,os.O_RDWR|os.O_NONBLOCK)
+            fifo=CollectorFifo(str(path),'')
+            try:
+                self.assertTrue(fifo.command(False,'save','legacy'))
+                self.assertEqual(os.read(fd,4096).decode().splitlines(), ['save legacy'])
+                metadata=dict(trial_id='trial',task_success=True,human_takeover=True)
+                self.assertTrue(fifo.command(False,'save','new',metadata=metadata))
+                command,request,payload=os.read(fd,4096).decode().split(maxsplit=2)
+                self.assertEqual((command,request),('save','new'))
+                self.assertEqual(json.loads(payload),metadata)
+                with self.assertRaises(ValueError):
+                    fifo.command(False,'save',metadata=metadata)
+                self.assertFalse(fifo.command(False,'save','large',metadata={'padding':'x'*8192}))
+            finally:
+                os.close(fd)
 
     def test_known_invalid_failure_clears_pending_but_unknown_retains_request(self):
         for uncertain in (False, True):

@@ -383,18 +383,22 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
     def _finish_collection_trial(self, save):
         # Close motion authority before storage waits, using the DAgger FIFO and
         # reconciliation logic. No implicit mechanical reset on either branch.
+        with self._lock:
+            metadata = {"trial_id": self._intervention_id, "task_success": True,
+                        "human_takeover": bool(self._takeover_seen)} if save else None
+            success_kind = "人工接管成功" if self._takeover_seen else "模型自主成功"
         disabled, detail = self._forward_enable(False)
         with self._lock:
-            self._set_notice_locked("正在保存" if save else "正在丢弃", "info")
+            self._set_notice_locked("正在保存：" + success_kind if save else "正在丢弃", "info")
             self._publish_state()
         # The one lifecycle worker owns the trial; authority is already
         # DISARMED. Do not hold the VR/control lock while encoding or waiting.
-        saved = self._finish_intervention_locked(save, "B save" if save else "Y discard")
+        saved = self._finish_intervention_locked(save, "B save" if save else "Y discard", metadata=metadata)
         self._trace.barrier()
         with self._lock:
             if not self._intervention_id:
                 self._session_id = ""
-            message = "本条保存成功" if saved else ("本条未保存，请检查录制错误" if save else "本条已丢弃")
+            message = "本条已保存：" + success_kind if saved else ("本条未保存，请检查录制错误" if save else "本条已丢弃")
             if not disabled:
                 message += "；硬件停用未确认：" + detail
             self._set_notice_locked(message, "success" if disabled and (saved or not save) else "error")

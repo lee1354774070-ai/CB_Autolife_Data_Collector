@@ -20,7 +20,7 @@ from typing import Any
 from unittest.mock import Mock, patch
 from queue import SimpleQueue, Empty
 from subtask_annotations import SubtaskAnnotations, check_pending_annotations, prepare_annotation
-from dagger_labels import validate_features as validate_dagger_features
+from dagger_labels import DaggerLabels, success_annotation, validate_features as validate_dagger_features
 from episode_storage import StorageLimitError
 
 
@@ -33,10 +33,12 @@ methods = [item for cls in tree.body if isinstance(cls, ast.ClassDef)
                              '_invalidate_episode', '_record_tick', '_log_sync', '_flush_sync_log'}]
 methods.extend(item for cls in tree.body if isinstance(cls, ast.ClassDef)
                for item in cls.body if isinstance(item, ast.FunctionDef)
-               and item.name in {'_write_command_status', 'process_control_commands', '_validate_resume_schema', '_poll_shm_images'})
+               and item.name in {'_write_command_status', 'process_control_commands', '_control_fifo_loop', '_validate_resume_schema', '_poll_shm_images'})
+methods.extend(item for item in tree.body if isinstance(item, ast.FunctionDef) and item.name == 'write_json_atomic')
 namespace = {'time': time, 'Path': Path, 'os': os, 'json': json, 'prepare_annotation': prepare_annotation,
              'Any': Any, 'Empty': Empty, 'validate_dagger_features': validate_dagger_features,
-             'shutil': shutil, 'StorageLimitError': StorageLimitError}
+             'shutil': shutil, 'StorageLimitError': StorageLimitError,
+             'success_annotation': success_annotation}
 exec(compile(ast.Module(body=methods, type_ignores=[]), str(SOURCE), 'exec'), namespace)
 
 
@@ -272,6 +274,98 @@ class RecorderControlsTest(unittest.TestCase):
         node.save_current_episode = lambda *a: namespace['save_current_episode'](node, *a)
         node.discard_current_episode = lambda *a: namespace['discard_current_episode'](node, *a)
         return node
+
+
+    def test_success_annotations_are_transactional_and_do_not_require_expert_frames(self):
+        for takeover in (False, True):
+            with self.subTest(takeover=takeover), tempfile.TemporaryDirectory() as root:
+                node = self.annotation_recorder(root)
+                node.subtasks = SubtaskAnnotations(())
+                node.dagger = DaggerLabels()
+                node.dagger.trial_id = 'trial-1'
+                outcome = dict(trial_id='trial-1', task_success=True, human_takeover=takeover)
+                self.assertTrue(namespace['save_current_episode'](node, 'command:save', 'req', dagger_outcome=outcome))
+                path = Path(root) / 'annotations/dagger/episode_000003.json'
+                result = json.loads(path.read_text())
+                self.assertTrue(result['task_success'])
+                self.assertEqual(result['success_source'], 'human_intervention' if takeover else 'autonomous')
+                self.assertEqual(result['expert_frames'], 0)  # A brief takeover may have no trainable frame.
+                self.assertEqual(result['episode_index'], 3)
+                self.assertEqual(node._write_command_status.call_args.kwargs['task_outcome'], result)
+
+    def test_bad_or_wrong_trial_confirmation_keeps_data_and_does_not_publish(self):
+        for metadata in ({'trial_id':'other','task_success':True,'human_takeover':False},
+                         {'trial_id':'trial-1','task_success':True,'human_takeover':'false'}):
+            with self.subTest(metadata=metadata), tempfile.TemporaryDirectory() as root:
+                node = self.annotation_recorder(root)
+                node.subtasks = SubtaskAnnotations(())
+                node.dagger = DaggerLabels()
+                node.dagger.trial_id = 'trial-1'
+                self.assertFalse(namespace['save_current_episode'](node, 'save', 'req', dagger_outcome=metadata))
+                node.episode_store.commit.assert_not_called()
+                self.assertTrue(node.is_recording)
+                self.assertFalse((Path(root) / 'annotations/dagger').exists())
+
+    def test_failed_success_save_never_publishes_success_and_discard_removes_staging(self):
+        with tempfile.TemporaryDirectory() as root:
+            node = self.annotation_recorder(root)
+            node.subtasks = SubtaskAnnotations(())
+            node.dagger = DaggerLabels()
+            node.dagger.trial_id = 'trial-1'
+            node.dataset.save_episode.side_effect = OSError('injected disk full')
+            outcome = dict(trial_id='trial-1', task_success=True, human_takeover=True)
+            self.assertFalse(namespace['save_current_episode'](node, 'save', 'req', dagger_outcome=outcome))
+            self.assertFalse((Path(root) / 'annotations/dagger').exists())
+            node.episode_store.commit.assert_not_called()
+            self.assertNotIn('task_outcome', node._write_command_status.call_args.kwargs)
+            self.assertTrue(node.discard_current_episode('discard'))
+            self.assertFalse((Path(root) / '.collector-work/annotations/dagger').exists())
+
+
+    def test_real_fifo_listener_preserves_trial_and_request_case(self):
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root)/'commands'
+            os.mkfifo(path)
+            node=Mock()
+            node.args=SimpleNamespace(control_fifo=str(path))
+            node.stop_requested=False
+            node.control_queue=SimpleQueue()
+            metadata=dict(trial_id='Trial-ABC',task_success=True,human_takeover=True)
+            worker=threading.Thread(target=namespace['_control_fifo_loop'],args=(node,))
+            worker.start()
+            with path.open('w') as writer:
+                writer.write('SAVE Request-ABC '+json.dumps(metadata)+'\n')
+                writer.flush()
+                received=node.control_queue.get(timeout=2)
+                node.stop_requested=True
+            worker.join(timeout=2)
+            self.assertFalse(worker.is_alive())
+            node.control_queue.put(received)
+            node.mark_status_future=None
+            namespace['process_control_commands'](node)
+            node.save_current_episode.assert_called_once_with('command:save','Request-ABC',dagger_outcome=metadata)
+
+    def test_legacy_save_remains_unlabelled_and_fifo_metadata_is_optional(self):
+        with tempfile.TemporaryDirectory() as root:
+            node = self.annotation_recorder(root)
+            node.subtasks = SubtaskAnnotations(())
+            node.dagger = DaggerLabels()
+            node.dagger.trial_id = 'trial-1'
+            self.assertTrue(node.save_current_episode('legacy-save'))
+            self.assertFalse((Path(root) / 'annotations/dagger').exists())
+        node = Mock()
+        node.mark_status_future = None
+        node.control_queue = SimpleQueue()
+        node.control_queue.put('save old-request')
+        metadata = dict(trial_id='trial-1', task_success=True, human_takeover=False)
+        node.control_queue.put('save new-request ' + json.dumps(metadata))
+        node.control_queue.put('save bad-request {broken')
+        node.control_queue.put('save null-request null')
+        namespace['process_control_commands'](node)
+        self.assertEqual(node.save_current_episode.call_count, 2)
+        self.assertEqual(node.save_current_episode.call_args_list[0].args, ('command:save', 'old-request'))
+        self.assertEqual(node.save_current_episode.call_args_list[1].kwargs, {'dagger_outcome':metadata})
+        self.assertEqual(node._write_command_status.call_count, 2)
 
     def test_marks_last_autosaves_one_episode_and_resets(self):
         with tempfile.TemporaryDirectory() as root:

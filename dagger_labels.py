@@ -146,3 +146,23 @@ def validate_features(features: dict, enabled: bool) -> None:
                 raise ValueError(f"incompatible DAgger feature: {key}")
             if key == "dagger.action_train_mask" and features[key].get("names") != expected[key]["names"]:
                 raise ValueError("DAgger action mask joint order differs")
+
+
+def success_annotation(metadata: dict, *, trial_id: str, episode_index: int,
+                       task: str, frames: int, expert_frames: int,
+                       request_id: str | None) -> dict:
+    """Operator-confirmed episode outcome; never changes frame provenance."""
+    if (not isinstance(metadata, dict)
+            or set(metadata) != {"trial_id", "task_success", "human_takeover"}
+            or metadata.get("task_success") is not True
+            or type(metadata.get("human_takeover")) is not bool):
+        raise ValueError("Invalid DAgger success confirmation")
+    if not trial_id or metadata["trial_id"] != trial_id:
+        raise ValueError("DAgger success confirmation belongs to a different trial")
+    if expert_frames and not metadata["human_takeover"]:
+        raise ValueError("Expert frames cannot be marked autonomous success")
+    return {"schema_version": 1, "episode_index": episode_index, "task": task,
+            "frames": frames, "expert_frames": expert_frames, "trial_id": trial_id,
+            "task_success": True, "human_takeover": metadata["human_takeover"],
+            "success_source": "human_intervention" if metadata["human_takeover"] else "autonomous",
+            "annotation_source": "operator_confirmation", "request_id": request_id}

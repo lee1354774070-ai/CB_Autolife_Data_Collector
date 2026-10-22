@@ -1436,7 +1436,7 @@ class HgDaggerSupervisor(Node):
             )
         return True, result.message
 
-    def _finish_intervention_locked(self, requested_save: bool, reason: str) -> bool:
+    def _finish_intervention_locked(self, requested_save: bool, reason: str, *, metadata: dict | None = None) -> bool:
         if not self._intervention_id:
             return False
         # The collector counts accepted synchronized frames, not proxy publishes.
@@ -1455,6 +1455,7 @@ class HgDaggerSupervisor(Node):
                 float(self.get_parameter(
                     "collector_save_timeout_sec" if save else "collector_command_timeout_sec"
                 ).value),
+                **({"metadata": metadata} if save and metadata is not None else {}),
             )
         collector_ok = bool(
             result is not None and result.acknowledged and result.success

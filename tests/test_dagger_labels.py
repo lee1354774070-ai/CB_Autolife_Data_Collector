@@ -129,5 +129,21 @@ class DaggerLabelsTest(unittest.TestCase):
                 validate_features(features, enabled)
 
 
+
+
+class SuccessAnnotationTest(unittest.TestCase):
+    def test_takeover_classification_is_independent_of_correction_mask(self):
+        from dagger_labels import success_annotation
+        for takeover, expert_frames in ((False,0),(True,0),(True,5)):
+            result=success_annotation(dict(trial_id='trial',task_success=True,human_takeover=takeover),
+                trial_id='trial',episode_index=7,task='pick',frames=10,
+                expert_frames=expert_frames,request_id='save-1')
+            self.assertEqual(result['success_source'], 'human_intervention' if takeover else 'autonomous')
+            self.assertEqual(result['annotation_source'],'operator_confirmation')
+        with self.assertRaises(ValueError):
+            success_annotation(dict(trial_id='trial',task_success=True,human_takeover=False),
+                trial_id='trial',episode_index=7,task='pick',frames=10,expert_frames=1,request_id='save-1')
+
+
 if __name__ == "__main__":
     unittest.main()

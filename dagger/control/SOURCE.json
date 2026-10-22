@@ -14,10 +14,12 @@
       "Save explicitly requested policy-only episodes; expert mask remains unchanged",
       "Use unified A start / B save / X reset only / Y discard only in status hints",
       "Allow explicit Y discard after a confirmed invalid workspace; retain ambiguous publication results without replay",
-      "Parameterize the joint-feedback topic; launch profile supplies robot/domain suffix"
+      "Parameterize the joint-feedback topic; launch profile supplies robot/domain suffix",
+      "Forward optional operator-confirmed success metadata with a correlated save; retain legacy FIFO calls"
     ],
     "recorder.py": [
-      "Carry episode_invalid and publication_uncertain in correlated command receipts"
+      "Carry episode_invalid and publication_uncertain in correlated command receipts",
+      "Optional compact JSON metadata after request ID; bounded atomic FIFO writes; legacy command and receipt compatible"
     ],
     "core.py": [
       "Add explicit expert-authority selection for the collection atomic V4 handoff; no HOLD ACK claim"

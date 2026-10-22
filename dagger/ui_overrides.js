@@ -1,11 +1,11 @@
 // Loaded after the pinned V4 app. No WebXR transport or pose math is replaced.
 Object.assign(HG_DAGGER_MODE_LABELS, {
   DISARMED: '待命：A 开始推理和录制',
-  POLICY_ACTIVE: '模型控制：握持键接管；B 保存；Y 丢弃',
+  POLICY_ACTIVE: '模型控制：握持键接管；B 确认成功；Y 丢弃',
   FAILURE_HOLD: '模型已停止，等待控制器保持',
   EXPERT_RELEASE_REQUIRED: '松开握持键，再握重新锚定',
-  EXPERT_READY: '握持移动；B 保存；Y 丢弃；X 复位',
-  EXPERT_ACTIVE: '人工纠错：B 保存；Y 丢弃；X 复位',
+  EXPERT_READY: '握持移动；B 确认成功；Y 丢弃；X 复位',
+  EXPERT_ACTIVE: '人工纠错：B 确认成功；Y 丢弃；X 复位',
   ESTOP: '输出已停止，请先检查错误'
 });
 
@@ -16,7 +16,7 @@ ensureHgControlsHud = function () {
   drawHgPanelBackground(hud, 0.48);
   hud.context.fillStyle = '#F0F4F8';
   hud.context.font = '500 30px sans-serif';
-  hud.context.fillText('A 开始 · 握持接管 · B 保存 · Y 丢弃', 32, 47);
+  hud.context.fillText('A 开始 · 握持接管 · B 确认成功 · Y 丢弃', 32, 47);
   hud.context.fillText('X 仅复位（先保存或丢弃） · B/Y 不复位', 32, 99);
   hud.texture.needsUpdate = true;
   state.hgControlsHud = hud;
@@ -54,7 +54,7 @@ if (document.title !== collectorRobotTitle) {
   const title = document.querySelector('.title');
   if (title) title.textContent = document.title;
   if (collectorGuide) collectorGuide.textContent =
-    'A 开始推理和录制；握持接管；B 保存；'
+    'A 开始推理和录制；握持接管；B 确认成功；'
     + 'Y 丢弃；X 仅全身复位（先保存或丢弃当前条）；'
     + '短按面键操作，长按不重复。Y 不负责退出，退出用启动器或终端 Q。';
 }

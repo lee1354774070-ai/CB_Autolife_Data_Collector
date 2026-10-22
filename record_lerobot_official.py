@@ -71,7 +71,7 @@ from camera_config import CAMERA_SPECS, DEFAULT_DEPTH_CAMERA_TOPICS
 from robot_schema import RobotSchema, build_robot_schema, parse_gripper_command
 from dagger_labels import (
     DaggerLabels, features_for_actions as dagger_features, timestamp_ns as dagger_timestamp_ns,
-    validate_features as validate_dagger_features,
+    validate_features as validate_dagger_features, success_annotation,
 )
 from episode_storage import EpisodeStore, StorageBudget, StorageLimitError
 from eef_schema import (
@@ -620,7 +620,7 @@ class OfficialLeRobotRecorder(Node):
             try:
                 with fifo_path.open("r", encoding="utf-8") as fifo:
                     for line in fifo:
-                        command = line.strip().lower()
+                        command = line.strip()
                         if command:
                             self.control_queue.put(command)
                         if self.stop_requested:
@@ -679,6 +679,7 @@ class OfficialLeRobotRecorder(Node):
         frames: int = 0,
         message: str,
         subtask_status: dict | None = None,
+        task_outcome: dict | None = None,
     ) -> None:
         """Publish receipts; mid-episode marks use compact asynchronous I/O."""
 
@@ -721,6 +722,8 @@ class OfficialLeRobotRecorder(Node):
             ],
             "wall_time": time.time(),
         }
+        if task_outcome is not None:
+            payload["task_outcome"] = task_outcome
         status_path = Path(self.args.status_file)
         if event == "mark_subtask":
             self.mark_status_future = self.mark_status_writer.submit(write_json_atomic, status_path, payload)
@@ -1664,7 +1667,7 @@ class OfficialLeRobotRecorder(Node):
                                    frames=self.current_episode_frames, message="subtask confirmed")
         return True
 
-    def save_current_episode(self, reason: str, request_id: str | None = None) -> bool:
+    def save_current_episode(self, reason: str, request_id: str | None = None, *, dagger_outcome: dict | None = None) -> bool:
         if self.save_failed:
             self._write_command_status("save", False, request_id, message="save failed: previous result uncertain; no retry")
             return False
@@ -1690,6 +1693,17 @@ class OfficialLeRobotRecorder(Node):
             return False
         episode_index = self.saved_episodes
         episode_frames = self.current_episode_frames
+        task_outcome = None
+        if dagger_outcome is not None:
+            try:
+                if getattr(self, "dagger", None) is None:
+                    raise ValueError("Task outcome confirmation requires DAgger recording")
+                task_outcome = success_annotation(dagger_outcome, trial_id=self.dagger.trial_id,
+                    episode_index=episode_index, task=self.args.task_name, frames=episode_frames,
+                    expert_frames=self.dagger.expert_frames, request_id=request_id)
+            except ValueError as exc:
+                self._write_command_status("save", False, request_id, message=str(exc))
+                return False
         subtask_status = self.subtasks.progress()
         self.get_logger().info(
             f"saving episode {episode_index} with {episode_frames} frame(s) ({reason})"
@@ -1713,6 +1727,12 @@ class OfficialLeRobotRecorder(Node):
                                       needs_review=manifest["needs_review"],
                                       annotation_file=str(Path(self.args.output_dir) /
                                                           annotation_paths[1].relative_to(self.episode_store.work)))
+            if task_outcome is not None:
+                outcome_path = self.episode_store.work / "annotations/dagger" / f"episode_{episode_index:06d}.json"
+                outcome_path.parent.mkdir(parents=True, exist_ok=True)
+                if outcome_path.exists():
+                    raise RuntimeError(f"DAgger outcome already exists: {outcome_path}")
+                write_json_atomic(outcome_path, task_outcome)
             self.dataset.save_episode(parallel_encoding=False)
             self.dataset.finalize()
             if annotation_paths is not None:
@@ -1768,6 +1788,7 @@ class OfficialLeRobotRecorder(Node):
             frames=episode_frames,
             message="episode saved",
             subtask_status=subtask_status,
+            **({"task_outcome": task_outcome} if task_outcome is not None else {}),
         )
         return True
 
@@ -1855,13 +1876,23 @@ class OfficialLeRobotRecorder(Node):
             except Empty:
                 break
 
-            parts = command_line.split(maxsplit=1)
-            command = parts[0]
-            request_id = parts[1] if len(parts) == 2 else None
+            parts = command_line.split(maxsplit=2)
+            command = parts[0].lower()
+            request_id = parts[1] if len(parts) >= 2 else None
+            metadata = None
+            if len(parts) == 3:
+                try:
+                    metadata = json.loads(parts[2])
+                    if command != "save" or not isinstance(metadata, dict):
+                        raise ValueError("Only save accepts a task outcome object")
+                except ValueError as exc:
+                    self._write_command_status(command, False, request_id, message=f"invalid command metadata: {exc}")
+                    continue
             if command in ("start", "enter", "resume"):
                 self.start_episode(f"command:{command}", request_id)
             elif command == "save":
-                self.save_current_episode("command:save", request_id)
+                self.save_current_episode("command:save", request_id,
+                                          **({"dagger_outcome": metadata} if metadata is not None else {}))
             elif command == "mark_subtask":
                 self.mark_subtask(request_id)
             elif command == "discard":

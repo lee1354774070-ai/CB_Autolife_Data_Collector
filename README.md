@@ -447,13 +447,28 @@ DAGGER_PUBLISH=1 bash start_lerobot_official_collect.sh dagger_live
 |---|---|
 | A | 等待录制回执及硬件就绪后放行模型 |
 | 任一Grip新按下 | 立即切人工权限，增量控制，不等待HTTP；之后不自动交还模型 |
-| B | 保存并停用本轮，不复位 |
+| B | 确认任务成功并保存、停用本轮，不复位 |
 | Y | 丢弃本轮，不复位 |
 | X | 全身复位并张开夹爪；有待处理数据/忙碌时拒绝，先B/Y并释放Grip |
 
 面键无需双Grip；终端为 **C开始、A保存、X/D丢弃、R复位、Q退出**。
 DAgger退出丢弃未确认条目，要保留必须先B确认。接管振动依赖WebXR支持。
-控制回执不证明到位，保存不证明任务成功；训练须显式使用 `dagger.action_train_mask`。
+控制回执不证明到位。B、启动器“确认任务成功并保存”和终端A表示**由操作员确认任务成功**，不做自动成功判定。
+未接管标为模型自主成功；只要本条曾接管，即使有效纠错帧为0，也标为人工接管成功。失败条目用Y丢弃。
+
+成功标注随episode事务保存在 `dataset/annotations/dagger/episode_000000.json`，以`episode_index`关联数据：
+```json
+{"episode_index": 0, "task_success": true, "success_source": "autonomous",
+ "human_takeover": false, "annotation_source": "operator_confirmation"}
+```
+接管成功对应`success_source="human_intervention"`、`human_takeover=true`。文件还记录任务、trial_id、帧数、有效纠错帧数及保存请求ID。
+保存失败、未确认和丢弃不会向正式数据目录发布成功标注；回执的`success`仍只表示文件保存结果，`task_outcome.task_success`才是人工确认的任务结果。
+
+`dagger.train_mask`和`dagger.action_train_mask`保持原义，模型段仍为0。联合训练时，自主成功条目可进入经人工筛选的自模仿数据池，
+接管成功条目继续按原纠错掩码选择有效动作；不要为了混合训练将模型段伪装成专家纠错。混合比例由训练端决定。
+升级需先正常结束旧宿主，再重启新版整套DAgger；仅更新attach终端或启动器不能给旧宿主添加此标记。
+历史条目或旧客户端的普通save没有成功侧文件时，按“未标注”处理，不自动补成成功。此次新增侧文件不改变Parquet schema；
+只有原有schema一致时才能续录，新旧纠错掩码字段不同仍需新目录。
 
 接入已有兼容宿主，另开终端并匹配机器人、目录、任务、发布权限：
 
@@ -496,6 +511,7 @@ task_name/
     data/                   Parquet
     videos/                 RGB / 可选depth
     annotations/subtasks/   可选子任务侧文件
+    annotations/dagger/     操作员确认的任务成功及自主/接管来源
     sync_log.jsonl          软件同步诊断
     .collector-work/        当前私有暂存，运行时禁止删除
     .collector-commit.json  仅提交/恢复期间存在

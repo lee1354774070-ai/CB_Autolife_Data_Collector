@@ -46,7 +46,7 @@ def describe_state(state):
         recording = '保存待确认（请勿关闭）'
     if trial.get('invalid_reason'):
         recording = '录制失效'
-    lines = [f'{title}  ·  {recording}', f"本条 {trial.get('recorded_frames', 0)} 帧  /  人工 {trial.get('expert_frames', 0)} 帧  ·  " + ('已接管' if trial.get('human_takeover') else '无接管也可按 B 保存整条')]
+    lines = [f'{title}  ·  {recording}', f"本条 {trial.get('recorded_frames', 0)} 帧  /  人工 {trial.get('expert_frames', 0)} 帧  ·  " + ('已接管' if trial.get('human_takeover') else '完成后按 B 确认自主成功')]
     notice = state.get('notice', {})
     error = trial.get('invalid_reason') or state.get('gripper_tracking_warning') or state.get('failure_reason')
     if error:
@@ -129,7 +129,7 @@ class Launcher:
         controls = tk.Frame(body, bg=BG)
         controls.pack(fill='x', pady=(16, 0))
         self.control_buttons = {}
-        for (index, (name, title)) in enumerate([('start', '开始推理 + 录制'), ('finish', '结束本条 / 保存'), ('discard', '丢弃本条（不复位）'), ('reset', '全身复位'), ('quit', '退出采集')]):
+        for (index, (name, title)) in enumerate([('start', '开始推理 + 录制'), ('finish', '确认任务成功并保存'), ('discard', '丢弃本条（不复位）'), ('reset', '全身复位'), ('quit', '退出采集')]):
             button = self.button(controls, title, lambda name=name: self.command(name))
             button.configure(state='disabled', padx=10)
             button.grid(row=index // 3, column=index % 3, sticky='ew', padx=(0, 8), pady=(0, 8))
@@ -142,8 +142,8 @@ class Launcher:
         self.synced = self.label(body, '等待后台状态同步', 11)
         self.synced.configure(wraplength=690, justify='left')
         self.synced.pack(anchor='w', pady=(8, 0))
-        self.label(body, 'A 开始 · 握持接管 · B 保存 · Y 丢弃 · X 仅复位', 11).pack(anchor='w', pady=(12, 8))
-        self.label(body, 'Shift+A 开始 / Shift+B 保存 / Shift+Y 丢弃 / Shift+X 仅复位', 10).pack(anchor='w')
+        self.label(body, 'A 开始 · 握持接管 · B 确认成功 · Y 丢弃 · X 仅复位', 11).pack(anchor='w', pady=(12, 8))
+        self.label(body, 'Shift+A 开始 / Shift+B 确认成功 / Shift+Y 丢弃 / Shift+X 仅复位', 10).pack(anchor='w')
         self.label(body, '数据位置由 OUTPUT_BASE_DIR 指定', 10).pack(anchor='w', pady=(12, 0))
         root.after(400, self.poll)
 

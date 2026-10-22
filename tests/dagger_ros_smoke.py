@@ -118,7 +118,7 @@ def main():
     from std_msgs.msg import String
     from dagger.supervisor import CollectorDaggerSupervisor, HgDaggerSupervisor
 
-    commands, enable_calls, reset_calls = [], [], []
+    commands, enable_calls, reset_calls, outcomes = [], [], [], []
     fail_save = threading.Event()
     quit_recorder = threading.Event()
     with tempfile.TemporaryDirectory(prefix="dagger_smoke_") as directory:
@@ -136,7 +136,12 @@ def main():
                     continue
                 while b"\n" in pending:
                     line, pending = pending.split(b"\n", 1)
-                    command, request = line.decode().split()
+                    parts = line.decode().split(maxsplit=2)
+                    command, request = parts[:2]
+                    if len(parts) == 3:
+                        outcome = json.loads(parts[2])
+                        assert command == "save" and outcome["task_success"] is True
+                        outcomes.append(outcome)
                     commands.append(command)
                     if command == "save":
                         time.sleep(.15)  # Encoding must not block button/control callbacks.
@@ -297,6 +302,8 @@ def main():
             wait_idle()
             assert commands == ["start", "save"], commands
             assert not reset_calls, "B unexpectedly moved reset"
+            assert outcomes[-1]["human_takeover"] is True
+            assert outcomes[-1]["trial_id"]
             click("A")
             wait_idle()
             vr(gripActive=False, right={"gripActive": True})
@@ -324,6 +331,7 @@ def main():
             fail_save.set()
             click("B")
             wait_idle()
+            assert outcomes[-1]["human_takeover"] is False, "A new autonomous trial inherited takeover"
             pending = node._pending_collector_result
             assert pending is not None
             sent = list(commands)

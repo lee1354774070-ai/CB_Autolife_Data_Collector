@@ -92,7 +92,8 @@ DAGGER_PUBLISH=0 bash start_dagger.sh dagger_release_check --check
 3. 子任务核对 `subtask_index` 和 `annotations/subtasks/episode_*.json`，边界连续且不越界。
 4. DAgger核对 `dagger.control_source`、`dagger.is_intervention`、`dagger.train_mask`、21维 `dagger.action_train_mask`。仅身体纠错而夹爪保持旧指令时，整帧掩码为0、身体19维为1、夹爪2维为0；模型/保持段全0。升级后使用新任务目录，旧schema不直接续录。
    训练部分纠错时用逐维掩码；旧整帧掩码保留保守规则，模型条目不能直接当作专家监督。
-5. 上线前检查首/中/末帧能被LeRobot加载，同步日志无 `EPISODE INVALID`，逐步增加连续录制时长。
+5. DAgger新功能验收：先A开始、不接管，任务成功后B保存；再A开始、Grip接管完成后B保存；第三条A后Y丢弃。前两条annotations/dagger/episode_XXXXXX.json分别为task_success=true且success_source=autonomous/human_intervention；第三条不新增标注或episode。确认掩码没有因成功标签改变。
+6. 上线前检查首/中/末帧能被LeRobot加载，同步日志无EPISODE INVALID，逐步增加连续录制时长。
 
 DAgger低CPU录制暂存图像体积更大；保证磁盘空间和吞吐。
 原有深度编解码和时间戳同步限制不变。不同schema不能向同一目录追加。

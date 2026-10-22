@@ -170,8 +170,11 @@ class CollectorFifo:
         return {}
 
     def command(
-        self, depth: bool, command: str, request_id: Optional[str] = None
+        self, depth: bool, command: str, request_id: Optional[str] = None,
+        *, metadata: Optional[Dict[str, Any]] = None,
     ) -> bool:
+        if metadata is not None and not request_id:
+            raise ValueError("Save metadata requires a correlated request ID")
         path = self.paths[bool(depth)]
         if not path or not os.path.exists(path):
             return False
@@ -181,19 +184,25 @@ class CollectorFifo:
                 line = command.rstrip()
                 if request_id:
                     line += f" {request_id}"
-                os.write(fd, (line + "\n").encode("utf-8"))
+                if metadata is not None:
+                    line += " " + json.dumps(metadata, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+                payload = (line + "\n").encode("utf-8")
+                if len(payload) > os.fpathconf(fd, "PC_PIPE_BUF"):
+                    return False
+                return os.write(fd, payload) == len(payload)
             finally:
                 os.close(fd)
-            return True
         except OSError:
             return False
 
     def command_and_wait(
-        self, depth: bool, command: str, timeout: float = 3.0
+        self, depth: bool, command: str, timeout: float = 3.0,
+        *, metadata: Optional[Dict[str, Any]] = None,
     ) -> CollectorCommandResult:
         """Send a correlated command and require the collector's file ACK."""
         request_id = uuid.uuid4().hex
-        if not self.command(depth, command, request_id):
+        if not self.command(depth, command, request_id,
+                            **({"metadata": metadata} if metadata is not None else {})):
             return CollectorCommandResult(
                 False, False, command, request_id,
                 "collector FIFO is unavailable or has no reader",

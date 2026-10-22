@@ -115,7 +115,8 @@ class RecorderStorageTest(unittest.TestCase):
                                 node._record_tick()
                             self.assertFalse(node.episode_invalid, node.episode_invalid_reason)
                         self.assertEqual(node.current_episode_frames, 3)
-                        self.assertTrue(node.save_current_episode('synthetic-eef'))
+                        outcome = dict(trial_id=node.dagger.trial_id, task_success=True, human_takeover=True) if with_dagger else None
+                        self.assertTrue(node.save_current_episode('synthetic-eef', dagger_outcome=outcome))
                     finally:
                         node.finish()
                         node.destroy_node()
@@ -139,6 +140,9 @@ class RecorderStorageTest(unittest.TestCase):
                                     action='eef+gripper' if with_action else 'joint')
                     converted_info = json.loads((Path(directory) / 'training/meta/info.json').read_text())
                     self.assertEqual(converted_info['robot_type'], robot_type)
+                    if with_dagger:
+                        sidecar = Path('annotations/dagger/episode_000000.json')
+                        self.assertEqual((root / sidecar).read_bytes(), (Path(directory) / 'training' / sidecar).read_bytes())
                     # A second real recorder reopens this root without losing
                     # the sidecar during create/resume/empty-workspace cleanup.
                     node = recorder.OfficialLeRobotRecorder(args)
@@ -250,7 +254,7 @@ class RecorderStorageTest(unittest.TestCase):
                         node.state_buffer.append(recorder.StateSample(
                             np.zeros(node.schema.size, dtype=np.float32),
                             np.zeros(node.schema.size, dtype=np.float32), now, now))
-                    def add():
+                    def add(source=1):
                         frame = {'task': args.task_name}
                         for name, feature in node.dataset.features.items():
                             if name.startswith('observation.images.'):
@@ -263,14 +267,16 @@ class RecorderStorageTest(unittest.TestCase):
                             packet = dict(timestamp_ns=stamp+20_000_000, authority_epoch=3,
                                 original_command_timestamp_ns=stamp+20_000_000,
                                 dagger=dict(timestamp_ns=stamp+22_000_000, authority_timestamp_ns=stamp,
-                                    authority_epoch=3, control_source=1, is_intervention=1,
-                                    intervention_id=1, trial_id='synthetic'))
+                                    authority_epoch=3, control_source=source, is_intervention=source,
+                                    intervention_id=source, trial_id=f'synthetic-{node.saved_episodes}'))
                             labels.ingest(packet)
                             labels.ingest({**packet, 'origin_authority_epoch':2,
                                            'original_command_timestamp_ns':stamp-1_000_000}, gripper=True)
                             values = labels.frame((stamp+30_000_000)/1e9,
                                                    {'action_body':-10, 'action_gripper':-10}, .5)
                             frame.update({k:np.asarray(v,dtype=np.int64).reshape(-1) for k,v in values.items()})
+                            node.dagger.trial_id = packet['dagger']['trial_id']
+                            node.dagger.expert_frames += int(any(values['dagger.action_train_mask']))
                         node.storage_budget.admit(frame)
                         node.dataset.add_frame(frame)
                         node.current_episode_frames += 1
@@ -284,8 +290,9 @@ class RecorderStorageTest(unittest.TestCase):
                         self.assertTrue(node.start_episode('test'))
                         self.assertIsNotNone(node.storage_budget.started)
                         for _ in range(3):
-                            add()
-                        self.assertTrue(node.save_current_episode('test'))
+                            add(source=0)
+                        outcome = dict(trial_id=node.dagger.trial_id, task_success=True, human_takeover=False) if mode == 'dagger' else None
+                        self.assertTrue(node.save_current_episode('test', dagger_outcome=outcome))
                         saved = {p: hashlib.sha256(p.read_bytes()).hexdigest()
                                  for group in ('data', 'videos', 'meta', 'annotations')
                                  for p in (root / group).rglob('*') if p.is_file()}
@@ -315,7 +322,8 @@ class RecorderStorageTest(unittest.TestCase):
                         self.assertTrue(node.start_episode('after-discard'))
                         for _ in range(3):
                             add()
-                        self.assertTrue(node.save_current_episode('test'))
+                        outcome = dict(trial_id=node.dagger.trial_id, task_success=True, human_takeover=True) if mode == 'dagger' else None
+                        self.assertTrue(node.save_current_episode('test', dagger_outcome=outcome))
                         self.assertEqual(node.saved_episodes, 2)
                         self.assertEqual(sum(pq.read_metadata(p).num_rows for p in (root / 'data').rglob('*.parquet')), 6)
                         if mode == 'dagger':
@@ -323,7 +331,14 @@ class RecorderStorageTest(unittest.TestCase):
                                                   columns=['dagger.train_mask','dagger.action_train_mask'])
                             self.assertEqual(table['dagger.train_mask'].to_pylist(), [0]*6)
                             self.assertEqual(table['dagger.action_train_mask'].to_pylist(),
-                                             [[1]*14+[0,0]+[1]*5]*6)
+                                             [[0]*21]*3 + [[1]*14+[0,0]+[1]*5]*3)
+                            paths = sorted((root / 'annotations/dagger').glob('*.json'))
+                            self.assertEqual(len(paths), 2)
+                            outcomes = [json.loads(p.read_text()) for p in paths]
+                            self.assertEqual([x['success_source'] for x in outcomes], ['autonomous','human_intervention'])
+                            self.assertEqual([x['episode_index'] for x in outcomes], [0,1])
+                            self.assertEqual([x['expert_frames'] for x in outcomes], [0,3])
+                            self.assertTrue(all(x['task_success'] for x in outcomes))
                         for path in (root / 'videos').rglob('*.mp4'):
                             with av.open(str(path)) as video:
                                 self.assertEqual(sum(1 for _ in video.decode(video=0)), 3)
