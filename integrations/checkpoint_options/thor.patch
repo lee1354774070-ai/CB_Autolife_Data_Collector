@@ -1,0 +1,260 @@
+--- a/deploy/groot_n1_7/server.py
++++ b/deploy/groot_n1_7/server.py
+@@ -7,6 +7,7 @@
+ import hmac
+ import json
+ import os
++import secrets
+ import threading
+ import time
+ import traceback
+@@ -115,10 +116,29 @@
+         )
+         self.lock = threading.RLock()
+         self.session: InferenceSessionProtocol | None = None
++        self.reload_lease = ""
++        self.reload_deadline = 0.0
++
++    def prepare_reload(self, payload):
++        with self.lock:
++            if self.session is not None or time.monotonic() < self.reload_deadline:
++                raise ProtocolError("Inference session or model switch is active")
++            self.reload_lease = secrets.token_hex(16)
++            self.reload_deadline = time.monotonic() + 60
++            return {"lease": self.reload_lease}
++
++    def cancel_reload(self, payload):
++        with self.lock:
++            if not self.reload_lease or payload.get("lease") != self.reload_lease:
++                raise ProtocolError("Invalid model switch lease")
++            self.reload_deadline = 0.0
++            self.reload_lease = ""
++            return {"cancelled": True}
+ 
+     def health(self) -> dict[str, Any]:
+         return {
+-            "ready": True,
++            "ready": time.monotonic() >= self.reload_deadline,
++            "checkpoint_switch_supported": True,
+             "active_session": self.session is not None,
+             "policy_type": "groot",
+             "model_version": "n1.7",
+@@ -127,6 +147,9 @@
+             "controller_submission_receipts": self.mode in ("policy_only_baseline", "policy_only_frame") and not self.history_offsets,
+             "robot_io": False,
+             "gripper_mode": getattr(self.session_factory, "_wyli_gripper_mode", "continuous"),
++            "gripper_phases": list(getattr(self.session_factory, "_wyli_gripper_phases", ())),
++            "gripper_task_phases": getattr(self.session_factory, "_wyli_gripper_task_phases", {}),
++            "checkpoint": os.environ.get("GROOT_CHECKPOINT_LABEL", ""),
+             "max_gripper_step": getattr(self.session_factory, "_wyli_max_gripper_step", None),
+             "old_chunk_guidance": False,
+             "continuity_scoring": False,
+@@ -219,12 +242,23 @@
+         if not isinstance(task, str) or not task.strip():
+             raise ProtocolError("task must be a non-empty string")
+         with self.lock:
++            if time.monotonic() < self.reload_deadline:
++                raise ProtocolError("Checkpoint switch in progress; try again after readiness")
++            expected = payload.get("expected_checkpoint")
++            if expected is not None and expected != os.environ.get("GROOT_CHECKPOINT_LABEL", ""):
++                raise ProtocolError("Loaded checkpoint differs from the selected checkpoint")
+             if self.session is not None:
+                 raise ProtocolError(
+                     "An active session already exists; ACK any live proposal and "
+                     "close it explicitly before starting another"
+                 )
+-            candidate = self.session_factory(task)
++            if "gripper_phase" in payload:
++                phase = payload["gripper_phase"]
++                if not isinstance(phase, str) or phase not in getattr(self.session_factory, "_wyli_gripper_phases", ()):
++                    raise ProtocolError("This service does not support the requested gripper_phase")
++                candidate = self.session_factory(task, gripper_phase=phase)
++            else:
++                candidate = self.session_factory(task)
+             cycle = candidate.infer(self._observation(payload))
+             # Publish the new session only after its first inference succeeds;
+             # malformed/missing history must not leave an uncloseable zombie.
+@@ -423,6 +457,8 @@
+                         "cancel": engine.cancel,
+                         "discard": engine.discard,
+                         "close": engine.close,
++                        "prepare_reload": engine.prepare_reload,
++                        "cancel_reload": engine.cancel_reload,
+                     }[method](payload)
+                 response["server_request_ms"] = float(
+                     (time.perf_counter() - started) * 1000.0
+@@ -450,6 +486,8 @@
+                 "cancel",
+                 "discard",
+                 "close",
++                "prepare_reload",
++                "cancel_reload",
+             }:
+                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                 return
+--- a/deploy/groot_n1_7/policy_only_session.py
++++ b/deploy/groot_n1_7/policy_only_session.py
+@@ -17,6 +17,12 @@
+     InferenceCycle,
+ )
+ from .protocol import ExecutionAck, ProposalEnvelope, ProtocolError, array_digest
++
++LEGACY_GRIPPER_TASKS = {
++    "Pick the laundry bag.": "pick",
++    "Place the laundry bag in the upper compartment of the delivery robot.": "place",
++}
++GRIPPER_PHASES = ("pick", "place", "continuous")
+ 
+ 
+ class PolicyOnlyInferenceSession:
+@@ -37,6 +43,7 @@
+         gripper_guard: bool = False,
+         max_gripper_step: float = 20.0,
+         gripper_phase_aware: bool = False,
++        gripper_phase: str | None = None,
+     ) -> None:
+         contract.validate()
+         if not task.strip():
+@@ -58,19 +65,19 @@
+             for name in ("left_gripper", "right_gripper")
+         )
+         self._gripper_phase = None
+-        if gripper_phase_aware:
+-            tasks = {
+-                "Pick the laundry bag.": "pick",
+-                "Place the laundry bag in the upper compartment of the delivery robot.": "place",
+-            }
+-            if task not in tasks:
++        if gripper_phase is not None and gripper_phase not in GRIPPER_PHASES:
++            raise ValueError("gripper_phase must be pick, place or continuous")
++        if gripper_phase is None and gripper_phase_aware:
++            if task not in LEGACY_GRIPPER_TASKS:
+                 raise ValueError("phase-aware gripper requires an exact supported pick/place instruction")
++            gripper_phase = LEGACY_GRIPPER_TASKS[task]
++        if gripper_phase in ("pick", "place"):
+             if self._gripper_indices != (14, 15) or tuple(
+                 contract.state_feature_names.index(name)
+                 for name in ("left_gripper", "right_gripper")
+             ) != (14, 15):
+                 raise ValueError("phase-aware gripper requires state/action gripper indices 14,15")
+-            self._gripper_phase = tasks[task]
++            self._gripper_phase = gripper_phase
+         self._gripper_held = np.zeros(2, dtype=bool)
+         self._gripper_released = np.zeros(2, dtype=bool)
+         self._place_initialized = False
+@@ -344,7 +351,7 @@
+     loaded = load_policy(pretrained_dir, device=device)
+     generator = GrootCandidateGenerator(loaded)
+ 
+-    def factory(task: str) -> PolicyOnlyInferenceSession:
++    def factory(task: str, *, gripper_phase: str | None = None) -> PolicyOnlyInferenceSession:
+         loaded.reset()
+         return PolicyOnlyInferenceSession(
+             contract=loaded.contract,
+@@ -354,9 +361,12 @@
+             gripper_guard=gripper_guard,
+             max_gripper_step=max_gripper_step,
+             gripper_phase_aware=gripper_phase_aware,
++            gripper_phase=gripper_phase,
+         )
+ 
+     factory._wyli_gripper_mode = "phase_aware" if gripper_phase_aware else "continuous"
++    factory._wyli_gripper_phases = GRIPPER_PHASES if gripper_guard else ()
++    factory._wyli_gripper_task_phases = LEGACY_GRIPPER_TASKS if gripper_phase_aware else {}
+     factory._wyli_max_gripper_step = float(max_gripper_step) if gripper_guard and not gripper_phase_aware else None
+     factory._wyli_history_offsets = ()  # type: ignore[attr-defined]
+     factory._wyli_route_gate = "none"  # type: ignore[attr-defined]
+--- a/deploy/groot_n1_7/thor/manage.sh
++++ b/deploy/groot_n1_7/thor/manage.sh
+@@ -30,7 +30,7 @@
+ 
+ variant_model_dir() {
+   case "$1" in
+-    baseline) printf '%s\n' "${RUNTIME_ROOT}/models/baseline" ;;
++    baseline) printf '%s\n' "${GROOT_BASELINE_MODEL_DIR:-${RUNTIME_ROOT}/models/baseline}" ;;
+     frame) printf '%s\n' "${RUNTIME_ROOT}/models/frame" ;;
+     full) printf '%s\n' "${RUNTIME_ROOT}/models/full" ;;
+     soma) printf '%s\n' "${RUNTIME_ROOT}/models/frame" ;;
+@@ -170,6 +170,7 @@
+     --ulimit memlock=-1 \
+     --ulimit stack=67108864 \
+     -e PYTHONPATH=/workspace \
++    -e GROOT_CHECKPOINT_LABEL="$(basename "$(realpath "${model_dir}")")" \
+     -e HF_HOME=/cache/huggingface \
+     -e HF_HUB_OFFLINE=1 \
+     -e TRANSFORMERS_OFFLINE=1 \
+--- a/deploy/tests/groot_n1_7/test_server.py
++++ b/deploy/tests/groot_n1_7/test_server.py
+@@ -7,6 +7,39 @@
+ from deploy.groot_n1_7.protocol import array_digest, encode_rgb_chw
+ from deploy.groot_n1_7.protocol import ProtocolError
+ from deploy.groot_n1_7.server import GrootRemoteEngine
++
++
++def test_reload_lease_rejects_sessions_and_unknown_cancel():
++    engine = GrootRemoteEngine(demo_contract(), build_demo_session, mode="test")
++    lease = engine.prepare_reload({})
++    assert not engine.health()['ready']
++    with pytest.raises(ProtocolError, match="switch"):
++        engine.start({'task': 'task', **payload(1)})
++    with pytest.raises(ProtocolError):
++        engine.prepare_reload({})
++    with pytest.raises(ProtocolError):
++        engine.cancel_reload({'lease': 'bad'})
++    engine.cancel_reload(lease)
++    assert engine.health()['ready']
++    engine.start({'task': 'task', **payload(1)})
++    with pytest.raises(ProtocolError):
++        engine.prepare_reload({})
++
++
++def test_expected_checkpoint_and_explicit_phase_are_checked_before_infer(monkeypatch):
++    monkeypatch.setenv('GROOT_CHECKPOINT_LABEL', 'new')
++    calls = []
++    def factory(task, *, gripper_phase=None):
++        calls.append((task, gripper_phase))
++        return build_demo_session(task)
++    factory._wyli_gripper_phases = ('pick', 'place', 'continuous')
++    engine = GrootRemoteEngine(demo_contract(), factory, mode='test')
++    for fields in ({'expected_checkpoint': 'old'}, {'gripper_phase': 'bad'}):
++        with pytest.raises(ProtocolError):
++            engine.start({'task': 'custom', **payload(1), **fields})
++    assert calls == []
++    engine.start({'task': 'custom', 'gripper_phase': 'pick', 'expected_checkpoint': 'new', **payload(1)})
++    assert calls == [('custom', 'pick')]
+ 
+ 
+ def payload(sequence_id: int):
+@@ -39,6 +72,7 @@
+                 "executed_prefix_digest": array_digest(actions),
+             },
+             "actual_executed_prefix": actions.tolist(),
++            "observed_state": payload(1)['state'],
+         }
+     )
+     assert response["acknowledged_steps"] == 40
+--- a/deploy/groot_n1_7/tests/test_phase_gripper.py
++++ b/deploy/groot_n1_7/tests/test_phase_gripper.py
+@@ -18,6 +18,22 @@
+         return CandidateBatch(a.copy(),a)
+ 
+ class PhaseGripperTest(unittest.TestCase):
++    def test_explicit_phase_preserves_prompt_and_digest(self):
++        for phase in ('pick', 'place', 'continuous'):
++            generator = Generator()
++            generator.actions[:,14:16] = 200
++            session = PolicyOnlyInferenceSession(contract=demo_contract(), candidate_generator=generator,
++                task='Pick the laundry bag from the washing machine.', gripper_guard=True,
++                gripper_phase_aware=True, gripper_phase=phase)
++            proposal, output = self.infer(session, 1, [130, 130])
++            self.assertEqual(proposal.executable_chunk_digest, array_digest(output))
++            if phase in ('pick', 'place'):
++                np.testing.assert_array_equal(output[:,14:16], 360)
++            session.discard_unexecuted(proposal.proposal_id)
++        with self.assertRaises(ValueError):
++            PolicyOnlyInferenceSession(contract=demo_contract(), candidate_generator=Generator(),
++                task='custom', gripper_guard=True, gripper_phase='wrong')
++
+     def make(self,task=PICK,phase=True):
+         g=Generator()
+         s=PolicyOnlyInferenceSession(contract=demo_contract(),candidate_generator=g,

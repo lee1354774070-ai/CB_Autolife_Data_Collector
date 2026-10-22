@@ -183,9 +183,10 @@ task_success=true，success_source为autonomous（本条从未接管）或human_
 
 当前只支持Thor GR00T baseline/frame的controller_submission_receipts协议。
 controller_ack验证目标前缀/digest，只证明提交，不推进verifier历史。客户端不改动作。
-phase_aware夹爪策略只适用于完整任务文本：
-`Pick the laundry bag.` 与 `Place the laundry bag in the upper compartment of the delivery robot.`。
-抓取达到120度后锁持，放置预测不大于60度释放；其他任务先核对策略，不直接套用。
+新Thor通过显式 `gripper_phase=pick|place|continuous` 将任务文本与夹爪阶段分开。
+启动器auto仅精确识别六个已有任务及旧抓袋任务，自定义文本必须选择阶段；旧客户端不传阶段时仍只接受原两个完整任务文本。
+抓取实测达到120度后锁持，放置预测不大于60度释放；连续模式保留原保护。
+详见 [模型与任务切换](INFERENCE_LAUNCHERS_zh.md)，客户端不修改动作或ACK。
 
 状态文件20Hz后台读取，超过1秒不更新撤销输出；DDS图缓存5Hz刷新，过期600ms拒绝输出。
 trace有界2048队列，诊断丢失统计单独记录，不影响训练标签。

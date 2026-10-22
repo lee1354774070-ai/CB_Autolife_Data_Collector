@@ -1,0 +1,60 @@
+{
+  "thor": {
+    "deploy/groot_n1_7/server.py": {
+      "before": "1b76b37fdf5273959d226ace9a9727c27d33742f0878c284a803f6ccdbb3f701",
+      "after": "e0d5cb2670dc825c8fe3c276b9e2f0ed5cb19c6ff2ce57ed0233fd794b1eb064"
+    },
+    "deploy/groot_n1_7/policy_only_session.py": {
+      "before": "ccd1cfb31e0a949251cbb66f8bdf907adf1193eb9f455d4475fe54e36a725bd9",
+      "after": "58277d0fa153ca8fa764ae6a132327d4f6f48c406fd52774a2d6563ae829c3e6"
+    },
+    "deploy/groot_n1_7/thor/manage.sh": {
+      "before": "72f252674125f6d800193eddfe86af7c782fb9b9e504b78bf19576f43f754ff5",
+      "after": "f15ba9b0a955ec23bad358f7c321aba1080071d9d641b9d8e396c8f20271134b"
+    },
+    "deploy/tests/groot_n1_7/test_server.py": {
+      "before": "8d89f79994713332843295d5f5128f85d1ee01b852601a2405219eb3f5e75b0b",
+      "after": "995ad3d522654b60a7d4c2de463623d7aebfc4dea80a110325e1edd6a065be38"
+    },
+    "deploy/groot_n1_7/tests/test_phase_gripper.py": {
+      "before": "d1b197e3abd5f3315219615823713ee3e6d15edbb5f9bfb335c9c5649f005b48",
+      "after": "2eddcf6814b8b3e96fdbe05e4eb5b87e16db208dd03bced0ee5da265970995c9"
+    }
+  },
+  "robot_client": {
+    "deploy/groot_n1_7/robot_client.py": {
+      "before": "b6c74d86597d40c5f7945f82a3465ab0b3b8c711b0d02d5b9ce0b2323fa87617",
+      "after": "9b6e7caee1165d09b78e8e8013b11d6e2eb4ffa16b5e81fd1f756745a732e16f"
+    },
+    "deploy/groot_n1_7/robot_deploy.py": {
+      "before": "fe2781c2370369e18e325a185dee8c6fc0efb6bde3bd1d41b189c2b3d7516e9b",
+      "after": "45e6d19bf2576daa56358e3b90c3c6e67c12cf21f9fd2db07ca632bb0eb88bd2"
+    },
+    "deploy/groot_n1_7/robot_deploy_baseline.py": {
+      "before": "1ed9ac8bcf20414f324cd75cb62d5d040fd0e68182235b92bf6521a1ab189b62",
+      "after": "b3538d677f98a05a1d8316f0287a806dc2d8ed499c1bd0a4a2514362e1079196"
+    }
+  },
+  "multi_launcher": {
+    "laundry_cycle.py": {
+      "before": "7db97b5f180a07893850afb8c965d445b902112a566350e70426fb2cb87a5339",
+      "after": "ba67056b5a5d298286f152a00efc83f090af49f9b0666aff36be0eb6d14b77f0"
+    },
+    "laundry_cycle_app.py": {
+      "before": "2ad5f34b3eb254820935bbf4373c98ea57e15daaa4f87f1d03878fe1550b7a6f",
+      "after": "e440ff8c6d24c377e46adb19bd8bc7bea387d1d5c36b6678ef74242f0a6af4b3"
+    },
+    "cycle_process.py": {
+      "before": "830cdb828adacc8940fa5f4347a16a74961d7775fe6ad22ba710bc29df836892",
+      "after": "362b909632bca294fee794b162913d489501d5526a9d253602f03d78717e0cf3"
+    },
+    "test_cycle_control.py": {
+      "before": "749ae6dd6382826a1e3146776fd140003306a87ee43860411aaf33abfff6449b",
+      "after": "cb7f099583ef397e08001d07f3fa83e64e8cc6e23eeb6e697e885af37b43a1c0"
+    },
+    "README.md": {
+      "before": "3c42a3ddd35ae8a8ecc28edbcb7ff15214f866f0c8ae31c33487207c9f85bcc7",
+      "after": "ad2d2204feaf21625a9fa36c81fbe3bd83e69ad47e7ab6d022d87a31068d3ee0"
+    }
+  }
+}

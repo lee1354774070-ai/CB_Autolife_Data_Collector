@@ -11,6 +11,7 @@ from std_msgs.msg import String
 from .control.groot_policy_bridge import GrootPolicyBridge
 from .control.groot_bridge_core import array_digest_float32
 from .robot_profile import resolve_robot
+from .inference_options import validate_selection
 
 
 class CollectorThorBridge(GrootPolicyBridge):
@@ -82,6 +83,20 @@ class CollectorThorBridge(GrootPolicyBridge):
     def _connect(self):
         super()._connect()
         resolve_robot(os.environ).validate_health(self._health)
+        validate_selection(self._health, os.environ['TASK_TEXT'], os.environ.get('DAGGER_GRIPPER_PHASE', 'auto'),
+                           os.environ.get('DAGGER_EXPECTED_CHECKPOINT', ''))
+
+    def _post(self, endpoint, payload):
+        if endpoint == '/start':
+            phase = validate_selection(self._health, payload['task'],
+                os.environ.get('DAGGER_GRIPPER_PHASE', 'auto'), os.environ.get('DAGGER_EXPECTED_CHECKPOINT', ''))
+            payload = dict(payload)
+            if phase in self._health.get('gripper_phases', ()):
+                payload['gripper_phase'] = phase
+            expected = os.environ.get('DAGGER_EXPECTED_CHECKPOINT', '') or self._health.get('checkpoint', '')
+            if expected:
+                payload['expected_checkpoint'] = expected
+        return super()._post(endpoint, payload)
 
     def _publish_status(self):
         # Tag the producer generation, not whichever new trial is active while

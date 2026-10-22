@@ -1,0 +1,170 @@
+--- a/laundry_cycle.py
++++ b/laundry_cycle.py
+@@ -65,8 +65,8 @@
+ 
+ def validate(plan):
+     ordered_tasks(plan)
+-    if plan.get("checkpoint") != "laundry_bag_six_tasks_continual_034000":
+-        raise ValueError("计划必须指定 034000；此字段不等同于服务器模型验证")
++    if not isinstance(plan.get("checkpoint"), str) or not plan["checkpoint"].strip():
++        raise ValueError("请先选择并应用 checkpoint；运行前将核对服务器实际模型")
+     for name in ("table", "delivery", "washer", "dryer"):
+         for field in ("locations", "preparations"):
+             value = waypoint_for(plan, name) if field == "locations" else plan.get(field, {}).get(name)
+@@ -126,7 +126,14 @@
+         self.legacy.navigate(self.targets[location])
+ 
+     def policy(self, prompt):
+-        self.legacy.run_policy(self.args, prompt)
++        import subprocess
++        import sys
++        from cycle_process import policy_command, check_server
++        plan = {**self.plan, 'server_url': self.args.server_url, 'token_file': str(self.args.token_file)}
++        check_server(plan)
++        command = policy_command(sys.executable, plan, prompt)
++        command[-1] = str(self.args.policy_max_steps)
++        subprocess.run(command, check=True)
+ 
+     def pose(self, task_id):
+         from pose_transition import move_if_needed
+--- a/laundry_cycle_app.py
++++ b/laundry_cycle_app.py
+@@ -7,6 +7,7 @@
+ import uuid
+ import sys
+ import os
++sys.path.append('/home/ubuntu/CB_Autolife_Data_Collector')
+ from tkinter import font as tkfont
+ from cycle_process import TerminalProcess, policy_command, robot_preflight
+ from head_preview import Preview
+@@ -81,12 +82,13 @@
+         body = ttk.Frame(window, padding=16)
+         body.pack(fill="both", expand=True)
+         ttk.Label(body, text="多任务推理启动器", style="Title.TLabel").pack(anchor="w")
+-        self.banner = tk.Label(body, text="ROBOT 300 / GR00T 034000 · 真机模式 · 等待开始，不会自动复位或开爪", bg="#fff4de", fg="#875b19", pady=4, padx=12, anchor="w", font=(self.font_family, 10))
++        self.banner = tk.Label(body, text="ROBOT 300 / 计划模型：" + self.plan.get('checkpoint', '未选择') + " · 启动前核对 Thor 实际模型", bg="#fff4de", fg="#875b19", pady=4, padx=12, anchor="w", font=(self.font_family, 10))
+         self.banner.pack(fill="x")
+         tools_bar = ttk.Frame(body)
+         tools_bar.pack(fill="x", pady=(4, 0))
+         ttk.Button(tools_bar, text="任务编排 / 从中途开始", command=self.order_dialog).pack(side="left")
+         ttk.Button(tools_bar, text="自检（不动作）", command=self.self_check).pack(side="left", padx=8)
++        ttk.Button(tools_bar, text="选择 checkpoint…", command=self.checkpoint_dialog).pack(side="left", padx=8)
+         ttk.Button(tools_bar, text="手动复位…", command=self.reset_dialog).pack(side="left")
+         ttk.Button(tools_bar, text="中途接管 / 夹爪 / 底盘…", command=self.manual_dialog).pack(side="left", padx=8)
+         menubar = tk.Menu(window)
+@@ -574,6 +576,26 @@
+             label = waypoint_for(self.plan, location) or "点位未配置"
+             self.table.insert("", "end", iid=str(tid), values=(f"task{tid}", title, label))
+ 
++    def checkpoint_dialog(self):
++        from gui.checkpoint_panel import CheckpointDialog
++        CheckpointDialog(self.window, lambda: not self.active and self.terminal.process is None,
++            self.checkpoint_loaded, self.plan.get('server_url', 'http://192.168.8.224:8777'))
++
++    def checkpoint_loaded(self, name):
++        if self.active or self.terminal.process is not None:
++            raise RuntimeError('运行中不修改本轮模型；请结束后刷新')
++        path = ROOT / 'laundry_cycle_plan.json'
++        temporary = path.with_name('.' + path.name + '.' + uuid.uuid4().hex + '.tmp')
++        try:
++            plan = json.loads(path.read_text())
++            plan['checkpoint'] = name
++            temporary.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + '\n')
++            temporary.replace(path)
++        finally:
++            temporary.unlink(missing_ok=True)
++        self.plan = plan
++        self.banner.configure(text='ROBOT 300 / 已核实模型：' + name + ' · 任务顺序与位姿保持当前配置')
++
+     def apply_task_order(self, order):
+         if self.active or self.terminal.process is not None:
+             messagebox.showwarning("正在运行", "先结束本轮并等待进程退出，再调整任务。")
+--- a/cycle_process.py
++++ b/cycle_process.py
+@@ -8,6 +8,8 @@
+ import subprocess
+ import threading
+ import tty
++import sys
++sys.path.append('/home/ubuntu/CB_Autolife_Data_Collector')
+ 
+ 
+ class TerminalProcess:
+@@ -103,10 +105,12 @@
+ 
+ 
+ def policy_command(python, plan, prompt):
++    from dagger.inference_options import selected_phase
+     return [python, "-u", "-m", "deploy.groot_n1_7.robot_deploy_baseline",
+             "--server-url", plan.get("server_url", "http://192.168.8.224:8777"),
+             "--token-file", plan.get("token_file", "/home/ubuntu/.config/pi05_remote_token"),
+-            "--task", prompt, "--publish", "--max-steps", "0"]
++            "--task", prompt, "--gripper-phase", selected_phase(prompt),
++            "--expected-checkpoint", plan['checkpoint'], "--publish", "--max-steps", "0"]
+ 
+ 
+ def robot_preflight(plan):
+@@ -145,6 +149,10 @@
+         raise RuntimeError("推理会话被占用或状态未知；先在原客户端结束并退出。无人使用但仍占用时，在 Thor 执行 sudo docker restart groot-n1.7，再自检。不要中断他人任务。")
+     if health.get("mode") != "policy_only_baseline":
+         raise RuntimeError("服务不是 policy_only_baseline；请切换正确推理服务。")
++    if health.get('checkpoint') != plan['checkpoint']:
++        raise RuntimeError('实际加载的 checkpoint 与本轮计划不同；请点击选择 checkpoint 刷新并核实。')
++    if not {'pick', 'place'}.issubset(health.get('gripper_phases', ())):
++        raise RuntimeError('Thor 尚未支持任务夹爪阶段，请先更新推理服务。')
+     print("SELF_CHECK_OK：服务连通、认证通过、GR00T baseline 就绪、无活动会话；未请求推理或发布动作。", flush=True)
+ 
+ 
+--- a/test_cycle_control.py
++++ b/test_cycle_control.py
+@@ -61,15 +61,15 @@
+ 
+     def test_readonly_health_rejects_busy_unknown_and_unready(self):
+         for state, ready, ok in ((False, True, True), (True, True, False), (None, True, False), (False, False, False)):
+-            response = io.StringIO(json.dumps(dict(active_session=state, ready=ready, policy_type="groot", mode="policy_only_baseline")))
++            response = io.StringIO(json.dumps(dict(active_session=state, ready=ready, policy_type="groot", mode="policy_only_baseline", checkpoint='model', gripper_phases=['pick', 'place'])))
+             opener = MagicMock()
+             opener.open.return_value.__enter__.return_value = response
+             with patch("pathlib.Path.read_text", return_value="fake-token"), patch("urllib.request.build_opener", return_value=opener):
+                 if ok:
+-                    check_server({})
++                    check_server({'checkpoint': 'model'})
+                 else:
+                     with self.assertRaises(RuntimeError):
+-                        check_server({})
++                        check_server({'checkpoint': 'model'})
+             request = opener.open.call_args.args[0]
+             self.assertEqual(request.get_method(), "GET")
+             self.assertTrue(request.full_url.endswith("/health"))
+@@ -114,7 +114,9 @@
+             terminal.interrupt()
+ 
+     def test_command_and_pose_exclude_gripper(self):
+-        cmd = policy_command("python", {}, "Put the laundry bag into the dryer.")
++        cmd = policy_command("python", {'checkpoint': 'model'}, "Put the laundry bag into the dryer.")
++        self.assertEqual(cmd[cmd.index('--gripper-phase') + 1], 'place')
++        self.assertEqual(cmd[cmd.index('--expected-checkpoint') + 1], 'model')
+         self.assertIn("--publish", cmd)
+         self.assertNotIn("--reset", cmd)
+         q = [0.]*23
+--- a/README.md
++++ b/README.md
+@@ -1,8 +1,17 @@
+ # 多任务推理启动器
++
++## 2026-10-22 模型切换
++
++300已部署“选择 checkpoint…”按钮，与云蝶DAgger启动器共用模型管理窗口。
++先结束本轮，刷新Thor模型列表，选择并应用，等待“实际加载…就绪”；原任务顺序、位姿和逐项确认不变。
++不再强制034000。运行前核对服务端实际模型；任务按原英文文本和对应pick/place阶段传递。
++模型列表来自Thor已有完整21维checkpoint，不自动下载模型；当前无待执行session才允许切换。
++本次完成离线/界面与只读推理验证，不替代更换模型后的现场动作验收。
++源与部署说明见 `/home/ubuntu/CB_Autolife_Data_Collector/INFERENCE_LAUNCHERS_zh.md`。
+ 
+ ## 当前交付边界
+ 
+-原生 Tk 桌面窗口，不需要浏览器、云服务或网络端口。已接入真实执行入口：通过伪终端复用原客户端 c/s/q，导航与位姿复用旧串联脚本。**尚未部署到机器人或真机联调**，缺少点位/位姿配置会阻止启动。原双任务脚本未修改。
++原生 Tk 桌面窗口，不需要浏览器或新增网页端口。已部署300：通过伪终端复用原客户端 c/s/q，导航与位姿复用旧串联脚本。缺少点位/位姿配置会阻止启动；新checkpoint的真机表现需现场验收，软件检查不替代实测。原双任务脚本未修改。
+ 
+ 主界面三个键：开始（随阶段变为继续、确认完成、开始下一任务）、暂停、结束。推理时结束先发送 s 再 q，正常退出后才出现结果确认；退出本身不算成功。其他阶段结束会终止本轮。导航/位姿阶段暂停会请求取消并停止本轮，不提供未经验证的中途恢复。软件按钮不是硬件急停。
+ 

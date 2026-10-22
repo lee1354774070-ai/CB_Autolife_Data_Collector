@@ -1,0 +1,94 @@
+--- a/deploy/groot_n1_7/robot_client.py
++++ b/deploy/groot_n1_7/robot_client.py
+@@ -20,6 +20,15 @@
+ from .inference_session import CausalHistoryWindow
+ from .protocol import ExecutionAck, ProtocolError, array_digest, encode_rgb_chw
+ from .auth import read_token
++
++
++def validate_inference_selection(health, phase=None, checkpoint=None):
++    if health.get("ready") is not True:
++        raise RuntimeError("Inference service is not ready")
++    if phase is not None and phase not in health.get("gripper_phases", ()):
++        raise RuntimeError("Service does not support the selected gripper phase")
++    if checkpoint is not None and health.get("checkpoint") != checkpoint:
++        raise RuntimeError("Loaded checkpoint differs from the selected checkpoint")
+ 
+ 
+ class ActionRevisionBarrier:
+@@ -235,10 +244,13 @@
+     command prefix that was actually sent.
+     """
+ 
+-    def __init__(self, server_url: str, token: str, *, timeout_sec: float = 30.0) -> None:
++    def __init__(self, server_url: str, token: str, *, timeout_sec: float = 30.0,
++                 gripper_phase=None, expected_checkpoint=None) -> None:
+         self.server_url = server_url.rstrip("/")
+         self.token = token
+         self.timeout_sec = float(timeout_sec)
++        self.gripper_phase = gripper_phase
++        self.expected_checkpoint = expected_checkpoint
+         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+         self._lock = threading.Lock()
+ 
+@@ -337,7 +349,15 @@
+         return payload
+ 
+     def start(self, task: str, observation_payload: Mapping[str, Any]) -> dict[str, Any]:
+-        return self._request("/start", {"task": task, **observation_payload})
++        payload = {"task": task, **observation_payload}
++        if self.gripper_phase is not None or self.expected_checkpoint is not None:
++            health, _ = self.health()
++            validate_inference_selection(health, self.gripper_phase, self.expected_checkpoint)
++        if self.gripper_phase is not None:
++            payload["gripper_phase"] = self.gripper_phase
++        if self.expected_checkpoint is not None:
++            payload["expected_checkpoint"] = self.expected_checkpoint
++        return self._request("/start", payload)
+ 
+     def infer(
+         self, session_id: str, observation_payload: Mapping[str, Any]
+--- a/deploy/groot_n1_7/robot_deploy.py
++++ b/deploy/groot_n1_7/robot_deploy.py
+@@ -31,6 +31,7 @@
+     ActionRevisionBarrier,
+     CausalHistoryBuffer,
+     GrootRemoteClient,
++    validate_inference_selection,
+ )
+ from deploy.groot_n1_7.robot_mapping import (
+     policy_state_from_q23,
+@@ -482,9 +483,13 @@
+         self.args = args
+         token = read_token(args.token, args.token_file)
+         self.client = GrootRemoteClient(
+-            args.server_url, token, timeout_sec=args.timeout_sec
++            args.server_url, token, timeout_sec=args.timeout_sec,
++            gripper_phase=getattr(args, "gripper_phase", None),
++            expected_checkpoint=getattr(args, "expected_checkpoint", None),
+         )
+         self.health, self.contract = self.client.health()
++        validate_inference_selection(self.health, getattr(args, "gripper_phase", None),
++                                     getattr(args, "expected_checkpoint", None))
+         self.io = RobotIO(args, self.contract)
+         offsets = tuple(int(value) for value in self.health["outcome_history_offsets"])
+         self.history = CausalHistorySampler(
+--- a/deploy/groot_n1_7/robot_deploy_baseline.py
++++ b/deploy/groot_n1_7/robot_deploy_baseline.py
+@@ -22,6 +22,8 @@
+     parser = common.build_parser()
+     parser.description = __doc__
+     parser.set_defaults(task="Pick the laundry bag.")
++    parser.add_argument("--gripper-phase", choices=("pick", "place", "continuous"))
++    parser.add_argument("--expected-checkpoint")
+     args = parser.parse_args()
+     if args.robot_id != "300":
+         parser.error("This robot mapping is bound to robot 300")
+@@ -35,6 +37,7 @@
+     client = common.GrootRemoteClient(args.server_url, token, timeout_sec=args.timeout_sec)
+     health, _ = client.health()
+     require_baseline(health)
++    common.validate_inference_selection(health, args.gripper_phase, args.expected_checkpoint)
+     deployment = BaselineDeployment(args)
+     deployment.run()
+ 

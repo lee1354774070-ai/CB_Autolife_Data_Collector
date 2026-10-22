@@ -39,6 +39,9 @@ def main():
         client = RemoteClient(os.environ["DAGGER_SERVER_URL"], token, 10.)
         health = client.request("/health")
         robot.validate_health(health)
+        from dagger.inference_options import validate_selection
+        validate_selection(health, os.environ['TASK_TEXT'], os.environ.get('DAGGER_GRIPPER_PHASE', 'auto'),
+                           os.environ.get('DAGGER_EXPECTED_CHECKPOINT', ''))
         GrootContract.from_mapping(health.get("contract", {}))
         node = rclpy.create_node("collector_dagger_preflight")
         try:

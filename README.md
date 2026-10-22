@@ -226,6 +226,8 @@ export SYNC_IMAGE_BUFFER_SIZE=16
 | `DAGGER_DEPENDENCY_ROOT` | `/home/ubuntu/ros2_ws/src` | 包含已审核 `openarmx_teleop_vr_306_v4` 的目录。源文件须通过哈希检查，启动器在 `.runtime/` 副本中应用补丁，不改同事原代码。 |
 | `DAGGER_TOOLS_ROOT` | 集合仓库自动取根目录；独立库为 `/home/ubuntu/Autolife_VLA_Tools` | 保留旧Tools目录兼容入口；DAgger预检现在复用仓库内HTTP客户端，不再为读health要求安装整套Tools。 |
 | `DAGGER_WEB_PORT` | `8447` | V4扩展网页的HTTPS端口，1～65535。改变端口不能解决两套控制器争用关节的问题。 |
+| `DAGGER_GRIPPER_PHASE` | `auto` | 六个内置任务按精确文本匹配抓取/放置；自定义文本必须显式选 `pick`、`place` 或 `continuous`。需要更新后的Thor服务。 |
+| `DAGGER_EXPECTED_CHECKPOINT` | 空 | 非空时核对Thor实际模型，失配拒绝开始；桌面刷新/应用模型后自动填写。 |
 | `DAGGER_ROS_SETUP` | 有工作区时加载工作区，否则系统ROS | 显式指定的脚本必须存在；支持新机器没有`ros2_ws`的安装布局。 |
 | `DAGGER_ROS_PY` | `/usr/bin/python3` | ROS监督器、桥接和attach使用的Python。 |
 | `DAGGER_VR_PY` | `/home/ubuntu/ros2_ws/venvs/openarmx_v4_placo/bin/python` | 增量遥操作控制器Python，需安装Placo等依赖。 |
@@ -495,8 +497,9 @@ bash start_lerobot_official_collect.sh dagger_live --check
 DAgger桌面启动器自动生成 `hotel_scene_dataset_YYMMDD_备注_dagger`，备注留空时使用时间。
 备注已带 `_dagger` 时不重复添加；同名目录另加时间再以 `_dagger` 结尾，不改名或覆盖已有数据。终端指定的完整任务名保持原样。
 
-Thor须支持 `controller_submission_receipts=true`；阶段夹爪策略只支持审核过的完整任务文本。
-详情见 [DAgger实现](INSTRUCTION_zh.md#dagger)，不是任意任务通用策略。
+Thor须支持 `controller_submission_receipts=true`。桌面“选择 checkpoint…”支持读取Thor实际模型、刷新可用模型及空闲时切换；任务下拉框可以直接编辑，自定义文本必须明确选夹爪阶段。
+切换checkpoint需要重载权重；更换任务不重载权重，但应先结束/保存本条并停止采集服务，再配置下一轮。
+详见 [模型与任务切换](INFERENCE_LAUNCHERS_zh.md)。任务文本必须符合该checkpoint的训练任务，能填写任意文本不代表模型学过该任务。
 
 <a id="data"></a>
 ## 8. 续录、输出和故障处理

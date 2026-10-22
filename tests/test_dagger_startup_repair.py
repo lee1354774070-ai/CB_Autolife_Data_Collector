@@ -135,7 +135,7 @@ class LauncherStatusTest(unittest.TestCase):
             node=SimpleNamespace(node=Mock(),process=Mock(),state_at=0,control_state={},stopping=False,
                 request=None,estop_request=None,control_buttons={},reader=io.StringIO(line+'\n'),
                 pending='',failure='',status=Mock(),detail=Mock(),synced=Mock(),root=Mock(),poll=Mock(),
-                start_button=Mock(),stop_button=Mock(),instruction=Mock(),remark=Mock(),option_widgets=[])
+                start_button=Mock(),stop_button=Mock(),instruction=Mock(),phase=Mock(),remark=Mock(),option_widgets=[])
             node.process.poll.return_value=code
             scope['poll'](node)
             self.assertEqual(node.detail.configure.call_args.kwargs['text'],line)

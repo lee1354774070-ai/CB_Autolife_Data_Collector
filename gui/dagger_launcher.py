@@ -11,9 +11,13 @@ from std_srvs.srv import Trigger
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 BASE = Path('/home/ubuntu/CB_Autolife_Data_Collector')
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dagger.inference_options import TASKS, PHASES, selected_phase
+from gui.checkpoint_panel import CheckpointDialog
 LOGS = Path.home() / '.local/state/collector-compatible-dagger'
 DATA_ROOT = Path(os.environ.get('OUTPUT_BASE_DIR', '/home/ubuntu/nas14'))
 
@@ -66,6 +70,7 @@ class Launcher:
     def __init__(self, root):
         (self.root, self.process, self.log_path, self.reader) = (root, None, None, None)
         self.stopping = False
+        self.checkpoint = ''
         self.task = ''
         self.variant = 'rgbd'
         (self.control_state, self.state_at, self.request) = ({}, 0.0, None)
@@ -75,8 +80,8 @@ class Launcher:
         self.estop_client = self.node.create_client(Trigger, '/openarmx_teleop_vr_306_v4/emergency_stop')
         self.estop_request = None
         root.title('云蝶DAgger启动器')
-        root.geometry('820x900')
-        root.resizable(False, False)
+        root.geometry('820x940')
+        root.resizable(True, True)
         root.configure(bg=BG)
         root.protocol('WM_DELETE_WINDOW', self.close)
         self.shortcut_held = {}
@@ -84,20 +89,28 @@ class Launcher:
         root.bind('<KeyPress>', self.shortcut_press, add='+')
         root.bind('<KeyRelease>', self.shortcut_release, add='+')
         root.bind('<FocusOut>', self.shortcut_cancel, add='+')
-        body = tk.Frame(root, bg=BG, padx=32, pady=26)
+        body = tk.Frame(root, bg=BG, padx=24, pady=14)
         body.pack(fill='both', expand=True)
         self.label(body, '云蝶  /  ROBOT 300', 11, BLUE).pack(anchor='w')
         self.label(body, 'DAgger 启动器', 25, INK, True).pack(anchor='w', pady=(8, 4))
         self.label(body, '启动服务 → 在此开始 / 结束本条；人工接管时再连接头显', 11).pack(anchor='w')
-        panel = tk.Frame(body, bg=CARD, padx=20, pady=16)
-        panel.pack(fill='x', pady=20)
+        panel = tk.Frame(body, bg=CARD, padx=16, pady=10)
+        panel.pack(fill='x', pady=10)
         self.label(panel, '任务指令', 11, MUTED).pack(anchor='w')
-        self.instruction = tk.Entry(panel, font=('Sans', 12), bg=BG, fg=INK, insertbackground=INK, relief='flat')
+        self.instruction = ttk.Combobox(panel, font=('Sans', 12), values=[task[1] for task in TASKS])
         self.instruction.insert(0, 'Pick the laundry bag.')
-        self.instruction.pack(fill='x', ipady=9, pady=(8, 12))
+        self.instruction.pack(fill='x', ipady=3, pady=(4, 8))
+        model_row = tk.Frame(panel, bg=CARD)
+        model_row.pack(fill='x', pady=(0, 8))
+        self.phase = ttk.Combobox(model_row, state='readonly', values=list(PHASES), width=26)
+        self.phase.set(next(iter(PHASES)))
+        self.phase.pack(side='left')
+        self.button(model_row, '选择 checkpoint…', self.choose_checkpoint).pack(side='right')
+        self.model_status = self.label(panel, '模型：未核实，点击选择 checkpoint 刷新；自定义任务需选夹爪阶段', 10)
+        self.model_status.pack(anchor='w', pady=(0, 8))
         self.label(panel, '备注（选填；名称自动以 _dagger 结尾）', 11).pack(anchor='w')
         self.remark = tk.Entry(panel, font=('Sans', 12), bg=BG, fg=INK, insertbackground=INK, relief='flat')
-        self.remark.pack(fill='x', ipady=9, pady=(8, 12))
+        self.remark.pack(fill='x', ipady=3, pady=(4, 8))
         options = tk.Frame(panel, bg=CARD)
         options.pack(fill='x')
         (self.options, self.option_widgets) = ({}, [])
@@ -116,7 +129,7 @@ class Launcher:
         self.status.pack(anchor='w')
         self.detail = self.label(body, '准备好后点击启动。详细输出仅写入日志。', 11)
         self.detail.configure(wraplength=600, justify='left')
-        self.detail.pack(anchor='w', pady=(8, 18))
+        self.detail.pack(anchor='w', pady=(6, 10))
         actions = tk.Frame(body, bg=BG)
         actions.pack(fill='x')
         self.start_button = self.button(actions, '启动采集服务', self.start, BLUE, BG)
@@ -128,7 +141,7 @@ class Launcher:
         self.log_button.pack(side='right')
         self.log_button.configure(state='disabled')
         controls = tk.Frame(body, bg=BG)
-        controls.pack(fill='x', pady=(16, 0))
+        controls.pack(fill='x', pady=(10, 0))
         self.control_buttons = {}
         for (index, (name, title)) in enumerate([('start', '开始推理 + 录制'), ('finish', '确认任务成功并保存'), ('fail', '任务失败并保存'), ('discard', '丢弃本条（不复位）'), ('reset', '全身复位'), ('quit', '退出采集')]):
             button = self.button(controls, title, lambda name=name: self.command(name))
@@ -160,7 +173,7 @@ class Launcher:
             return 'break'
         if not event.state & 1 or event.state & (4 | 8 | 64 | 128):
             return
-        if isinstance(event.widget, (tk.Entry, tk.Text, tk.Spinbox)) and str(event.widget['state']) != 'disabled':
+        if isinstance(event.widget, (tk.Entry, tk.Text, tk.Spinbox, ttk.Combobox)) and str(event.widget['state']) != 'disabled':
             return
         self.shortcut_held[key] = None
         return 'break'
@@ -191,7 +204,7 @@ class Launcher:
         return tk.Label(parent, text=text, bg=parent['bg'], fg=color, font=('Sans', size, 'bold' if bold else 'normal'))
 
     def button(self, parent, text, command, bg=CARD, fg=INK):
-        return tk.Button(parent, text=text, command=command, bg=bg, fg=fg, activebackground=BLUE, relief='flat', cursor='hand2', font=('Sans', 11, 'bold'), padx=16, pady=10)
+        return tk.Button(parent, text=text, command=command, bg=bg, fg=fg, activebackground=BLUE, relief='flat', cursor='hand2', font=('Sans', 11, 'bold'), padx=16, pady=7)
 
     def update_schema_hint(self):
         size = 16 + 3 * self.options['WITH_HEAD'].get() + 2 * self.options['WITH_UPPER_WAIST'].get()
@@ -205,6 +218,7 @@ class Launcher:
             self.detail.configure(text='请填写任务指令。')
             return
         try:
+            selected_phase(instruction, PHASES[self.phase.get()])
             task = reserve_task(DATA_ROOT, self.remark.get())
         except (ValueError, OSError) as exc:
             self.detail.configure(text=str(exc))
@@ -216,7 +230,7 @@ class Launcher:
         self.log_path = LOGS / (task + '.log')
         try:
             with self.log_path.open('w') as output:
-                self.process = subprocess.Popen([os.environ.get('DAGGER_ROS_PY', '/usr/bin/python3'), '/home/ubuntu/CB_Autolife_Data_Collector/dagger/run.py', task, instruction, '--serve'], stdout=output, stderr=subprocess.STDOUT, start_new_session=True, env={**os.environ, 'DAGGER_BACKEND': 'owned', 'OUTPUT_BASE_DIR': str(DATA_ROOT), 'TASK_TEXT': instruction, **{key: str(int(value.get())) for (key, value) in self.options.items()}})
+                self.process = subprocess.Popen([os.environ.get('DAGGER_ROS_PY', '/usr/bin/python3'), '/home/ubuntu/CB_Autolife_Data_Collector/dagger/run.py', task, instruction, '--serve'], stdout=output, stderr=subprocess.STDOUT, start_new_session=True, env={**os.environ, 'DAGGER_BACKEND': 'owned', 'OUTPUT_BASE_DIR': str(DATA_ROOT), 'TASK_TEXT': instruction, 'DAGGER_GRIPPER_PHASE': PHASES[self.phase.get()], 'DAGGER_EXPECTED_CHECKPOINT': self.checkpoint, **{key: str(int(value.get())) for (key, value) in self.options.items()}})
         except OSError as exc:
             self.status.configure(text='●  启动失败', fg='#ffb09a')
             self.detail.configure(text=str(exc))
@@ -229,6 +243,7 @@ class Launcher:
         self.stopping = False
         self.start_button.configure(state='disabled')
         self.instruction.configure(state='disabled')
+        self.phase.configure(state='disabled')
         self.remark.configure(state='disabled')
         for widget in self.option_widgets:
             widget.configure(state='disabled')
@@ -246,6 +261,14 @@ class Launcher:
         if not self.task or state.get('collector_fifo') != str(expected):
             return
         (self.control_state, self.state_at) = (state, time.monotonic())
+
+    def choose_checkpoint(self):
+        CheckpointDialog(self.root, lambda: not self.process or self.process.poll() is not None,
+            self.checkpoint_loaded, os.environ.get('DAGGER_SERVER_URL', 'http://192.168.8.224:8777'))
+
+    def checkpoint_loaded(self, name):
+        self.checkpoint = name
+        self.model_status.configure(text='已核实模型：' + name)
 
     def emergency_stop(self):
         if self.estop_request:
@@ -327,6 +350,7 @@ class Launcher:
                 self.reader = None
                 self.start_button.configure(state='normal')
                 self.instruction.configure(state='normal')
+                self.phase.configure(state='readonly')
                 self.remark.configure(state='normal')
                 for widget in self.option_widgets:
                     widget.configure(state='normal')
