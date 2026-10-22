@@ -55,6 +55,7 @@ class HgDaggerSupervisor(Node):
         self._policy_status: Dict[str, Any] = {}
         self._last_policy_status_monotonic_ns = 0
         self._latest_grippers = [0.0, 0.0]
+        self._policy_gripper_epoch = -1
         self._vendor_grippers = [0.0, 0.0]
         self._expert_gripper_hold = [10.0, 10.0]
         self._expert_gripper_desired = [10.0, 10.0]
@@ -1046,6 +1047,7 @@ class HgDaggerSupervisor(Node):
                 "authority_epoch": self._machine.authority_epoch,
             })))
             self._latest_grippers = action[14:16]
+            self._policy_gripper_epoch = self._machine.authority_epoch
             if self._policy_resume_pending and self._handback_started_ns:
                 self._timing_ms["grip_release_to_policy_forward"] = (
                     self._elapsed_ms(
@@ -1278,6 +1280,7 @@ class HgDaggerSupervisor(Node):
         expert_active = self._machine.mode == Mode.EXPERT_ACTIVE and any(self._grips)
         if (
             not (policy_active or expert_active)
+            or (policy_active and self._policy_gripper_epoch != self._machine.authority_epoch)
             or measured is None
             or now_ns - self._gripper_measurement_ns > 1_000_000_000
             or self._controller_status.get("hardware_ready") is not True

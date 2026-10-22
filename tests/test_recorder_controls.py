@@ -47,6 +47,7 @@ class RecorderControlsTest(unittest.TestCase):
         from camera_config import CAMERA_SPECS
         spec = CAMERA_SPECS['hand_left']
         node = Mock()
+        node._last_shm_poll_sec = time.time()
         node.args = SimpleNamespace(cameras=['hand_left'], depth_cameras=[])
         node.dataset = None
         node.last_shm_timestamps = {spec.meta_path: 1}
@@ -83,6 +84,7 @@ class RecorderControlsTest(unittest.TestCase):
         from camera_config import CAMERA_SPECS
         cameras = ['hand_left', 'hand_right', 'rgbd_head_depth']
         node = Mock()
+        node._last_shm_poll_sec = time.time()
         node.args = SimpleNamespace(cameras=cameras, depth_cameras=['rgbd_head_depth'])
         node.dataset = None
         node.last_shm_timestamps = {}
@@ -106,6 +108,7 @@ class RecorderControlsTest(unittest.TestCase):
         from camera_config import CAMERA_SPECS
         for succeeds in (False, True):
             node = Mock()
+            node._last_shm_poll_sec = time.time()
             node.args = SimpleNamespace(cameras=['rgbd_head_depth'], depth_cameras=['rgbd_head_depth'])
             node.dataset = None
             node.last_shm_timestamps = {}

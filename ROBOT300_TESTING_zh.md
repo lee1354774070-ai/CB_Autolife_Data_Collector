@@ -97,6 +97,11 @@ DAGGER_PUBLISH=0 bash start_dagger.sh dagger_release_check --check
 DAgger低CPU录制暂存图像体积更大；保证磁盘空间和吞吐。
 原有深度编解码和时间戳同步限制不变。不同schema不能向同一目录追加。
 
+若出现 `EPISODE INVALID`，先保留该任务的 `logs/` 和 `dataset/sync_log.jsonl`，不要将失效条目用于训练。
+失效事件中的 `capture_diagnostics` 记录最近相机轮询间隔、上一帧录制耗时、超过20ms的最近一次Python GC暂停，以及相机生产/读取时间戳。
+它用于区分生产端停顿与采集进程延迟，不放宽150ms新鲜度或30ms同步阈值；仅凭 `stale_reference_camera` 不能判定相机硬件故障。
+诊断复测用新任务录制30–45秒并接管一次；有效时B保存并等待成功回执，失效时保留日志、记录时间，不反复重试。
+
 ## 正常退出、更新与回滚
 
 - 普通/VR/子任务：先等保存或丢弃回执，再Q；Q也会保存有效待处理条目。

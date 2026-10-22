@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import gc
 import inspect
 import json
 import os
@@ -464,6 +465,9 @@ class OfficialLeRobotRecorder(Node):
         ``read_shm_frame`` rejects that generation and the next poll retries it.
         """
 
+        poll_sec = time.time()
+        self._last_shm_poll_gap_ms = (poll_sec - getattr(self, '_last_shm_poll_sec', poll_sec)) * 1000
+        self._last_shm_poll_sec = poll_sec
         metadata_by_camera: dict[str, tuple[Any, tuple[int, ...]]] = {}
         cameras = self.active_cameras if self.dataset is not None else self.args.cameras
         for camera_name in cameras:
@@ -1098,6 +1102,28 @@ class OfficialLeRobotRecorder(Node):
         self.record_ticks_waited += 1
         self._log_sync({"event": "wait", "reason": reason, "wall_time": now, **details})
 
+    def _capture_diagnostics(self, now: float) -> dict:
+        """Read failure evidence once; never add per-frame disk logging."""
+        evidence = {
+            'last_shm_poll_age_ms': (now - getattr(self, '_last_shm_poll_sec', now)) * 1000,
+            'last_shm_poll_gap_ms': getattr(self, '_last_shm_poll_gap_ms', None),
+            'previous_record_tick_ms': getattr(self, '_last_record_tick_ms', None),
+            'recent_gc_pause': dict(getattr(self, '_recent_gc_pause', {})),
+        }
+        if self.args.image_source == 'shm':
+            evidence['cameras'] = {}
+            for name in self.active_cameras:
+                try:
+                    spec = CAMERA_SPECS[name]
+                    metadata = read_shm_metadata(spec)
+                    evidence['cameras'][name] = {
+                        'last_copied_ns': self.last_shm_timestamps.get(spec.meta_path),
+                        'producer_ns': metadata[0] if metadata else None,
+                    }
+                except Exception as exc:
+                    evidence['cameras'][name] = {'diagnostic_error': str(exc)}
+        return evidence
+
     def _invalidate_episode(self, reason: str, now: float, **details: Any) -> None:
         """Freeze the current buffer so it can never be saved as valid data."""
 
@@ -1113,6 +1139,7 @@ class OfficialLeRobotRecorder(Node):
                 "reason": reason,
                 "buffered_frames": self.current_episode_frames,
                 "wall_time": now,
+                "capture_diagnostics": self._capture_diagnostics(now),
                 **details,
             }
         # Disk-full must not throw again while reporting the original failure.
@@ -1178,6 +1205,7 @@ class OfficialLeRobotRecorder(Node):
     def _record_tick(self) -> None:
         if self.stop_requested or self.dataset is None or not self.is_recording:
             return
+        started = time.perf_counter()
         try:
             self.dataset.writer.image_writer.check()
             if self.dagger_progress_future is not None and self.dagger_progress_future.done():
@@ -1190,6 +1218,8 @@ class OfficialLeRobotRecorder(Node):
             # in this workspace has been published to the saved dataset.
             reason = str(exc) if isinstance(exc, StorageLimitError) else 'capture_write_failed'
             self._invalidate_episode(reason, time.time(), detail=str(exc))
+        finally:
+            self._last_record_tick_ms = (time.perf_counter() - started) * 1000
 
     def _record_frame(self) -> None:
         now = time.time()
@@ -1951,6 +1981,16 @@ def main() -> None:
               flush=True)
     rclpy.init()
     node = OfficialLeRobotRecorder(args)
+    gc_started = {}
+    def record_gc_pause(phase, info):
+        generation = info['generation']
+        if phase == 'start':
+            gc_started[generation] = time.perf_counter()
+        elif generation in gc_started:
+            duration_ms = (time.perf_counter() - gc_started.pop(generation)) * 1000
+            if duration_ms >= 20:
+                node._recent_gc_pause = dict(generation=generation, duration_ms=duration_ms, wall_time=time.time())
+    gc.callbacks.append(record_gc_pause)
     executor = SingleThreadedExecutor()
     executor.add_node(node)
 
@@ -2005,6 +2045,7 @@ def main() -> None:
             executor.spin_once(timeout_sec=0.05)
             node.process_control_commands()
     finally:
+        gc.callbacks.remove(record_gc_pause)
         try:
             node.finish()
         finally:
