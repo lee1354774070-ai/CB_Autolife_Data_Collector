@@ -2852,7 +2852,7 @@ function hgKeyboardRelease(code, cancelled = false) {
   const button = hgKeyboardHeld.get(code);
   if (!button) return;
   hgKeyboardHeld.delete(code);
-  sendReliablePacket({type: 'button_release', button, pressed: false, cancelled,
+  sendReliablePacket({type: 'button_release', source: 'keyboard', button, pressed: false, cancelled,
     hand: 'AB'.includes(button) ? 'right' : 'left'});
 }
 document.addEventListener('keydown', event => {
@@ -2865,7 +2865,7 @@ document.addEventListener('keydown', event => {
     setStatus('键盘操作失败：控制连接未就绪'); return;
   }
   hgKeyboardHeld.set(event.code, button);
-  sendReliablePacket({type:'button_press', button, pressed:true,
+  sendReliablePacket({type:'button_press', source:'keyboard', button, pressed:true,
     hand:'AB'.includes(button) ? 'right' : 'left'});
 });
 document.addEventListener('keyup', event => hgKeyboardRelease(event.code));

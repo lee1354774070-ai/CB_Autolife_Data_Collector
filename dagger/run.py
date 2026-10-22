@@ -212,7 +212,7 @@ def main():
         wait_recorder(recorder, base, started, stop)
         stack = subprocess.Popen(ros_command(env, "ros2", "launch", str(ROOT / "dagger/stack.launch.py")),
                                  env=env, stdin=subprocess.DEVNULL, start_new_session=True)
-        print("DAgger running. VR: A start, GL/GR held takeover, B save, Y discard, X reset only. "
+        print("DAgger running. VR: A start, GL/GR held takeover, B save, Y tap discard / hold 1s failure save, X reset only. "
               "Terminal: C start, A success save, F failure save, X/D discard, R reset, Q exit.", flush=True)
         print(f"Robot {robot.suffix} / {robot.model}; hardware publishing: {env['DAGGER_PUBLISH']} (1=enabled). "
               "VR X / terminal R resets all body joints and grippers after B/Y receipt; keep workspace clear.", flush=True)

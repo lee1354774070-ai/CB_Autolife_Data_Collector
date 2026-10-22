@@ -202,6 +202,11 @@ def main():
             node._on_vr_input(String(data=json.dumps({"leftController": left,
                 "rightController": right if right is not None else {"gripActive": False}})))
 
+        def y_button(pressed, grip=False):
+            pose = dict(x=0., y=0., z=1.)
+            vr(position=pose, yButton=int(pressed), gripActive=grip,
+               right=dict(position=pose, gripActive=False))
+
         try:
             with patch.object(node._trace, 'barrier', side_effect=TimeoutError('synthetic trace failure')):
                 click("A")
@@ -375,10 +380,12 @@ def main():
             click("A")
             wait_idle()
             sent = list(commands)
-            vr(gripActive=False, yButton=True)
+            y_button(False)
+            y_button(True)
             wait_idle()
-            vr(gripActive=False, yButton=True)
-            vr(gripActive=False, yButton=False)
+            assert commands == sent, 'Y discarded before release'
+            y_button(True)
+            y_button(False)
             wait_idle()
             assert commands == sent + ["discard"]
             assert node._machine.mode.value == "DISARMED"
@@ -389,15 +396,11 @@ def main():
                 if takeover:
                     vr(gripActive=True)
                     wait_idle()
-                def stick(pressed):
-                    pose = dict(x=0., y=0., z=1.)
-                    vr(position=pose, thumbstick={'pressed': 0}, gripActive=takeover,
-                       right=dict(position=pose, thumbstick={'pressed': int(pressed)}, gripActive=False))
-                stick(False)
+                y_button(False, takeover)
                 sent = len(commands)
                 deadline = time.monotonic() + 1.2
                 while time.monotonic() < deadline:
-                    stick(True)
+                    y_button(True, takeover)
                     time.sleep(.03)
                 wait_idle()
                 assert len(commands) == sent + 1 and commands[-1] == 'save', commands
@@ -405,9 +408,12 @@ def main():
                 assert outcomes[-1]["human_takeover"] is takeover
                 assert "任务失败" in node._save_notice["text"]
                 assert node._machine.mode.value == "DISARMED"
-                stick(False)
+                y_button(False, takeover)
+                assert len(commands) == sent + 1, 'Y release discarded after failure save'
                 vr(gripActive=False)
-            print('DAGGER_FAILURE_SAVE_PASS right_stick_held=true no_extra_folders=true task_failure_not_storage_failure=true')
+            node._on_vr_input(String(data=json.dumps(dict(source='keyboard', type='button_press', button='Y', pressed=True))))
+            assert '没有待处理数据' in node._save_notice['text'], 'Browser Shift+Y lost discard mapping'
+            print('DAGGER_FAILURE_SAVE_PASS y_hold=true y_tap_discard=true no_extra_folders=true task_failure_not_storage_failure=true')
             # Repeated status publication during a blocked filesystem read is
             # still independent of NAS latency, as are 90 Hz VR callbacks.
             blocked, release = threading.Event(), threading.Event()

@@ -36,10 +36,10 @@ ROS_DOMAIN_ID=211 ROBOT_ID=345 DAGGER_ROBOT_PROFILE=s3_v3_1 DAGGER_DEPENDENCY_RO
 - 普通/单人/子任务使用原厂输入；DAgger使用独立增量控制器，不能同时运行两套。
 - 常规数采默认`ACTION_MODE=status_target`；DAgger强制`joint`并使用控制器输出代理。旧15维`ACTION_MODE=eef`已删除，不恢复；保留独立`WITH_EEF_STATE`/`WITH_EEF_ACTION`追加及离线转换。
 - 单人面键需GL+GR；DAgger面键无需双Grip，Grip用于人工接管。
-- A开始、B保存/阶段标记、X仅复位、Y仅丢弃；终端键位按README保留。
+- A开始、B保存/阶段标记、X仅复位、Y丢弃；DAgger手柄Y改为短按松开丢弃、长按满1秒失败保存。终端键位按README保留。
 - 原厂X复位未接入，不调用另一套控制器补偿；错误和未确认结果不能显示成功。
 - 21维顺序、相机字段、FIFO回执、epoch/session门控与训练mask不得随意修改。
-- DAgger B/finish确认任务成功；右摇杆单独按住1秒、启动器fail或终端F确认任务失败并保存，Y仍只丢弃。outcome区分autonomous_success/human_corrected_success/failure，接管记录与原纠错mask独立。只写同目录侧文件，不建分类文件夹；侧文件与episode事务提交，存储失败/丢弃不发布，历史缺失不回填。结果未知时不能重发保存或改变原标签。FIFO第三段JSON可选，旧命令/回执兼容。
+- DAgger B/finish确认任务成功；手柄Y长按满1秒、启动器fail或终端F确认任务失败并保存。手柄Y短按松开丢弃；启动器/浏览器Shift+Y仍直接丢弃，右摇杆不负责失败保存。outcome区分autonomous_success/human_corrected_success/failure，接管记录与原纠错mask独立。只写同目录侧文件，不建分类文件夹；侧文件与episode事务提交，存储失败/丢弃不发布，历史缺失不回填。结果未知时不能重发保存或改变原标签。FIFO第三段JSON可选，旧命令/回执兼容。
 - `dagger.train_mask`保留整帧AND语义；`dagger.action_train_mask`按身体/双夹爪来源分别屏蔽。新旧DAgger schema不能在同一数据目录混写。
 - 可选EEF action追加在joint后；逐维mask同步扩展，EEF部分保持0，不能从joint来源推断EEF专家身份。离线转换必须同步投影action mask及统计量。
 - 模型动作只在Thor端digest前修改；客户端不能裁剪或重写proposal/ACK前缀。

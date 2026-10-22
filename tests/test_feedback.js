@@ -33,3 +33,24 @@ test('only takeover vibrates; all status notices remain', async () => {
   send('takeover');
   assert.equal(pulses.length, 2);
 });
+
+test('headset guide and status distinguish Y discard, failure saving and storage errors', () => {
+  const lines = [];
+  const context = vm.createContext({
+    HG_DAGGER_MODE_LABELS: {}, state: {teleop: {}},
+    collectorRobotTitle: 'test', document: {title: 'test', querySelector: () => null},
+    updateHgStatusHud() {}, drawHgPanelBackground() {},
+    createHgCanvasHud: () => ({context: {fillText: text => lines.push(text)}, texture: {}})
+  });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../dagger/ui_overrides.js'), 'utf8'), context);
+  vm.runInContext('ensureHgControlsHud()', context);
+  assert.match(lines.join(' '), /Y 短按松开：丢弃.*按住 1 秒：失败保存/);
+  assert.doesNotMatch(lines.join(' '), /右摇杆/);
+  for (const [text, level] of [['正在保存：任务失败', 'info'], ['本条已保存：任务失败', 'success'],
+    ['本条未保存，请检查录制错误', 'error']]) {
+    context.status = {mode: 'DISARMED', notice: {text, level, token: 1}};
+    const shown = vm.runInContext('hgDaggerVisualState(status)', context);
+    assert.equal(shown.label, text);
+    assert.equal(shown.color, level === 'error' ? '#FF6B6B' : '#7DFFCF');
+  }
+});

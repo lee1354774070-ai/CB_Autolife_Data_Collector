@@ -68,7 +68,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             with_eef_action=os.environ.get('WITH_EEF_ACTION', '0') == '1',
             task_text=os.environ.get('TASK_TEXT', '')))
         self.create_service(SetParametersAtomically, SERVICE, self._on_attached_command)
-        self.get_logger().info("AutoLife DAgger: A=start, GL/GR=takeover, B=save, Y=discard, X=reset")
+        self.get_logger().info("AutoLife DAgger: A=start, GL/GR=takeover, B=save, Y tap=discard / hold 1s=failure save, X=reset")
 
     def _feedback(self, event, text):
         if hasattr(self, "_feedback_pub"):
@@ -130,9 +130,11 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
                 super()._on_expert_release(message)
 
     def _update_face_button_locked(self, button, pressed, now_ns):
+        if button == "Y":
+            return  # The tracked VR stream distinguishes tap from hold.
         # One command per press, independent of hold duration. Storage/RPC
         # waits run in the worker, never in this control callback.
-        if button in ("B", "Y", "X"):
+        if button in ("B", "X"):
             previous = self._face_buttons.get(button, False)
             self._face_buttons[button] = bool(pressed)
             if pressed and not previous:
@@ -353,6 +355,16 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             self._dispatch_operator(action, Trigger.Response(), launcher=False)
 
     def _update_vr_failure_button_locked(self, packet, now_ns):
+        if packet.get("source") == "keyboard":
+            if packet.get("button") == "Y" and packet.get("type") == "button_press" and not packet.get("cancelled"):
+                self._on_face_button_click_locked("Y", now_ns)
+            return
+        if packet.get("button") == "Y" and packet.get("cancelled"):
+            self._failure_button_start_ns = 0
+            self._failure_button_released = False
+        # Reliable controller edges have no pose; only tracked frames time Y.
+        if "leftController" not in packet and "rightController" not in packet:
+            return
         trial = self._intervention_id
         if trial != self._failure_button_trial or now_ns - self._failure_button_last_ns > 300_000_000:
             self._failure_button_start_ns = 0
@@ -360,24 +372,26 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
         self._failure_button_trial = trial
         self._failure_button_last_ns = now_ns
         left, right = packet.get("leftController"), packet.get("rightController")
-        tracked = all(isinstance(c, dict) and isinstance(c.get("thumbstick"), dict)
-                      and c["thumbstick"].get("pressed") in (False, True)
-                      and isinstance(c.get("position"), dict)
+        tracked = all(isinstance(c, dict) and isinstance(c.get("position"), dict)
                       and finite_vector([c["position"].get(k) for k in ("x", "y", "z")], 3) is not None
                       for c in (left, right))
-        if (not tracked or not trial or self._closing or self._button_worker_active
+        if (not tracked or left.get("yButton") not in (False, True)
+                or not trial or self._closing or self._button_worker_active
                 or self._session_start_pending or self._reset_pending
                 or self._launcher_control_active or self._launcher_wait_for_release
                 or self._pending_collector_result is not None
-                or left["thumbstick"]["pressed"]
-                or any(left.get(k) for k in ("xButton", "yButton"))
+                or left.get("xButton")
                 or any(right.get(k) for k in ("aButton", "bButton"))):
             self._failure_button_start_ns = 0
             self._failure_button_released = False
             return
-        if not right["thumbstick"]["pressed"]:
+        if not left["yButton"]:
+            started = self._failure_button_start_ns
             self._failure_button_start_ns = 0
             self._failure_button_released = True
+            if started:
+                action = "fail" if now_ns - started >= 1_000_000_000 else "discard"
+                self._dispatch_operator(action, Trigger.Response(), launcher=False)
         elif self._failure_button_released:
             if not self._failure_button_start_ns:
                 self._failure_button_start_ns = now_ns
@@ -439,10 +453,9 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
                 self._finish_outcome = metadata
             outcome_kind = ("任务失败" if not metadata["task_success"] else
                             "人工纠正成功" if metadata["human_takeover"] else "模型自主成功") if save else ""
-        disabled, detail = self._forward_enable(False)
-        with self._lock:
             self._set_notice_locked("正在保存：" + outcome_kind if save else "正在丢弃", "info")
             self._publish_state()
+        disabled, detail = self._forward_enable(False)
         # The one lifecycle worker owns the trial; authority is already
         # DISARMED. Do not hold the VR/control lock while encoding or waiting.
         reason = ("B success save" if metadata["task_success"] else "F failure save") if save else "Y discard"

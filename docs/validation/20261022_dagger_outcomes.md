@@ -1,7 +1,7 @@
 # 2026-10-22 DAgger三类任务结果标签
 
 同一数据集、同一保存事务，不建分类文件夹、不复制或重编码视频。
-B/finish确认成功；新增启动器fail按钮、窗口Shift+F、owned/attach终端F确认失败并保存；Y仍只丢弃，X仅复位。
+B/finish确认成功；手柄Y长按1秒、启动器fail按钮、窗口Shift+F、owned/attach终端F确认失败并保存；Y短按松开丢弃，X仅复位。
 
 每条annotations/dagger/episode_XXXXXX.json新增outcome：autonomous_success、human_corrected_success或failure。原task_success、human_takeover、成功时的success_source保持兼容；失败时task_success=false、success_source=null，仍记录是否接管。
 标注来源继续是operator_confirmation；结果不改变dagger.train_mask或dagger.action_train_mask。Parquet schema不变。历史文件不回写，缺失结果按未标注处理。
@@ -23,13 +23,15 @@ B/finish确认成功；新增启动器fail按钮、窗口Shift+F、owned/attach�
 现场按A/B完成自主成功一条、Grip后B完成人工纠正成功一条、启动器失败保存一条、Y丢弃一条；核对前三条outcome及第四条不新增数据。
 未代替操作员执行真机动作；长时间录制负载仍需现场持续验收。
 
-## 手柄失败键补充
+## 手柄Y短按/长按及同步反馈
 
-手柄单独向下按住右摇杆1秒，沿用fail保存入口；无需Grip，A/B/X/Y的按下/松开行为保持不变。头显上方说明及启动器提示同步更新。
-检测复用原有VR包，在同一控制锁内、立即Grip处理后运行，不新增订阅/图像处理或网络请求，不增加振动。双摇杆桌面组合、短按和只推方向不触发；追踪丢失、300ms以上输入中断、忙碌、待确认保存和跨trial要求重新松开再按。
+按用户最新约定，替换右摇杆入口：手柄Y短按松开丢弃；按住满1秒确认任务失败并保存。按下时不丢弃，长按保存后松开不再丢弃，持续按住只触发一次。启动器/浏览器Shift+Y仍直接丢弃，启动器Shift+F/终端F仍失败保存；普通VR/子任务键位不变。
+检测复用原VR包，在同一控制锁内、立即Grip处理后运行，不新增订阅、图像处理或网络请求。追踪丢失、300ms以上输入中断、忙碌、待确认保存和跨trial要求重新松开再按。浏览器键盘包增加source标识，避免误套手柄长按。
+网页说明、头显上方常亮说明、各模式提示、启动器页脚和终端说明同步。头显下方及启动器显示同一notice：正在保存/已保存任务失败/保存错误；先发布正在保存，再等待硬件停用及录制回执。仅Grip接管振动。
 
-- 299项Python测试通过，无跳过；新增7项真实检测函数边界测试。
-- S2/S3隔离ROS均通过：实际_on_vr_input连续右摇杆包触发一次save，携带task_success=false；未接管和接管后的失败均保留正确human_takeover，硬件调用0、模型请求0。
-- 原ABXY、快速扳机与连续条目回归通过。模拟握持接管回调约0.31/0.50ms，不代表硬件延迟。
-- 接管振动JS检查通过；前端只改说明，不改WebXR传输或姿态计算。
-- 实际头显摇杆操作仍需现场验收；未执行真机动作。
+300验证目录：/home/ubuntu/collector_validation/20261022_dagger_y_hold。
+
+- unit.log：302项Python测试通过，无跳过，包含真实LeRobot保存/标签/mask回读及Y短按、长按、阈值松开、取消、失联、忙碌、跨trial与启动器反馈。
+- ros_s2.log、ros_s3.log：实际_on_vr_input输入流均通过；Y按下未丢弃，长按仅保存一次，松开不丢弃；未接管及接管后的失败均保留正确task_success=false和human_takeover。原快速扳机/ABX/保存回执回归通过，硬件调用0、模型请求0。
+- node tests/test_feedback.js：2项通过；常亮Y说明、底部保存中/已保存/错误内容和颜色通过，仍仅接管振动。JS语法及资源哈希通过。
+- 真实头显Y操作仍需现场验收，不将隔离测试作为真机动作验收。未启用或重启ARM服务，未执行真机动作。

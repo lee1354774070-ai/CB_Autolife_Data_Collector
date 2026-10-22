@@ -1,11 +1,11 @@
 // Loaded after the pinned V4 app. No WebXR transport or pose math is replaced.
 Object.assign(HG_DAGGER_MODE_LABELS, {
   DISARMED: '待命：A 开始推理和录制',
-  POLICY_ACTIVE: '模型控制：握持键接管；B 确认成功；Y 丢弃',
+  POLICY_ACTIVE: '模型控制：握持键接管；B 成功；Y 短按丢弃/长按1秒失败保存',
   FAILURE_HOLD: '模型已停止，等待控制器保持',
   EXPERT_RELEASE_REQUIRED: '松开握持键，再握重新锚定',
-  EXPERT_READY: '握持移动；B 确认成功；Y 丢弃；X 复位',
-  EXPERT_ACTIVE: '人工纠错：B 确认成功；Y 丢弃；X 复位',
+  EXPERT_READY: '握持移动；B 成功；Y 短按丢弃/长按1秒失败保存',
+  EXPERT_ACTIVE: '人工纠错：B 成功；Y 短按丢弃/长按1秒失败保存',
   ESTOP: '输出已停止，请先检查错误'
 });
 
@@ -16,8 +16,8 @@ ensureHgControlsHud = function () {
   drawHgPanelBackground(hud, 0.48);
   hud.context.fillStyle = '#F0F4F8';
   hud.context.font = '500 30px sans-serif';
-  hud.context.fillText('A 开始 · 握持接管 · B 确认成功 · Y 丢弃', 32, 47);
-  hud.context.fillText('X 仅复位 · 右摇杆按住 1 秒：失败保存', 32, 99);
+  hud.context.fillText('A 开始 · 握持接管 · B 确认成功 · X 仅复位', 32, 47);
+  hud.context.fillText('Y 短按松开：丢弃 · 按住 1 秒：失败保存', 32, 99);
   hud.texture.needsUpdate = true;
   state.hgControlsHud = hud;
   return hud;
@@ -55,12 +55,11 @@ if (document.title !== collectorRobotTitle) {
   if (title) title.textContent = document.title;
   if (collectorGuide) collectorGuide.textContent =
     'A 开始推理和录制；握持接管；B 确认成功；'
-    + '单独按住右摇杆 1 秒：失败保存；'
-    + 'Y 丢弃；X 仅全身复位（先保存或丢弃当前条）；'
-    + '短按面键操作，长按不重复。Y 不负责退出，退出用启动器或终端 Q。';
+    + 'Y 短按松开丢弃，按住 1 秒失败保存；X 仅全身复位（先保存或丢弃当前条）；'
+    + '长按只触发一次。浏览器 Shift+Y 仍为丢弃；退出用启动器或终端 Q。';
 }
 const collectorHint = document.querySelector('.hardware-safety-hint');
-if (collectorHint) collectorHint.textContent = 'B/Y 不复位；X 仅全身复位（先保存或丢弃当前条）。';
+if (collectorHint) collectorHint.textContent = 'B/Y 不复位；Y短按松开丢弃、按住1秒失败保存；X仅全身复位。';
 setHardwareButtonText = function (button) {
   if (button) button.textContent = hardwareControlIsOnOrBusy()
     ? '停止会话（丢弃未保存本条）' : '长按进入 VR（待命；A 开始）';
