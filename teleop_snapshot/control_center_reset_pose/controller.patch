@@ -1,0 +1,126 @@
+--- a/openarmx_teleop_vr_306_v4/controller_node.py
++++ b/openarmx_teleop_vr_306_v4/controller_node.py
+@@ -38,6 +38,7 @@
+     continuous_direct_reset,
+     feedback_bounded_reset_progress,
+ )
++from .reset_pose_loader import load_quick_reset_targets
+ from .schema import (
+     parse_body_motion_feedback,
+     parse_eef_target,
+@@ -107,8 +108,12 @@
+ TELEOP_LIMIT_JOINT_NAMES = ARM_JOINT_NAMES + WAIST_JOINT_NAMES
+ RESET_TRACKED_JOINT_NAMES = ARM_JOINT_NAMES + NECK_JOINT_NAMES
+ ENABLE_TRACKED_JOINT_NAMES = ARM_JOINT_NAMES + WAIST_JOINT_NAMES
+-# X+A also stands up; Y+B holds height. Both require physical completion.
+-RESET_REQUIRED_JOINT_NAMES = RESET_TRACKED_JOINT_NAMES + list(BODY_HEIGHT_JOINT_NAMES)
++# X+A and post-enable reset require all saved body, arm and neck joints.
++RESET_REQUIRED_JOINT_NAMES = (
++    RESET_TRACKED_JOINT_NAMES
++    + list(BODY_HEIGHT_JOINT_NAMES)
++    + WAIST_JOINT_NAMES[1:2]
++)
+ 
+ 
+ def enable_vendor_pid_loop(shared_memory_glob):
+@@ -1131,16 +1136,13 @@
+     def _reset_required_vector(groups):
+         """Joints that must finish before reset can hand control to VR.
+ 
+-        X+A and post-enable reset both command the configured neck default, so
+-        all three neck axes are completion gates together with both arms.
+-        X+A includes the three coordinated height joints. Y+B keeps those
+-        goals at their measured values, so it does not request standing up.
+-        This prevents active head-follow from taking over before the physical
+-        neck has actually reached its reset pose.
++        The saved reset pose includes both arms, neck, the three height joints,
++        and waist yaw. Completion must cover all 21 saved joints before VR
++        tracking resumes.
+         """
+         return np.concatenate([
+             IndependentArmController._reset_vector(groups),
+-            np.asarray(groups['leg_waist'], dtype=float)[:3],
++            np.asarray(groups['leg_waist'], dtype=float)[:4],
+         ])
+ 
+     def _configuration_guard_error(
+@@ -1253,7 +1255,10 @@
+             guard_error, q = self._configuration_guard_error(
+                 groups,
+                 'quick reset direct path',
+-                limit_joint_names=ARM_JOINT_NAMES + list(BODY_HEIGHT_JOINT_NAMES),
++                limit_joint_names=(
++                    ARM_JOINT_NAMES + list(BODY_HEIGHT_JOINT_NAMES)
++                    + WAIST_JOINT_NAMES[1:2]
++                ),
+             )
+             if guard_error:
+                 return f'direct quick-reset path is unsafe: {guard_error}', None
+@@ -2901,40 +2906,36 @@
+             key: np.asarray(value, dtype=float).copy()
+             for key, value in measured_groups.items()
+         }
+-        left = np.asarray(
+-            self.get_parameter('quick_reset_left_arm_joints').value,
+-            dtype=float,
+-        ).reshape(-1)
+-        right = np.asarray(
+-            self.get_parameter('quick_reset_right_arm_joints').value,
+-            dtype=float,
+-        ).reshape(-1)
+-        # X+A and the automatic post-enable reset share the same complete
+-        # vendor reset pose.  In particular, X+A must also return the neck to
+-        # the configured system default instead of preserving an arbitrary
+-        # head-follow target from the previous session.
+-        neck = np.asarray(
+-            self.get_parameter('quick_reset_neck_joints').value,
+-            dtype=float,
+-        ).reshape(-1)
+-        if left.size != 7 or right.size != 7 or neck.size != 3:
++        robot_id = self._suffix.rsplit('_', 1)[-1]
++        try:
++            saved_targets = load_quick_reset_targets(robot_id)
++        except (OSError, ValueError) as exc:
++            return f'control-center reset pose is unavailable: {exc}'
++        leg_waist = np.asarray(saved_targets['leg_waist'], dtype=float)
++        left = np.asarray(saved_targets['left_arm'], dtype=float)
++        right = np.asarray(saved_targets['right_arm'], dtype=float)
++        neck = np.asarray(saved_targets['neck'], dtype=float)
++        if (leg_waist.size != 4 or left.size != 7
++                or right.size != 7 or neck.size != 3):
+             return 'quick reset configuration has an invalid joint count'
+         if not (
+-            np.all(np.isfinite(left))
++            np.all(np.isfinite(leg_waist))
++            and np.all(np.isfinite(left))
+             and np.all(np.isfinite(right))
+             and np.all(np.isfinite(neck))
+         ):
+             return 'quick reset configuration contains NaN or Inf'
++        groups['leg_waist'] = leg_waist
+         groups['left_arm'] = left
+         groups['right_arm'] = right
+         groups['neck'] = neck
+-        # Both arm-reset chords preserve the measured body pose, including
+-        # forward/reverse crouch and torso yaw. Standing is a height command,
+-        # not a side effect of an arm/head reset.
+         guard_error, q = self._configuration_guard_error(
+             groups,
+             'quick reset target',
+-            limit_joint_names=ARM_JOINT_NAMES + list(BODY_HEIGHT_JOINT_NAMES),
++            limit_joint_names=(
++                ARM_JOINT_NAMES + list(BODY_HEIGHT_JOINT_NAMES)
++                + WAIST_JOINT_NAMES[1:2]
++            ),
+         )
+         if guard_error:
+             return guard_error
+@@ -2996,7 +2997,7 @@
+         # ankle/knee/waist, preventing height-stream or stale IK interference.
+         self._deactivate_body_height_locked()
+         self._body_height_reverse_mode = measured_reverse_squat(
+-            measured_groups['leg_waist'],
++            clamped['leg_waist'],
+             previous=bool(getattr(self, '_body_height_reverse_mode', False)),
+         )
+         self._target_time = now

@@ -8,11 +8,13 @@ domain is mandatory. This tests software sequencing, not robot task execution.
 
 import ast
 import json
+import hashlib
 import numpy as np
 import os
 from pathlib import Path
 import sys
 import tempfile
+import subprocess
 import threading
 import time
 from types import SimpleNamespace
@@ -26,25 +28,54 @@ def check_controller_copy(root):
         runtime = prepare_copy(root, Path(directory))
         source = runtime / 'openarmx_teleop_vr_306_v4/controller_node.py'
         snapshot = Path(__file__).resolve().parents[1] / 'teleop_snapshot/openarmx_teleop_vr_306_v4'
+        from dagger.dependencies import CONTROL_CENTER_RESET_CONTROLLER, REVIEWED_ALTERNATES
+        original_controller = root / 'openarmx_teleop_vr_306_v4/openarmx_teleop_vr_306_v4/controller_node.py'
+        reset_variant = hashlib.sha256(original_controller.read_bytes()).hexdigest() == CONTROL_CENTER_RESET_CONTROLLER
+        expected_controller = snapshot / 'openarmx_teleop_vr_306_v4/controller_node.py'
+        if reset_variant:
+            expected_root = Path(directory) / 'expected'
+            expected_controller_copy = expected_root / 'openarmx_teleop_vr_306_v4/controller_node.py'
+            expected_controller_copy.parent.mkdir(parents=True)
+            expected_controller_copy.write_bytes(expected_controller.read_bytes())
+            variant = snapshot.parent / 'control_center_reset_pose'
+            subprocess.run(['patch', '--batch', '--fuzz=0', '-p1', '-i', str(variant / 'controller.patch')],
+                           cwd=expected_root, check=True, capture_output=True)
+            expected_controller = expected_controller_copy
+            assert (variant / 'reset_pose_loader.py').read_bytes() == (runtime / 'openarmx_teleop_vr_306_v4/reset_pose_loader.py').read_bytes()
         checked = 0
         for published in snapshot.rglob('*'):
             if published.is_file() and published.suffix != '.md' and not any(
                     part.startswith('.') or part == '__pycache__' for part in published.relative_to(snapshot).parts):
                 relative = published.relative_to(snapshot)
-                assert published.read_bytes() == (runtime / relative).read_bytes(), relative
+                expected = published.read_bytes()
+                if str(relative) == 'openarmx_teleop_vr_306_v4/controller_node.py':
+                    expected = expected_controller.read_bytes()
+                elif str(Path('openarmx_teleop_vr_306_v4') / relative) in REVIEWED_ALTERNATES:
+                    # Reviewed robot calibration can differ from the portable snapshot.
+                    expected = (root / 'openarmx_teleop_vr_306_v4' / relative).read_bytes()
+                assert expected == (runtime / relative).read_bytes(), relative
                 checked += 1
         assert checked > 0, 'teleoperation source snapshot missing'
         print(f'TELEOP_SNAPSHOT_RUNTIME_MATCH files={checked}')
         tree = ast.parse(source.read_text())
         names = {'_on_target', '_on_release_hold', '_on_follow_authority',
-                 '_collector_target_allowed', '_follow_authority_allowed', '_on_gripper'}
+                 '_collector_target_allowed', '_follow_authority_allowed', '_on_gripper',
+                 '_reset_vector', '_reset_required_vector'}
         methods = [method for cls in tree.body if isinstance(cls, ast.ClassDef)
                    for method in cls.body if isinstance(method, ast.FunctionDef) and method.name in names]
         cls = ast.ClassDef(name='ControllerHooks', bases=[], keywords=[], body=methods, decorator_list=[])
         module = ast.fix_missing_locations(ast.Module(body=[cls], type_ignores=[]))
         scope = dict(json=json, time=time, np=np)
         exec(compile(module, str(source), 'exec'), scope)
+        scope['IndependentArmController'] = scope['ControllerHooks']
         node = scope['ControllerHooks']()
+        if reset_variant:
+            groups = {'left_arm': np.arange(7), 'right_arm': np.arange(7, 14),
+                      'neck': np.arange(14, 17), 'leg_waist': np.arange(17, 21)}
+            np.testing.assert_array_equal(node._reset_required_vector(groups), np.arange(21))
+            groups['leg_waist'][-1] += 10
+            assert node._reset_required_vector(groups)[-1] == 30, 'waist yaw must gate completion'
+            print('RESET_COMPLETION_ALL_21_JOINTS_PASS')
         node.__dict__.update(
             _lock=threading.RLock(), _collector_authority_epoch=1,
             _collector_revoked_epoch=-1, _collector_session_id='trial',

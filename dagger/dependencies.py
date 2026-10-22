@@ -12,6 +12,7 @@ import os
 
 
 HASHES = {
+    "openarmx_teleop_vr_306_v4/launch/full_vr_teleop.launch.py": "f4b2bd828789fc0fbfa0890c3a69c398bfa82a84243e3a699f5a1c5614793493",
     "openarmx_teleop_vr_306_v4/config/controller.yaml": "5ca8edc6fae5639ebef10ddcb37275906abfe5b80d1dcf9492426aeb6ccb92be",
     "openarmx_teleop_vr_306_v4/config/teleop.yaml": "2c6dd14c14ce656a458f6bea0e84f46114aa571106ec5594fd823394b179629d",
     "openarmx_teleop_vr_306_v4/openarmx_teleop_vr_306_v4/controller_node.py": "099568348c4a92b36200cb8052b7f46eea7bea698ae35caecfe24a862cbb993b",
@@ -29,8 +30,19 @@ ASSET_HASHES = {
     "web/vr_monitor.js": "79c742d5b5f5720800b8a23cfd9cabf21096c9f9d6be59c7d5580c07f9454f7b",
     "web/vendor/aframe.min.js": "dca046a39e6b5f7e988167fd6101405a38d68804162e4c981f4706127c4b6071",
 }
-# Robot 300's measured reset pose; only the four reset joint arrays differ.
+# Reviewed source variants; accepting a controller also pins its new import.
+CONTROL_CENTER_RESET_CONTROLLER = "4db8de0ded806c546dfde83b2553dc3f3799c09a54e927ada9f1debd40c410eb"
+RESET_POSE_LOADER = "openarmx_teleop_vr_306_v4/openarmx_teleop_vr_306_v4/reset_pose_loader.py"
+RESET_POSE_LOADER_HASH = "2403a92529ec1dff466a0c379ef803f99c5d23809ff7378559b57c8440f7d210"
 REVIEWED_ALTERNATES = {
+    # Robot 300's calibrated neck defaults; DAgger uses its own stack.launch.py.
+    "openarmx_teleop_vr_306_v4/launch/full_vr_teleop.launch.py": {
+        "0f97ff7393027fc02ad9e911b2cebfb5f14fffcac32c896ccbe61f9e39375dc1",
+    },
+    "openarmx_teleop_vr_306_v4/openarmx_teleop_vr_306_v4/controller_node.py": {
+        CONTROL_CENTER_RESET_CONTROLLER,
+    },
+    # Robot 300's measured reset pose; only four reset joint arrays differ.
     "openarmx_teleop_vr_306_v4/config/controller.yaml": {
         "7fc95a814af1a02264558a2ee28ec5b59b6057ded99d4d8b227a8039b3b068e2",
     },
@@ -96,6 +108,11 @@ def validate(root: Path) -> None:
             allowed = {expected, *REVIEWED_ALTERNATES.get(relative, ())}
             if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() not in allowed:
                 raise RuntimeError(f"DAgger dependency changed or missing: {path}; inspect this build before running")
+    controller = root / "openarmx_teleop_vr_306_v4/openarmx_teleop_vr_306_v4/controller_node.py"
+    if controller.is_file() and hashlib.sha256(controller.read_bytes()).hexdigest() == CONTROL_CENTER_RESET_CONTROLLER:
+        loader = root / RESET_POSE_LOADER
+        if not loader.is_file() or hashlib.sha256(loader.read_bytes()).hexdigest() != RESET_POSE_LOADER_HASH:
+            raise RuntimeError(f"DAgger dependency changed or missing: {loader}; inspect this build before running")
 
 
 def conflicting_processes(proc: Path = Path("/proc")) -> list[int]:

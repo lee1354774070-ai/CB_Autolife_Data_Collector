@@ -7,6 +7,18 @@ entry or a replacement for the robot's installed dependencies.
 
 ## Version
 
+- 2026-10-22 reviewed alternate: `control_center_reset_pose/` contains the
+  exact upstream controller delta and its new loader. The new controller
+  (`4db8de0d…`) reads the robot-matched saved 21-joint reset pose, including
+  legs and waist. Reset completion includes waist yaw. Both controller and
+  loader (`2403a925…`) are pinned together.
+  The base snapshot below remains valid for old robots; the isolated smoke
+  test applies the alternate delta only when that exact source is installed.
+  DAgger authority/output patches are unchanged. This is compatibility review,
+  not physical acceptance of the control center's waist/leg reset fix.
+  The robot-300 standalone launch variant only changes its calibrated neck
+  default; both launch identities are also checked. DAgger uses its own launch.
+
 - Original publication: Autolife_VLA_Tools `2a3afd48` / standalone Collector `17cda47`.
 - DAgger fusion update: 2026-10-08, based on publication `4055b75`; runtime source equality is checked by `tests/dagger_ros_smoke.py`.
 - Base: the reviewed robot-300 V4 source pinned in `dagger/dependencies.py`.
