@@ -143,7 +143,7 @@ class Launcher:
         self.synced = self.label(body, '等待后台状态同步', 11)
         self.synced.configure(wraplength=690, justify='left')
         self.synced.pack(anchor='w', pady=(8, 0))
-        self.label(body, 'A 开始 · 握持接管 · B 确认成功 · Y 丢弃 · X 仅复位', 11).pack(anchor='w', pady=(12, 8))
+        self.label(body, 'A开始 · Grip接管 · B成功 · Y丢弃 · X复位 · 右摇杆按1秒失败保存', 11).pack(anchor='w', pady=(12, 8))
         self.label(body, 'Shift+A 开始 / Shift+B 成功保存 / Shift+F 失败保存 / Shift+Y 丢弃 / Shift+X 复位', 10).pack(anchor='w')
         self.label(body, '数据位置由 OUTPUT_BASE_DIR 指定', 10).pack(anchor='w', pady=(12, 0))
         root.after(400, self.poll)

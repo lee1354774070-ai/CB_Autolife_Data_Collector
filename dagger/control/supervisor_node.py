@@ -804,6 +804,9 @@ class HgDaggerSupervisor(Node):
         # Recording is opened when the session starts. Grip must only change
         # authority here; it must never wait for a FIFO ACK or video encoder.
 
+    def _update_vr_failure_button_locked(self, packet: dict, now_ns: int) -> None:
+        """Collection adapter hook; the pinned control base adds no gesture."""
+
     def _on_vr_input(self, message: String) -> None:
         try:
             packet = self._parse(message)
@@ -864,6 +867,7 @@ class HgDaggerSupervisor(Node):
                 )
 
             now_ns = time.monotonic_ns()
+            self._update_vr_failure_button_locked(packet, now_ns)
             event_type = packet.get("type")
             if event_type in ("button_press", "button_release"):
                 button = str(packet.get("button", "")).upper()

@@ -92,7 +92,7 @@ DAGGER_PUBLISH=0 bash start_dagger.sh dagger_release_check --check
 3. 子任务核对 `subtask_index` 和 `annotations/subtasks/episode_*.json`，边界连续且不越界。
 4. DAgger核对 `dagger.control_source`、`dagger.is_intervention`、`dagger.train_mask`、21维 `dagger.action_train_mask`。仅身体纠错而夹爪保持旧指令时，整帧掩码为0、身体19维为1、夹爪2维为0；模型/保持段全0。升级后使用新任务目录，旧schema不直接续录。
    训练部分纠错时用逐维掩码；旧整帧掩码保留保守规则，模型条目不能直接当作专家监督。
-5. DAgger结果标签验收：第一条A开始、不接管、成功后B；第二条Grip接管成功后B；第三条用启动器“任务失败并保存”（Shift+F，或采集终端F）；第四条Y丢弃。前三条annotations/dagger/episode_XXXXXX.json的outcome依次为autonomous_success/human_corrected_success/failure；失败条task_success=false，human_takeover如实记录，第四条不新增episode或标注。不建分类文件夹；确认纠错掩码没有因结果标签改变。
+5. DAgger结果标签验收：第一条A开始、不接管、成功后B；第二条Grip接管成功后B；第三条单独向下按住右摇杆1秒（也可用启动器失败按钮/Shift+F/采集终端F）；第四条Y丢弃。前三条annotations/dagger/episode_XXXXXX.json的outcome依次为autonomous_success/human_corrected_success/failure；失败条task_success=false，human_takeover如实记录，第四条不新增episode或标注。右摇杆短按、只推方向、双摇杆组合不能保存失败；断线、忙碌、换条目或持续按住后需要松开再按。不建分类文件夹；确认纠错掩码没有因结果标签改变。
 6. 上线前检查首/中/末帧能被LeRobot加载，同步日志无EPISODE INVALID，逐步增加连续录制时长。
 
 DAgger低CPU录制暂存图像体积更大；保证磁盘空间和吞吐。

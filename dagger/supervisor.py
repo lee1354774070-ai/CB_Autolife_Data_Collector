@@ -41,6 +41,10 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
         self._cancel_start = False
         self._closing = False
         self._finish_outcome = None
+        self._failure_button_start_ns = 0
+        self._failure_button_last_ns = 0
+        self._failure_button_released = False
+        self._failure_button_trial = ""
         super().__init__()
         self._feedback_pub = self.create_publisher(String, "/collector/feedback", 10)
         self._speech_pub = self.create_publisher(String, f"/topic_tts_{robot.suffix}", 10)
@@ -347,6 +351,41 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
         action = {"A": "start", "B": "finish", "X": "reset", "Y": "discard"}.get(button)
         if action:
             self._dispatch_operator(action, Trigger.Response(), launcher=False)
+
+    def _update_vr_failure_button_locked(self, packet, now_ns):
+        trial = self._intervention_id
+        if trial != self._failure_button_trial or now_ns - self._failure_button_last_ns > 300_000_000:
+            self._failure_button_start_ns = 0
+            self._failure_button_released = False
+        self._failure_button_trial = trial
+        self._failure_button_last_ns = now_ns
+        left, right = packet.get("leftController"), packet.get("rightController")
+        tracked = all(isinstance(c, dict) and isinstance(c.get("thumbstick"), dict)
+                      and c["thumbstick"].get("pressed") in (False, True)
+                      and isinstance(c.get("position"), dict)
+                      and finite_vector([c["position"].get(k) for k in ("x", "y", "z")], 3) is not None
+                      for c in (left, right))
+        if (not tracked or not trial or self._closing or self._button_worker_active
+                or self._session_start_pending or self._reset_pending
+                or self._launcher_control_active or self._launcher_wait_for_release
+                or self._pending_collector_result is not None
+                or left["thumbstick"]["pressed"]
+                or any(left.get(k) for k in ("xButton", "yButton"))
+                or any(right.get(k) for k in ("aButton", "bButton"))):
+            self._failure_button_start_ns = 0
+            self._failure_button_released = False
+            return
+        if not right["thumbstick"]["pressed"]:
+            self._failure_button_start_ns = 0
+            self._failure_button_released = True
+        elif self._failure_button_released:
+            if not self._failure_button_start_ns:
+                self._failure_button_start_ns = now_ns
+            elif now_ns - self._failure_button_start_ns >= 1_000_000_000:
+                # Consume until a fresh release, including busy/new-trial gaps.
+                self._failure_button_start_ns = 0
+                self._failure_button_released = False
+                self._dispatch_operator("fail", Trigger.Response(), launcher=False)
 
     def _on_launcher_action(self, action, response):
         with self._lock:

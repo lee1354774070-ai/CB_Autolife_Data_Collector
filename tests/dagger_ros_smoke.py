@@ -389,15 +389,25 @@ def main():
                 if takeover:
                     vr(gripActive=True)
                     wait_idle()
-                response = node._on_launcher_action("fail", Trigger.Response())
-                assert response.success, response.message
+                def stick(pressed):
+                    pose = dict(x=0., y=0., z=1.)
+                    vr(position=pose, thumbstick={'pressed': 0}, gripActive=takeover,
+                       right=dict(position=pose, thumbstick={'pressed': int(pressed)}, gripActive=False))
+                stick(False)
+                sent = len(commands)
+                deadline = time.monotonic() + 1.2
+                while time.monotonic() < deadline:
+                    stick(True)
+                    time.sleep(.03)
                 wait_idle()
+                assert len(commands) == sent + 1 and commands[-1] == 'save', commands
                 assert outcomes[-1]["task_success"] is False
                 assert outcomes[-1]["human_takeover"] is takeover
                 assert "任务失败" in node._save_notice["text"]
                 assert node._machine.mode.value == "DISARMED"
+                stick(False)
                 vr(gripActive=False)
-            print('DAGGER_FAILURE_SAVE_PASS no_extra_folders=true task_failure_not_storage_failure=true')
+            print('DAGGER_FAILURE_SAVE_PASS right_stick_held=true no_extra_folders=true task_failure_not_storage_failure=true')
             # Repeated status publication during a blocked filesystem read is
             # still independent of NAS latency, as are 90 Hz VR callbacks.
             blocked, release = threading.Event(), threading.Event()

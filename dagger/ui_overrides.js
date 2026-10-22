@@ -17,7 +17,7 @@ ensureHgControlsHud = function () {
   hud.context.fillStyle = '#F0F4F8';
   hud.context.font = '500 30px sans-serif';
   hud.context.fillText('A 开始 · 握持接管 · B 确认成功 · Y 丢弃', 32, 47);
-  hud.context.fillText('X 仅复位 · 失败保存用启动器/终端 F', 32, 99);
+  hud.context.fillText('X 仅复位 · 右摇杆按住 1 秒：失败保存', 32, 99);
   hud.texture.needsUpdate = true;
   state.hgControlsHud = hud;
   return hud;
@@ -55,6 +55,7 @@ if (document.title !== collectorRobotTitle) {
   if (title) title.textContent = document.title;
   if (collectorGuide) collectorGuide.textContent =
     'A 开始推理和录制；握持接管；B 确认成功；'
+    + '单独按住右摇杆 1 秒：失败保存；'
     + 'Y 丢弃；X 仅全身复位（先保存或丢弃当前条）；'
     + '短按面键操作，长按不重复。Y 不负责退出，退出用启动器或终端 Q。';
 }
