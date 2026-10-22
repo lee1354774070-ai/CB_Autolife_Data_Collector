@@ -484,6 +484,9 @@ bash start_lerobot_official_collect.sh dagger_live --check
 便捷 `start_dagger.sh` 默认开启depth，桌面入口 `scripts/open_dagger_launcher.sh` 同属DAgger；
 其预设不等于统一入口默认值，使用前明确设置。
 
+DAgger桌面启动器自动生成 `hotel_scene_dataset_YYMMDD_备注_dagger`，备注留空时使用时间。
+备注已带 `_dagger` 时不重复添加；同名目录另加时间再以 `_dagger` 结尾，不改名或覆盖已有数据。终端指定的完整任务名保持原样。
+
 Thor须支持 `controller_submission_receipts=true`；阶段夹爪策略只支持审核过的完整任务文本。
 详情见 [DAgger实现](INSTRUCTION_zh.md#dagger)，不是任意任务通用策略。
 

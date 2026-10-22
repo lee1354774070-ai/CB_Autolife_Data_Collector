@@ -23,11 +23,12 @@ def reserve_task(root, remark, now=None):
         raise ValueError('备注可留空；填写时请用1–96位英文字母、数字、下划线或连字符')
     now = now or datetime.datetime.now()
     name = 'hotel_scene_dataset_' + now.strftime('%y%m%d') + '_' + (remark or now.strftime('%H%M%S_%f'))
+    name = name.removesuffix('_dagger') + '_dagger'
     root.mkdir(parents=True, exist_ok=True)
     try:
         (root / name).mkdir()
     except FileExistsError:
-        name += now.strftime('_%H%M%S_%f')
+        name = name.removesuffix('_dagger') + now.strftime('_%H%M%S_%f') + '_dagger'
         (root / name).mkdir()
     return name
 (BG, CARD, INK, MUTED, BLUE) = ('#101827', '#1b273b', '#eef4ff', '#a4b2ca', '#6fa8ff')
@@ -94,7 +95,7 @@ class Launcher:
         self.instruction = tk.Entry(panel, font=('Sans', 12), bg=BG, fg=INK, insertbackground=INK, relief='flat')
         self.instruction.insert(0, 'Pick the laundry bag.')
         self.instruction.pack(fill='x', ipady=9, pady=(8, 12))
-        self.label(panel, '备注（选填；留空自动按时间命名）', 11).pack(anchor='w')
+        self.label(panel, '备注（选填；名称自动以 _dagger 结尾）', 11).pack(anchor='w')
         self.remark = tk.Entry(panel, font=('Sans', 12), bg=BG, fg=INK, insertbackground=INK, relief='flat')
         self.remark.pack(fill='x', ipady=9, pady=(8, 12))
         options = tk.Frame(panel, bg=CARD)
