@@ -306,11 +306,14 @@ class Launcher:
             lines = (self.pending + chunk).split('\n')
             self.pending = lines.pop()[-8192:]
             for line in lines:
-                if 'FAIL ' in line or 'PREFLIGHT FAILED' in line or '快捷启动已在运行' in line:
+                if 'FAIL ' in line or 'PREFLIGHT FAILED' in line or '快捷启动已在运行' in line or 'run.py: error:' in line:
                     if not self.failure:
                         self.failure = line.strip()[:220]
                     self.status.configure(text='●  启动检查未通过', fg='#ffb09a')
                     self.detail.configure(text=self.failure)
+                elif 'INFO  启动自检' in line or 'INFO  自检修复' in line:
+                    self.status.configure(text='●  自检与修复中', fg=BLUE)
+                    self.detail.configure(text=line.strip()[:220])
                 elif 'VR网页与WebSocket已共用' in line and (not self.failure):
                     self.status.configure(text='●  服务已启动', fg='#8bd5ae')
                     self.detail.configure(text='服务已就绪，可直接开始本条；头显仅在人工接管时需要。')

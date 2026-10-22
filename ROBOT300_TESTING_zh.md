@@ -81,8 +81,7 @@ DAGGER_PUBLISH=0 bash start_dagger.sh dagger_release_check --check
 ```
 
 预检成功后按README运行完整 `DAGGER_PUBLISH=0` 待命检查，退出后再由现场人员启动发布模式。
-预检发现 dashboard、action_player、控制中心关节模块或原厂遥操冲突时，先确认任务空闲，
-正常退出对应组件；不要批量kill，也不要停止/重启或清错ARM服务。
+`--check`发现冲突会只读报告。正式启动（包括DAGGER_PUBLISH=0待命启动）会自动确认并正常退出锁定空闲的控制中心关节模块、无任务/循环/录制的Void-Cog后台，再重复观察4秒确认控制接口释放。控制中心界面、导航与Void-Cog前端保留；未知或忙碌组件明确拒绝修复。退出超时不强杀；不要停止/重启或清错ARM服务。启动器应显示具体自检阶段和中止原因。
 当前原厂数采仍在使用的服务不能为了DAgger测试直接关闭。
 
 ## 保存和数据检查

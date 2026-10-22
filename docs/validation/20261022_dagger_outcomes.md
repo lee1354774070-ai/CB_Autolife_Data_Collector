@@ -35,3 +35,17 @@ B/finish确认成功；手柄Y长按1秒、启动器fail按钮、窗口Shift+F�
 - ros_s2.log、ros_s3.log：实际_on_vr_input输入流均通过；Y按下未丢弃，长按仅保存一次，松开不丢弃；未接管及接管后的失败均保留正确task_success=false和human_takeover。原快速扳机/ABX/保存回执回归通过，硬件调用0、模型请求0。
 - node tests/test_feedback.js：2项通过；常亮Y说明、底部保存中/已保存/错误内容和颜色通过，仍仅接管振动。JS语法及资源哈希通过。
 - 真实头显Y操作仍需现场验收，不将隔离测试作为真机动作验收。未启用或重启ARM服务，未执行真机动作。
+
+## 每次启动自检修复
+
+验证目录：`/home/ubuntu/collector_validation/20261022_dagger_startup_repair`。
+
+- `unit.log`：隔离ROS域下314项Python测试全部通过，无跳过；包含忙碌/未知模块拒绝、状态改变取消、正常退出竞态、退出超时不强杀及启动器错误反馈。
+- `--check`只读发现控制中心关节模块及Void-Cog后台冲突，所有原进程保留。
+- 实际待命启动只正常退出已锁定空闲的关节模块，以及无任务/循环/录制的Void-Cog后台和看门狗。停止前重读ROS状态，PID身份变化、未知发布者、动作输入、忙碌或未确认状态均拒绝；退出超时不强杀。
+- 实际联调补齐状态回调的JSON导入，并修复看门狗在读取/proc期间自行退出导致的误报。对应竞态加入回归测试。
+- 300待命启动到网页8447、三RGB相机与录制器ready；`standby_ready.json`记录DISARMED、hardware_publish=false、recording=false、recorded_frames=0，`standby_observation.json`的电机命令计数为空。
+- `duplicate_start.log`确认第二套启动被拒绝；原待命实例保留，随后正常退出所有自建节点，最终0帧、0条episode。
+- 控制中心界面/导航及Void-Cog前端保留。未清错、复位、启用或重启ARM，未开始模型推理；被暂停的关节模块和Void-Cog后台不会自动恢复。
+
+这是启动/退出的软件验收，未执行真实运动或长时间录制；此前相机时间戳异常不在本次修复范围。

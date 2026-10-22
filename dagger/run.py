@@ -176,24 +176,26 @@ def main():
             raise RuntimeError("Missing ROS workspace setup script")
         if not Path(env["DAGGER_TOKEN_FILE"]).is_file() and not env.get("GROOT_REMOTE_TOKEN"):
             raise RuntimeError("Missing Thor token file; configure DAGGER_TOKEN_FILE")
+        locks = []
+        if not args.check:
+            for path in (robot.lock_file, f"/tmp/collector_dagger_domain_{robot.domain}.lock"):
+                lock = open(path, "a")
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise RuntimeError("另一套DAgger已持有启动锁；不会自检修复其他采集进程") from None
+                locks.append(lock)
+        print("INFO  启动自检：依赖、Thor协议、控制权；" + ("只读检查" if args.check else "自动处理确认空闲的已知冲突"), flush=True)
         subprocess.run(ros_command(env, env.get("DAGGER_ROS_PY", "/usr/bin/python3"),
-                                   str(ROOT / "dagger/runtime.py"), "check"), env=env, timeout=20, check=True)
+                                   str(ROOT / "dagger/runtime.py"), "check" if args.check else "prepare"),
+                       env=env, timeout=20 if args.check else 60, check=True)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
         parser.error(str(exc))
     if args.check:
         print("Dependency, ROS graph and Thor protocol preflight passed; no recording or motion started.")
         return
 
-    # Separate from the recorder's per-episode motion lock. This protects stack
-    # startup too, including the interval before ROS participants are visible.
-    locks = [open(robot.lock_file, "a"),
-             open(f"/tmp/collector_dagger_domain_{robot.domain}.lock", "a")]
-    try:
-        # HG authority topics are shared within one local DDS domain.
-        for lock in locks:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        raise SystemExit(f"Another integrated DAgger launcher owns robot {robot.suffix} or its local DDS domain")
+    # Startup locks remain held through repair, launch and recorder shutdown.
     base = Path(env["DAGGER_BASE_DIR"])
     base.mkdir(parents=True, exist_ok=True)
     recorder = stack = None
