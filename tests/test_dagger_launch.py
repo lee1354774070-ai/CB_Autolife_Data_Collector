@@ -2,13 +2,14 @@
 
 from pathlib import Path
 import hashlib
+import json
 import signal
 import subprocess
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from dagger.dependencies import (COMMAND_PUBLISHERS, command_conflicts, conflicting_processes,
+from dagger.dependencies import (ASSETS, ASSET_HASHES, COMMAND_PUBLISHERS, command_conflicts, conflicting_processes,
                                  interpreter_environment, validate)
 from dagger.run import environment, stop_child
 
@@ -79,6 +80,13 @@ class DaggerLaunchTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaisesRegex(RuntimeError, "changed or missing"):
                 validate(Path(root))
+
+    def test_offline_web_assets_match_reviewed_manifest(self):
+        manifest = json.loads((ASSETS / "SOURCE.json").read_text())["files"]
+        self.assertIn("web/vendor/aframe.min.js", manifest)
+        self.assertEqual(manifest, ASSET_HASHES)
+        for relative, expected in manifest.items():
+            self.assertEqual(hashlib.sha256((ASSETS / relative).read_bytes()).hexdigest(), expected)
 
     def test_idle_vendor_endpoints_are_not_active_commands(self):
         topic = "/topic_arm_whole_body_target_joints_position_0_300"

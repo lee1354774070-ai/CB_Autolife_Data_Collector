@@ -26,9 +26,15 @@ ASSET_HASHES = {
     "web/styles.css": "f447b2ba2f33c5ee9f781b3063a20fd62f7582947f4b13332b411f8af5fe1582",
     "web/vr_app.js": "39fc7edabd94866d451c7adf24a2cb9b64e8e48eb3128d941d89e9d9f98c3656",
     "web/vr_monitor.html": "0c8392020d4592f1b3c07c0a6d4fb0a7275fcb610bde530cdaa5081902a4e870",
-    "web/vr_monitor.js": "79c742d5b5f5720800b8a23cfd9cabf21096c9f9d6be59c7d5580c07f9454f7b"
+    "web/vr_monitor.js": "79c742d5b5f5720800b8a23cfd9cabf21096c9f9d6be59c7d5580c07f9454f7b",
+    "web/vendor/aframe.min.js": "dca046a39e6b5f7e988167fd6101405a38d68804162e4c981f4706127c4b6071",
 }
-REVIEWED_ALTERNATES = {}
+# Robot 300's measured reset pose; only the four reset joint arrays differ.
+REVIEWED_ALTERNATES = {
+    "openarmx_teleop_vr_306_v4/config/controller.yaml": {
+        "7fc95a814af1a02264558a2ee28ec5b59b6057ded99d4d8b227a8039b3b068e2",
+    },
+}
 
 # These vendor nodes register endpoints even when no task is running. Permit
 # only their audited idle endpoints, never an active command. In particular,
