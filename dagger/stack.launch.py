@@ -84,7 +84,7 @@ def generate_launch_description():
                f"{prefix}/head_target": "/hg_dagger/disabled/head_target",
                f"{prefix}/set_hardware_enabled": "/hg_dagger/set_session_enabled"})
     bridge = process([python, runtime, "bridge"], params={
-        "server_url": os.environ["DAGGER_SERVER_URL"], "token_file": os.environ["DAGGER_TOKEN_FILE"],
+        "server_url": os.environ.get("DAGGER_SERVER_URL", ''), "token_file": os.environ["DAGGER_TOKEN_FILE"],
         "task": json.dumps(os.environ["TASK_TEXT"]),
         "collector_root": str(here.parent),
         "joint_state_topic": robot.joint_topic,
@@ -93,7 +93,7 @@ def generate_launch_description():
         "host": "0.0.0.0", "https_port": os.environ.get("DAGGER_WEB_PORT", "8447"),
         "rgbd_camera_enabled": "true", "status_topic": "/hg_dagger/web_teleop_status",
     }, remaps={f"{prefix}/set_hardware_enabled": "/hg_dagger/set_session_enabled"})
-    processes = [supervisor, controller, mapper, bridge, web]
+    processes = [supervisor, controller] if os.environ.get('DAGGER_RESET_ONLY') == '1' else [supervisor, controller, mapper, bridge, web]
     # Losing any component closes this entire stack; the launcher then closes
     # the recorder. No orphan controller should keep publishing alone.
     handlers = [RegisterEventHandler(OnProcessExit(

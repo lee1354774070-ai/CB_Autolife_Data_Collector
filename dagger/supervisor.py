@@ -1,12 +1,14 @@
 """DAgger motion/session implementation with collection-only operator adapters.
 
-Motion selection, clutch/gripper handling, full-body reset and policy forwarding
-come from the pinned DAgger source in dagger_base. This module adds collection receipts,
+Motion selection, clutch/gripper handling and policy forwarding come from the
+pinned DAgger source. This module adds collection receipts, saved-pose reset,
 operator attachment, explicit A/B/X/Y semantics and status/haptic presentation.
 """
 import json
 import os
 import time
+import threading
+from pathlib import Path
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
@@ -55,6 +57,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
                                  QoSProfile(depth=8, reliability=ReliabilityPolicy.RELIABLE))
         self._trace = AsyncTrace(self._trace)
         self._collector = CachedCollector(self._collector)
+        self._saved_reset = self.create_client(Trigger, '/openarmx_teleop_vr_306_v4/quick_reset')
         self.declare_parameter("controller_ready_timeout_sec", 20.0)
         from rcl_interfaces.srv import SetParametersAtomically
         self._operator_gate = CommandGate()
@@ -74,6 +77,56 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
         if hasattr(self, "_feedback_pub"):
             self._feedback_pub.publish(String(data=json.dumps(feedback_packet(event))))
             self._speech_pub.publish(String(data=json.dumps({"status": "play", "text": text}, ensure_ascii=False)))
+
+    def _mechanical_reset_worker(self, button, save_note=''):
+        with self._lock:
+            self._reset_pending = True
+            self._set_notice_locked(save_note + '按控制中心保存姿态全身复位中', 'warning')
+            self._publish_state()
+        success, detail = False, ''
+        enabled = False
+        try:
+            from .dependencies import validate_saved_reset
+            from openarmx_teleop_vr_306_v4.reset_pose_loader import load_quick_reset_targets
+            validate_saved_reset(Path(os.environ['DAGGER_DEPENDENCY_ROOT']))
+            load_quick_reset_targets(resolve_robot(os.environ).robot_id)
+            # Claim a hold-only lease; the vendor HOME planner can fail while
+            # reporting settled feedback, so it must not define this reset.
+            requested = time.monotonic_ns()
+            enabled = True
+            accepted, detail = self._forward_enable(True)
+            if not accepted:
+                raise RuntimeError(detail)
+            ready, detail = self._wait_for_reset_enable(requested)
+            if not ready:
+                raise RuntimeError(detail)
+            if not self._saved_reset.wait_for_service(timeout_sec=2):
+                raise RuntimeError('保存姿态复位接口不可用')
+            future = self._saved_reset.call_async(Trigger.Request())
+            done = threading.Event()
+            future.add_done_callback(lambda _: done.set())
+            if not done.wait(float(self.get_parameter('quick_reset_request_timeout_sec').value)):
+                raise RuntimeError('复位请求结果未知；不会自动重试')
+            result = future.result()
+            if result is None or not result.success:
+                raise RuntimeError(getattr(result, 'message', '复位没有回执'))
+            if not self._wait_for_quick_reset():
+                with self._lock:
+                    reason = self._controller_status.get('reason', '到位未确认')
+                raise RuntimeError('全身目标未到位：' + str(reason))
+            success, detail = self._open_reset_grippers()
+        except Exception as exc:
+            detail = str(exc)
+        finally:
+            if enabled:
+                disabled, message = self._forward_enable(False)
+                if not disabled:
+                    success, detail = False, '复位后停止输出未确认：' + message
+            with self._lock:
+                self._reset_pending = False
+                self._set_notice_locked(save_note + ('全身复位完成，双夹爪已张开；按 A 开始' if success
+                                        else '全身复位失败：' + detail), 'success' if success else 'error')
+                self._publish_state()
 
     def _on_vendor_joint_command(self, message):
         pass  # Untagged DDS echoes do not prove which authority produced them.
@@ -406,6 +459,9 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             return self._dispatch_operator(action, response, launcher=True)
 
     def _dispatch_operator(self, action, response, *, launcher):
+        if os.environ.get('DAGGER_RESET_ONLY') == '1' and action != 'reset':
+            response.success, response.message = False, '独立复位模式不启动推理或录制'
+            return response
         if action not in ("start", "finish", "fail", "discard", "reset") or self._closing:
             response.success, response.message = False, "操作无效；退出请用终端 Q"
             return response

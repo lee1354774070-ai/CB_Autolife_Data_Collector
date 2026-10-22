@@ -155,6 +155,12 @@ class RobotProfileTest(unittest.TestCase):
                 self.assertIn('quick_reset_left_arm_joints:=[20.0, 0.0, 0.0, -110.0, 0.0, 0.0, 0.0]',controller)
             else:
                 self.assertIn('urdf_path:=/runtime/urdf/robot_v2_2_simplified.urdf',controller)
+            with patch.dict(os.environ, {**env, 'DAGGER_RESET_ONLY':'1'}, clear=True), patch.dict('sys.modules', mods):
+                nodes = module.generate_launch_description()
+                commands = [node.cmd for node in nodes if hasattr(node, 'cmd')]
+                self.assertEqual(len(commands), 2)
+                self.assertIn('supervisor', commands[0])
+                self.assertIn('openarmx_teleop_vr_306_v4.controller_node', commands[1])
 
 
 if __name__=='__main__':unittest.main()

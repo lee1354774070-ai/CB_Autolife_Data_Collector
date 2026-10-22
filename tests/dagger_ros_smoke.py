@@ -215,7 +215,7 @@ def main():
         node._wait_for_controller_ready = lambda since: (True, "fake controller readiness")
         node._selected_joint_pub = Mock()
         node._selected_gripper_pub = Mock()
-        reset_patch = patch.object(HgDaggerSupervisor, "_mechanical_reset_worker",
+        reset_patch = patch.object(CollectorDaggerSupervisor, "_mechanical_reset_worker",
                                   lambda _, button: reset_calls.append((button, list(commands))))
         reset_patch.start()
 

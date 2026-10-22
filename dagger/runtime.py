@@ -11,6 +11,50 @@ import sys
 import threading
 
 
+def reset_once(node):
+    """Request once, then require a fresh busy-to-completed supervisor cycle."""
+    import time
+    import rclpy
+    from std_msgs.msg import String
+    from std_srvs.srv import Trigger
+    state, received = {}, 0.
+    expected = str(Path(os.environ['DAGGER_BASE_DIR']) / '.official_recording_control')
+    def receive(message):
+        nonlocal state, received
+        try:
+            packet = json.loads(message.data)
+            if packet.get('collector_fifo') == expected:
+                state, received = packet, time.monotonic()
+        except (ValueError, TypeError, AttributeError):
+            pass
+    node.create_subscription(String, '/hg_dagger/control_state', receive, 10)
+    client = node.create_client(Trigger, '/hg_dagger/launcher/reset')
+    deadline, future, active = time.monotonic() + 95, None, False
+    while time.monotonic() < deadline:
+        rclpy.spin_once(node, timeout_sec=.1)
+        if time.monotonic() - received > 1:
+            if future is not None:
+                raise RuntimeError('复位状态丢失，完成未确认')
+            continue
+        if future is None:
+            if client.service_is_ready():
+                future = client.call_async(Trigger.Request())
+            continue
+        busy = bool(state.get('operation_busy') or state.get('quick_reset', {}).get('pending'))
+        active = active or busy
+        if future.done():
+            result = future.result()
+            if result is None or not result.success:
+                raise RuntimeError(getattr(result, 'message', '复位请求没有回执'))
+            if active and not busy:
+                notice = state.get('notice', {})
+                if notice.get('level') != 'success':
+                    raise RuntimeError(notice.get('text', '复位到位未确认'))
+                print('RESET COMPLETE: ' + notice.get('text', ''), flush=True)
+                return
+    raise TimeoutError('复位结果未知，未自动重试')
+
+
 def main():
     component = sys.argv.pop(1)
     root = Path(os.environ["DAGGER_DEPENDENCY_ROOT"])
@@ -25,24 +69,39 @@ def main():
         web_main()
         return
     rclpy.init()
-    if component in ("check", "prepare"):
+    if component == 'reset-once':
+        node = rclpy.create_node('collector_reset_once')
+        try:
+            reset_once(node)
+        except Exception as exc:
+            print('FAIL  全身复位：' + str(exc), flush=True)
+            raise SystemExit(1)
+        finally:
+            node.destroy_node()
+            rclpy.shutdown()
+        return
+    if component in ("check", "prepare", "check-control", "prepare-control"):
         import time
         from dagger.robot_profile import resolve_robot
         from dagger.control.groot_policy_bridge import RemoteClient
         from dagger.control.groot_bridge_core import GrootContract
         robot = resolve_robot(os.environ)
-        token = os.environ.get("GROOT_REMOTE_TOKEN", "").strip()
-        if not token:
-            token = Path(os.environ["DAGGER_TOKEN_FILE"]).read_text().strip()
-        if not token:
-            raise SystemExit("Thor token is empty")
-        client = RemoteClient(os.environ["DAGGER_SERVER_URL"], token, 10.)
-        health = client.request("/health")
-        robot.validate_health(health)
-        from dagger.inference_options import validate_selection
-        validate_selection(health, os.environ['TASK_TEXT'], os.environ.get('DAGGER_GRIPPER_PHASE', 'auto'),
-                           os.environ.get('DAGGER_EXPECTED_CHECKPOINT', ''))
-        GrootContract.from_mapping(health.get("contract", {}))
+        if component.endswith('-control'):
+            from openarmx_teleop_vr_306_v4.reset_pose_loader import load_quick_reset_targets
+            load_quick_reset_targets(robot.robot_id)
+        else:
+            token = os.environ.get("GROOT_REMOTE_TOKEN", "").strip()
+            if not token:
+                token = Path(os.environ["DAGGER_TOKEN_FILE"]).read_text().strip()
+            if not token:
+                raise SystemExit("Thor token is empty")
+            client = RemoteClient(os.environ["DAGGER_SERVER_URL"], token, 10.)
+            health = client.request("/health")
+            robot.validate_health(health)
+            from dagger.inference_options import validate_selection
+            validate_selection(health, os.environ['TASK_TEXT'], os.environ.get('DAGGER_GRIPPER_PHASE', 'auto'),
+                               os.environ.get('DAGGER_EXPECTED_CHECKPOINT', ''))
+            GrootContract.from_mapping(health.get("contract", {}))
         node = rclpy.create_node("collector_dagger_preflight")
         try:
             from collections import Counter
@@ -75,7 +134,7 @@ def main():
                                   for info in node.get_publishers_info_by_topic(topic)]
                           for topic in topics}
             conflicts = command_conflicts(publishers, counts, suffix=robot.suffix)
-            if component == "prepare" and any(conflicts.values()):
+            if component.startswith("prepare") and any(conflicts.values()):
                 from dagger.startup_repair import repair_idle_conflicts
                 def recheck():
                     joint_status.clear()

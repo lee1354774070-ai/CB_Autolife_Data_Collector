@@ -115,6 +115,13 @@ def validate(root: Path) -> None:
             raise RuntimeError(f"DAgger dependency changed or missing: {loader}; inspect this build before running")
 
 
+def validate_saved_reset(root: Path) -> None:
+    validate(root)
+    controller = root / "openarmx_teleop_vr_306_v4/openarmx_teleop_vr_306_v4/controller_node.py"
+    if hashlib.sha256(controller.read_bytes()).hexdigest() != CONTROL_CENTER_RESET_CONTROLLER:
+        raise RuntimeError('全身复位需要已审核的控制中心保存姿态版本；不会退回原厂复位')
+
+
 def conflicting_processes(proc: Path = Path("/proc")) -> list[int]:
     """Read command names only; do not print credentials from process arguments."""
     result = []

@@ -25,12 +25,12 @@ import tty
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from dagger.dependencies import conflicting_processes, validate
+from dagger.dependencies import conflicting_processes, validate, validate_saved_reset
 from dagger.runtime_copy import prepare_copy
 from dagger.robot_profile import resolve_robot, recorder_cpus
 
 
-def environment(task: str, text: str | None, source: dict[str, str]) -> dict[str, str]:
+def environment(task: str, text: str | None, source: dict[str, str], *, reset_only=False) -> dict[str, str]:
     env = dict(source)
     for name, default in (("DAGGER_PUBLISH", "0"), ("WITH_HEAD", "1"),
                           ("WITH_UPPER_WAIST", "1"), ("WITH_WAIST", "0"), ("WITH_DEPTH", "0"),
@@ -38,7 +38,7 @@ def environment(task: str, text: str | None, source: dict[str, str]) -> dict[str
         env.setdefault(name, default)
         if env[name] not in ("0", "1"):
             raise ValueError(f"{name} must be 0 or 1")
-    if (env["WITH_HEAD"], env["WITH_UPPER_WAIST"], env["WITH_WAIST"]) != ("1", "1", "0"):
+    if not reset_only and (env["WITH_HEAD"], env["WITH_UPPER_WAIST"], env["WITH_WAIST"]) != ("1", "1", "0"):
         raise ValueError("This GR00T DAgger adapter requires 21-D: WITH_HEAD=1 WITH_UPPER_WAIST=1 WITH_WAIST=0")
     robot = resolve_robot(env)
     env.update(ROBOT_ID=robot.robot_id, ROS_DOMAIN_ID=robot.domain, DAGGER_ROBOT_PROFILE=robot.model)
@@ -49,7 +49,7 @@ def environment(task: str, text: str | None, source: dict[str, str]) -> dict[str
         raise ValueError("task_name must be a single nonempty directory name")
     if env.get("ACTION_MODE", "joint") != "joint" or env.get("FALLBACK_ACTION_TO_STATE", "0") != "0":
         raise ValueError("DAgger requires ACTION_MODE=joint and FALLBACK_ACTION_TO_STATE=0")
-    if not env.get("DAGGER_SERVER_URL", "").startswith(("http://", "https://")):
+    if not reset_only and not env.get("DAGGER_SERVER_URL", "").startswith(("http://", "https://")):
         raise ValueError("Set DAGGER_SERVER_URL to the Thor GR00T server, e.g. http://THOR_IP:8777")
     if env.get("CAMERA_ONLY", "0") != "0":
         raise ValueError("DAgger requires all three RGB cameras")
@@ -78,6 +78,7 @@ def environment(task: str, text: str | None, source: dict[str, str]) -> dict[str
                START_HAND_PRODUCER="0", TASK_TEXT=env.get("TASK_TEXT", text or task),
                RMW_IMPLEMENTATION="rmw_cyclonedds_cpp")
     env["DAGGER_BASE_DIR"] = str(Path(env["OUTPUT_BASE_DIR"]).expanduser().resolve() / task)
+    env['DAGGER_RESET_ONLY'] = '1' if reset_only else '0'
     env["CYCLONEDDS_URI"] = env.get("COLLECT_CYCLONEDDS_URI", env.get("CYCLONEDDS_URI", (
         '<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lo"/>'
         '</Interfaces><AllowMulticast>false</AllowMulticast></General><Discovery>'
@@ -140,11 +141,14 @@ def main():
     parser.add_argument("task_text", nargs="?")
     parser.add_argument("--check", action="store_true", help="Read-only dependency/process preflight; starts nothing")
     parser.add_argument('--serve', action='store_true', help='Keep the owned host alive without a terminal; VR/desktop controls remain active')
+    parser.add_argument('--reset-only', action='store_true', help='One guarded saved-pose reset; no recorder, model or VR server')
     args = parser.parse_args()
     backend = os.environ.get('DAGGER_BACKEND', 'owned')
     if backend not in ('owned', 'attach'):
         parser.error('DAGGER_BACKEND must be owned or attach')
     if backend == 'attach':
+        if args.reset_only:
+            parser.error('--reset-only owns its temporary controller; attach is unsupported')
         if args.serve:
             parser.error('--serve owns a host; it cannot be combined with attach')
         # No dependency copies, model connection, recorder or controller launch.
@@ -164,17 +168,21 @@ def main():
         result = subprocess.run(ros_command(env, env.get('DAGGER_ROS_PY', '/usr/bin/python3'), *command), env=env)
         raise SystemExit(result.returncode)
     try:
-        env = environment(args.task_name, args.task_text, os.environ)
+        env = environment(args.task_name, args.task_text, os.environ, reset_only=args.reset_only)
         robot = resolve_robot(env)
         dependency = Path(env["DAGGER_DEPENDENCY_ROOT"])
         validate(dependency)
+        if args.reset_only:
+            validate_saved_reset(dependency)
+            if not args.check and env['DAGGER_PUBLISH'] != '1':
+                raise ValueError('复位会运动，必须设置 DAGGER_PUBLISH=1；只读验证请用 --check')
         robot.validate_description(dependency / "openarmx_teleop_vr_306_v4", env)
         conflicts = conflicting_processes()
         if conflicts:
             raise RuntimeError(f"Another control stack is running (PIDs {conflicts}); stop it manually before DAgger")
         if not Path(env["DAGGER_ROS_SETUP"]).is_file():
             raise RuntimeError("Missing ROS workspace setup script")
-        if not Path(env["DAGGER_TOKEN_FILE"]).is_file() and not env.get("GROOT_REMOTE_TOKEN"):
+        if not args.reset_only and not Path(env["DAGGER_TOKEN_FILE"]).is_file() and not env.get("GROOT_REMOTE_TOKEN"):
             raise RuntimeError("Missing Thor token file; configure DAGGER_TOKEN_FILE")
         locks = []
         if not args.check:
@@ -185,20 +193,20 @@ def main():
                 except BlockingIOError:
                     raise RuntimeError("另一套DAgger已持有启动锁；不会自检修复其他采集进程") from None
                 locks.append(lock)
-        print("INFO  启动自检：依赖、Thor协议、控制权；" + ("只读检查" if args.check else "自动处理确认空闲的已知冲突"), flush=True)
+        print("INFO  启动自检：依赖、" + ("保存姿态、" if args.reset_only else "Thor协议、") + "控制权；" + ("只读检查" if args.check else "自动处理确认空闲的已知冲突"), flush=True)
         subprocess.run(ros_command(env, env.get("DAGGER_ROS_PY", "/usr/bin/python3"),
-                                   str(ROOT / "dagger/runtime.py"), "check" if args.check else "prepare"),
+                                   str(ROOT / "dagger/runtime.py"), ("check" if args.check else "prepare") + ('-control' if args.reset_only else '')),
                        env=env, timeout=20 if args.check else 60, check=True)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
         parser.error(str(exc))
     if args.check:
-        print("Dependency, ROS graph and Thor protocol preflight passed; no recording or motion started.")
+        print("Dependency and ROS preflight passed; no recording or motion started.")
         return
 
     # Startup locks remain held through repair, launch and recorder shutdown.
     base = Path(env["DAGGER_BASE_DIR"])
     base.mkdir(parents=True, exist_ok=True)
-    recorder = stack = None
+    recorder = stack = reset_client = None
     terminal = None
     stop = threading.Event()
     for signum in (signal.SIGINT, signal.SIGTERM):
@@ -208,12 +216,24 @@ def main():
         env["DAGGER_V4_RUNTIME_ROOT"] = str(prepare_copy(
             Path(env["DAGGER_DEPENDENCY_ROOT"]), ROOT / ".runtime"))
         print(f"V4 runtime COPY: {env['DAGGER_V4_RUNTIME_ROOT']}; colleague source unchanged.", flush=True)
-        started = time.time()
-        recorder = subprocess.Popen(["bash", str(ROOT / "start_lerobot_official_collect.sh"), args.task_name],
-                                    env=env, stdin=subprocess.PIPE, start_new_session=True)
-        wait_recorder(recorder, base, started, stop)
+        if not args.reset_only:
+            started = time.time()
+            recorder = subprocess.Popen(["bash", str(ROOT / "start_lerobot_official_collect.sh"), args.task_name],
+                                        env=env, stdin=subprocess.PIPE, start_new_session=True)
+            wait_recorder(recorder, base, started, stop)
         stack = subprocess.Popen(ros_command(env, "ros2", "launch", str(ROOT / "dagger/stack.launch.py")),
                                  env=env, stdin=subprocess.DEVNULL, start_new_session=True)
+        if args.reset_only:
+            reset_client = subprocess.Popen(ros_command(env, env.get('DAGGER_ROS_PY', '/usr/bin/python3'),
+                str(ROOT / 'dagger/runtime.py'), 'reset-once'), env=env, start_new_session=True)
+            while not stop.wait(.1):
+                if reset_client.poll() is not None:
+                    if reset_client.returncode:
+                        raise RuntimeError('全身复位未完成；请查看具体报错，不会自动重试')
+                    return
+                if stack.poll() is not None:
+                    raise RuntimeError('复位控制器已退出')
+            raise InterruptedError('独立复位已取消，到位未确认')
         print("DAgger running. VR: A start, GL/GR held takeover, B save, Y tap discard / hold 1s failure save, X reset only. "
               "Terminal: C start, A success save, F failure save, X/D discard, R reset, Q exit.", flush=True)
         print(f"Robot {robot.suffix} / {robot.model}; hardware publishing: {env['DAGGER_PUBLISH']} (1=enabled). "
@@ -246,6 +266,7 @@ def main():
         # Revoke control first. DAgger recorder shutdown discards unconfirmed
         # frames, unlike ordinary keyboard mode's save-on-exit behavior.
         stop_child(stack, launch_managed=True)
+        stop_child(reset_client)
         stop_child(recorder, timeout=330)
         if command_worker is not None:
             command_worker.join(timeout=12)

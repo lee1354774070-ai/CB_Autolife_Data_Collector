@@ -70,6 +70,8 @@ class Launcher:
     def __init__(self, root):
         (self.root, self.process, self.log_path, self.reader) = (root, None, None, None)
         self.stopping = False
+        self.reset_only = False
+        self.active_root = DATA_ROOT
         self.checkpoint = ''
         self.task = ''
         self.variant = 'rgbd'
@@ -93,7 +95,7 @@ class Launcher:
         body.pack(fill='both', expand=True)
         self.label(body, '云蝶  /  ROBOT 300', 11, BLUE).pack(anchor='w')
         self.label(body, 'DAgger 启动器', 25, INK, True).pack(anchor='w', pady=(8, 4))
-        self.label(body, '启动服务 → 在此开始 / 结束本条；人工接管时再连接头显', 11).pack(anchor='w')
+        self.label(body, '启动服务后开始采集；全身复位可独立使用，按控制中心保存姿态执行', 11).pack(anchor='w')
         panel = tk.Frame(body, bg=CARD, padx=16, pady=10)
         panel.pack(fill='x', pady=10)
         self.label(panel, '任务指令', 11, MUTED).pack(anchor='w')
@@ -210,27 +212,30 @@ class Launcher:
         size = 16 + 3 * self.options['WITH_HEAD'].get() + 2 * self.options['WITH_UPPER_WAIST'].get()
         self.schema_hint.configure(text=f'数据 state/action：{size}维；当前模型要求21维，请保持头部和上腰开启')
 
-    def start(self):
+    def start(self, reset_only=False):
         if self.process and self.process.poll() is None:
             return
         instruction = self.instruction.get().strip()
-        if not instruction:
+        if not instruction and not reset_only:
             self.detail.configure(text='请填写任务指令。')
             return
         try:
-            selected_phase(instruction, PHASES[self.phase.get()])
-            task = reserve_task(DATA_ROOT, self.remark.get())
+            if not reset_only:
+                selected_phase(instruction, PHASES[self.phase.get()])
+            active_root = LOGS / 'reset' if reset_only else DATA_ROOT
+            task = reserve_task(active_root, '' if reset_only else self.remark.get())
         except (ValueError, OSError) as exc:
             self.detail.configure(text=str(exc))
             return
         self.task = task
+        self.reset_only, self.active_root = reset_only, active_root
         self.variant = 'rgbd' if self.options['WITH_DEPTH'].get() else 'rgb'
         (self.control_state, self.state_at) = ({}, 0.0)
         LOGS.mkdir(parents=True, exist_ok=True)
         self.log_path = LOGS / (task + '.log')
         try:
             with self.log_path.open('w') as output:
-                self.process = subprocess.Popen([os.environ.get('DAGGER_ROS_PY', '/usr/bin/python3'), '/home/ubuntu/CB_Autolife_Data_Collector/dagger/run.py', task, instruction, '--serve'], stdout=output, stderr=subprocess.STDOUT, start_new_session=True, env={**os.environ, 'DAGGER_BACKEND': 'owned', 'OUTPUT_BASE_DIR': str(DATA_ROOT), 'TASK_TEXT': instruction, 'DAGGER_GRIPPER_PHASE': PHASES[self.phase.get()], 'DAGGER_EXPECTED_CHECKPOINT': self.checkpoint, **{key: str(int(value.get())) for (key, value) in self.options.items()}})
+                self.process = subprocess.Popen([os.environ.get('DAGGER_ROS_PY', '/usr/bin/python3'), '/home/ubuntu/CB_Autolife_Data_Collector/dagger/run.py', task, instruction, '--reset-only' if reset_only else '--serve'], stdout=output, stderr=subprocess.STDOUT, start_new_session=True, env={**os.environ, 'DAGGER_BACKEND': 'owned', 'OUTPUT_BASE_DIR': str(active_root), 'TASK_TEXT': instruction, 'DAGGER_GRIPPER_PHASE': PHASES[self.phase.get()], 'DAGGER_EXPECTED_CHECKPOINT': self.checkpoint, **{key: str(int(value.get())) for (key, value) in self.options.items()}})
         except OSError as exc:
             self.status.configure(text='●  启动失败', fg='#ffb09a')
             self.detail.configure(text=str(exc))
@@ -247,17 +252,17 @@ class Launcher:
         self.remark.configure(state='disabled')
         for widget in self.option_widgets:
             widget.configure(state='disabled')
-        self.stop_button.configure(state='normal')
+        self.stop_button.configure(state='normal', text='停止复位' if reset_only else '停止服务')
         self.log_button.configure(state='normal')
         self.status.configure(text='●  正在检查与启动', fg=BLUE)
-        self.detail.configure(text='本次目录：' + task)
+        self.detail.configure(text='正在准备独立全身复位；不启动模型或录制' if reset_only else '本次目录：' + task)
 
     def on_state(self, message):
         try:
             state = json.loads(message.data)
         except (ValueError, TypeError):
             return
-        expected = DATA_ROOT / self.task / '.official_recording_control'
+        expected = self.active_root / self.task / '.official_recording_control'
         if not self.task or state.get('collector_fifo') != str(expected):
             return
         (self.control_state, self.state_at) = (state, time.monotonic())
@@ -283,6 +288,8 @@ class Launcher:
     def command(self, action):
         if action == 'quit':
             return self.stop()
+        if action == 'reset' and (not self.process or self.process.poll() is not None):
+            return self.start(reset_only=True)
         if not self.process or self.process.poll() is not None or self.request or (time.monotonic() - self.state_at > 3):
             return
         if action == 'discard' and (not messagebox.askokcancel('丢弃本条', '丢弃当前条？本操作不复位。', parent=self.root)):
@@ -320,7 +327,9 @@ class Launcher:
         else:
             self.synced.configure(text='后台状态未连接或已过期；录制/保存结果尚未确认', fg=MUTED)
         for (action, button) in self.control_buttons.items():
-            allowed = available and (not self.request)
+            allowed = available and (not self.request) and not self.reset_only
+            if action == 'reset' and not self.process and not self.request:
+                allowed = True
             if action == 'start':
                 allowed = allowed and (not state.get('operation_busy')) and (state.get('mode') == 'DISARMED')
             button.configure(state='normal' if allowed else 'disabled')
@@ -344,7 +353,9 @@ class Launcher:
             if code is not None:
                 failed = bool(self.failure) or (code != 0 and (not self.stopping))
                 self.status.configure(text='●  启动或运行异常' if failed else '●  服务已结束', fg='#ffb09a' if failed else MUTED)
-                self.detail.configure(text=self.failure or ('请查看日志了解原因。' if failed else '可以重新启动下一次采集。'))
+                self.detail.configure(text=self.failure or ('请查看日志了解原因。' if failed else
+                    '独立复位已停止，到位未确认。' if self.reset_only and self.stopping else
+                    '独立全身复位完成；可以启动采集服务。' if self.reset_only else '可以重新启动下一次采集。'))
                 self.process = None
                 self.reader.close()
                 self.reader = None
@@ -370,7 +381,7 @@ class Launcher:
     def stop(self):
         if not self.process or self.process.poll() is not None:
             return
-        if not messagebox.askokcancel('停止采集服务', '请先保存或丢弃本条并等待结果。\n未确认的数据退出时会丢弃。\n\n现在停止服务？', parent=self.root):
+        if not self.reset_only and not messagebox.askokcancel('停止采集服务', '请先保存或丢弃本条并等待结果。\n未确认的数据退出时会丢弃。\n\n现在停止服务？', parent=self.root):
             return
         self.stopping = True
         self.status.configure(text='●  正在退出', fg=MUTED)
