@@ -116,6 +116,7 @@ def main():
     check_controller_copy(root)
     import rclpy
     from std_msgs.msg import String
+    from std_srvs.srv import Trigger
     from dagger.supervisor import CollectorDaggerSupervisor, HgDaggerSupervisor
 
     commands, enable_calls, reset_calls, outcomes = [], [], [], []
@@ -140,7 +141,7 @@ def main():
                     command, request = parts[:2]
                     if len(parts) == 3:
                         outcome = json.loads(parts[2])
-                        assert command == "save" and outcome["task_success"] is True
+                        assert command == "save" and type(outcome["task_success"]) is bool
                         outcomes.append(outcome)
                     commands.append(command)
                     if command == "save":
@@ -382,6 +383,21 @@ def main():
             assert commands == sent + ["discard"]
             assert node._machine.mode.value == "DISARMED"
             assert len(reset_calls) == count
+            for takeover in (False, True):
+                click("A")
+                wait_idle()
+                if takeover:
+                    vr(gripActive=True)
+                    wait_idle()
+                response = node._on_launcher_action("fail", Trigger.Response())
+                assert response.success, response.message
+                wait_idle()
+                assert outcomes[-1]["task_success"] is False
+                assert outcomes[-1]["human_takeover"] is takeover
+                assert "任务失败" in node._save_notice["text"]
+                assert node._machine.mode.value == "DISARMED"
+                vr(gripActive=False)
+            print('DAGGER_FAILURE_SAVE_PASS no_extra_folders=true task_failure_not_storage_failure=true')
             # Repeated status publication during a blocked filesystem read is
             # still independent of NAS latency, as are 90 Hz VR callbacks.
             blocked, release = threading.Event(), threading.Event()

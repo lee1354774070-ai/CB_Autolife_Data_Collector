@@ -30,6 +30,12 @@ class CompatibilityTest(unittest.TestCase):
         self.assertFalse(self.dispatch(command='reset')[0])
         self.execute.assert_called_once()
 
+    def test_failure_save_is_an_explicit_idempotent_command(self):
+        self.assertEqual(self.dispatch(command='fail'), (True, 'queued'))
+        self.assertEqual(self.dispatch(command='fail'), (True, 'queued'))
+        self.execute.assert_called_once_with('fail')
+        self.assertFalse(self.dispatch(command='finish')[0])
+
     def test_restarted_host_rejects_inflight_command(self):
         self.assertFalse(self.dispatch(instance_id=uuid.uuid4().hex)[0])
         self.execute.assert_not_called()
@@ -96,6 +102,22 @@ class CompatibilityTest(unittest.TestCase):
 
 
 class DesktopCopyTest(unittest.TestCase):
+    def test_desktop_failure_shortcut_preserves_abxy(self):
+        source = Path(__file__).resolve().parents[1] / 'gui/dagger_launcher.py'
+        method = next(n for c in ast.parse(source.read_text()).body if isinstance(c, ast.ClassDef)
+                      for n in c.body if isinstance(n, ast.FunctionDef) and n.name == 'shortcut_dispatch')
+        namespace = {}
+        exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), 'exec'), namespace)
+        class Button(dict):
+            def invoke(self):
+                self['invoked'] = self.get('invoked', 0) + 1
+        for key, action in dict(a='start', b='finish', f='fail', x='reset', y='discard').items():
+            button = Button(state='normal')
+            node = SimpleNamespace(shortcut_held={key: None}, control_buttons={action: button})
+            namespace['shortcut_dispatch'](node, key)
+            namespace['shortcut_dispatch'](node, key)
+            self.assertEqual(button['invoked'], 1)
+
     def test_unreviewed_source_never_executes(self):
         with self.assertRaises(ValueError):
             render(b'raise RuntimeError("must never run")', Path('/tools'))

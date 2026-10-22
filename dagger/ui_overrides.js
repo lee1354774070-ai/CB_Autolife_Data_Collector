@@ -17,7 +17,7 @@ ensureHgControlsHud = function () {
   hud.context.fillStyle = '#F0F4F8';
   hud.context.font = '500 30px sans-serif';
   hud.context.fillText('A 开始 · 握持接管 · B 确认成功 · Y 丢弃', 32, 47);
-  hud.context.fillText('X 仅复位（先保存或丢弃） · B/Y 不复位', 32, 99);
+  hud.context.fillText('X 仅复位 · 失败保存用启动器/终端 F', 32, 99);
   hud.texture.needsUpdate = true;
   state.hgControlsHud = hud;
   return hud;

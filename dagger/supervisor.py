@@ -40,6 +40,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
         robot = resolve_robot(os.environ)
         self._cancel_start = False
         self._closing = False
+        self._finish_outcome = None
         super().__init__()
         self._feedback_pub = self.create_publisher(String, "/collector/feedback", 10)
         self._speech_pub = self.create_publisher(String, f"/topic_tts_{robot.suffix}", 10)
@@ -307,7 +308,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
                 return False, 'Host busy; inspect state'
             if action == 'start' and (self._machine.mode != Mode.DISARMED or self._intervention_id):
                 return False, 'Finish current episode and release Grips first'
-            if action in ('finish', 'discard') and not self._intervention_id:
+            if action in ('finish', 'fail', 'discard') and not self._intervention_id:
                 return False, 'No episode to finish'
             reply = self._on_launcher_action(action, Trigger.Response())
             return reply.success, reply.message
@@ -352,7 +353,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             return self._dispatch_operator(action, response, launcher=True)
 
     def _dispatch_operator(self, action, response, *, launcher):
-        if action not in ("start", "finish", "discard", "reset") or self._closing:
+        if action not in ("start", "finish", "fail", "discard", "reset") or self._closing:
             response.success, response.message = False, "操作无效；退出请用终端 Q"
             return response
         if self._button_worker_active or self._session_start_pending or self._reset_pending:
@@ -361,7 +362,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             response.success, response.message = False, "请先 B 保存或 Y 丢弃，确认后 X 仅复位；数据保留"
         elif action == "start" and (self._machine.mode != Mode.DISARMED or self._intervention_id or (not launcher and any(self._grips))):
             response.success, response.message = False, "请先结束当前条并松开握持键"
-        elif action in ("finish", "discard") and not self._intervention_id:
+        elif action in ("finish", "fail", "discard") and not self._intervention_id:
             response.success, response.message = False, "没有待处理数据"
         else:
             if launcher:
@@ -371,6 +372,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             self._cancel_start = False
             target = {"start": self._start_session_worker,
                       "finish": lambda: self._finish_collection_trial(True),
+                      "fail": lambda: self._finish_collection_trial(True, task_success=False),
                       "discard": lambda: self._finish_collection_trial(False),
                       "reset": lambda: self._mechanical_reset_worker("X")}[action]
             self._spawn_button_worker_locked(action, target)
@@ -380,25 +382,38 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             self._publish_state()
         return response
 
-    def _finish_collection_trial(self, save):
+    def _finish_collection_trial(self, save, *, task_success=True):
         # Close motion authority before storage waits, using the DAgger FIFO and
         # reconciliation logic. No implicit mechanical reset on either branch.
         with self._lock:
-            metadata = {"trial_id": self._intervention_id, "task_success": True,
-                        "human_takeover": bool(self._takeover_seen)} if save else None
-            success_kind = "人工接管成功" if self._takeover_seen else "模型自主成功"
+            pending = self._pending_collector_result
+            if pending is not None:
+                # Reconcile the original command; a later click cannot relabel
+                # an episode whose save may already have committed.
+                save = pending.event == "save"
+                metadata = self._finish_outcome if save else None
+                if save and metadata is None:
+                    raise RuntimeError("原保存标签未知，请检查回执；不会重新保存或改写标签")
+            else:
+                metadata = {"trial_id": self._intervention_id, "task_success": task_success,
+                            "human_takeover": bool(self._takeover_seen)} if save else None
+                self._finish_outcome = metadata
+            outcome_kind = ("任务失败" if not metadata["task_success"] else
+                            "人工纠正成功" if metadata["human_takeover"] else "模型自主成功") if save else ""
         disabled, detail = self._forward_enable(False)
         with self._lock:
-            self._set_notice_locked("正在保存：" + success_kind if save else "正在丢弃", "info")
+            self._set_notice_locked("正在保存：" + outcome_kind if save else "正在丢弃", "info")
             self._publish_state()
         # The one lifecycle worker owns the trial; authority is already
         # DISARMED. Do not hold the VR/control lock while encoding or waiting.
-        saved = self._finish_intervention_locked(save, "B save" if save else "Y discard", metadata=metadata)
+        reason = ("B success save" if metadata["task_success"] else "F failure save") if save else "Y discard"
+        saved = self._finish_intervention_locked(save, reason, metadata=metadata)
         self._trace.barrier()
         with self._lock:
             if not self._intervention_id:
                 self._session_id = ""
-            message = "本条已保存：" + success_kind if saved else ("本条未保存，请检查录制错误" if save else "本条已丢弃")
+                self._finish_outcome = None
+            message = "本条已保存：" + outcome_kind if saved else ("本条未保存，请检查录制错误" if save else "本条已丢弃")
             if not disabled:
                 message += "；硬件停用未确认：" + detail
             self._set_notice_locked(message, "success" if disabled and (saved or not save) else "error")

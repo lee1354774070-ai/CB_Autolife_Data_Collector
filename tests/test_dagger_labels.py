@@ -139,10 +139,26 @@ class SuccessAnnotationTest(unittest.TestCase):
                 trial_id='trial',episode_index=7,task='pick',frames=10,
                 expert_frames=expert_frames,request_id='save-1')
             self.assertEqual(result['success_source'], 'human_intervention' if takeover else 'autonomous')
+            self.assertEqual(result['outcome'], 'human_corrected_success' if takeover else 'autonomous_success')
             self.assertEqual(result['annotation_source'],'operator_confirmation')
         with self.assertRaises(ValueError):
             success_annotation(dict(trial_id='trial',task_success=True,human_takeover=False),
                 trial_id='trial',episode_index=7,task='pick',frames=10,expert_frames=1,request_id='save-1')
+
+    def test_task_failure_is_distinct_from_save_failure_and_preserves_takeover(self):
+        from dagger_labels import success_annotation
+        for takeover in (False, True):
+            result = success_annotation(dict(trial_id='trial', task_success=False, human_takeover=takeover),
+                trial_id='trial', episode_index=2, task='pick', frames=10,
+                expert_frames=5 if takeover else 0, request_id='save-failed-task')
+            self.assertIs(result['task_success'], False)
+            self.assertEqual(result['outcome'], 'failure')
+            self.assertIsNone(result['success_source'])
+            self.assertEqual(result['human_takeover'], takeover)
+        for invalid in (None, 0, 1, 'false'):
+            with self.assertRaises(ValueError):
+                success_annotation(dict(trial_id='trial', task_success=invalid, human_takeover=False),
+                    trial_id='trial', episode_index=2, task='pick', frames=10, expert_frames=0, request_id='save')
 
 
 if __name__ == "__main__":

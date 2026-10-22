@@ -321,6 +321,27 @@ class RecorderControlsTest(unittest.TestCase):
             self.assertTrue(node.discard_current_episode('discard'))
             self.assertFalse((Path(root) / '.collector-work/annotations/dagger').exists())
 
+    def test_failure_tag_is_published_only_after_a_successful_storage_commit(self):
+        for disk_ok in (False, True):
+            with self.subTest(disk_ok=disk_ok), tempfile.TemporaryDirectory() as root:
+                node = self.annotation_recorder(root)
+                node.subtasks = SubtaskAnnotations(())
+                node.dagger = DaggerLabels()
+                node.dagger.trial_id = 'trial-1'
+                if not disk_ok:
+                    node.dataset.save_episode.side_effect = OSError('injected disk full')
+                outcome = dict(trial_id='trial-1', task_success=False, human_takeover=True)
+                self.assertEqual(namespace['save_current_episode'](node, 'failure-save', 'req', dagger_outcome=outcome), disk_ok)
+                path = Path(root) / 'annotations/dagger/episode_000003.json'
+                self.assertEqual(path.exists(), disk_ok)
+                if disk_ok:
+                    result = json.loads(path.read_text())
+                    self.assertEqual(result['outcome'], 'failure')
+                    self.assertIs(result['task_success'], False)
+                    self.assertIs(node._write_command_status.call_args.args[1], True)
+                else:
+                    self.assertNotIn('task_outcome', node._write_command_status.call_args.kwargs)
+
 
     def test_real_fifo_listener_preserves_trial_and_request_case(self):
         with tempfile.TemporaryDirectory() as root:

@@ -125,6 +125,36 @@ class ForwardEnableTest(unittest.TestCase):
         node._wait_for_controller_ready.assert_called_once_with(123)
 
 
+class OutcomeReconciliationTest(unittest.TestCase):
+    def test_uncertain_success_or_failure_save_keeps_its_original_label(self):
+        method = next(n for c in tree.body if isinstance(c, ast.ClassDef)
+                      for n in c.body if isinstance(n, ast.FunctionDef) and n.name == '_finish_collection_trial')
+        namespace = {}
+        exec(compile(ast.Module(body=[method], type_ignores=[]), str(SOURCE), 'exec'), namespace)
+        for original in (False, True):
+            node = Mock()
+            node._lock = threading.RLock()
+            node._intervention_id = 'trial'
+            node._pending_collector_result = node._finish_outcome = None
+            node._takeover_seen = False
+            node._forward_enable.return_value = (True, 'fake disable')
+            def finish(*args, **kwargs):
+                if node._pending_collector_result is None:
+                    node._pending_collector_result = SimpleNamespace(event='save')
+                    raise RuntimeError('uncertain save')
+                node._intervention_id = ''
+                return True
+            node._finish_intervention_locked.side_effect = finish
+            with self.assertRaisesRegex(RuntimeError, 'uncertain save'):
+                namespace['_finish_collection_trial'](node, True, task_success=original)
+            namespace['_finish_collection_trial'](node, True, task_success=not original)
+            confirmations = [c.kwargs['metadata'] for c in node._finish_intervention_locked.call_args_list]
+            self.assertEqual([x['task_success'] for x in confirmations], [original, original])
+            notice = node._set_notice_locked.call_args.args[0]
+            self.assertIn('模型自主成功' if original else '任务失败', notice)
+            self.assertIsNone(node._finish_outcome)
+
+
 class PolicyBoundaryTest(unittest.TestCase):
     """Run the real adapter callback; never construct ROS or hardware objects."""
 

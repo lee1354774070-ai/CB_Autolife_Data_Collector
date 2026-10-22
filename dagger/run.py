@@ -213,7 +213,7 @@ def main():
         stack = subprocess.Popen(ros_command(env, "ros2", "launch", str(ROOT / "dagger/stack.launch.py")),
                                  env=env, stdin=subprocess.DEVNULL, start_new_session=True)
         print("DAgger running. VR: A start, GL/GR held takeover, B save, Y discard, X reset only. "
-              "Terminal: C start, A save, X/D discard, R reset, Q exit.", flush=True)
+              "Terminal: C start, A success save, F failure save, X/D discard, R reset, Q exit.", flush=True)
         print(f"Robot {robot.suffix} / {robot.model}; hardware publishing: {env['DAGGER_PUBLISH']} (1=enabled). "
               "VR X / terminal R resets all body joints and grippers after B/Y receipt; keep workspace clear.", flush=True)
         if not args.serve and sys.stdin.isatty():
@@ -227,7 +227,7 @@ def main():
             key = sys.stdin.read(1).lower()
             if key in ("", "q"):
                 break
-            service = {"c": "launcher/start", "x": "launcher/discard", "a": "launcher/finish",
+            service = {"c": "launcher/start", "x": "launcher/discard", "a": "launcher/finish", "f": "launcher/fail",
                        "d": "launcher/discard", "r": "launcher/reset"}.get(key)
             if service and (command_worker is None or not command_worker.is_alive()):
                 def command(service=service):

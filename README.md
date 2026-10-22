@@ -451,23 +451,28 @@ DAGGER_PUBLISH=1 bash start_lerobot_official_collect.sh dagger_live
 | Y | 丢弃本轮，不复位 |
 | X | 全身复位并张开夹爪；有待处理数据/忙碌时拒绝，先B/Y并释放Grip |
 
-面键无需双Grip；终端为 **C开始、A保存、X/D丢弃、R复位、Q退出**。
-DAgger退出丢弃未确认条目，要保留必须先B确认。接管振动依赖WebXR支持。
+面键无需双Grip；终端为 **C开始、A成功保存、F失败保存、X/D丢弃、R复位、Q退出**。
+DAgger退出丢弃未确认条目，要保留须先成功/失败保存并等待回执。接管振动依赖WebXR支持。
 控制回执不证明到位。B、启动器“确认任务成功并保存”和终端A表示**由操作员确认任务成功**，不做自动成功判定。
-未接管标为模型自主成功；只要本条曾接管，即使有效纠错帧为0，也标为人工接管成功。失败条目用Y丢弃。
+成功且未接管标为模型自主成功；只要本条曾接管，即使有效纠错帧为0，也标为人工纠正成功。
+任务失败但录制有效时，点击启动器“任务失败并保存”（窗口快捷键Shift+F），或采集终端按F；Y仍只丢弃，不保存失败数据。
 
 成功标注随episode事务保存在 `dataset/annotations/dagger/episode_000000.json`，以`episode_index`关联数据：
 ```json
-{"episode_index": 0, "task_success": true, "success_source": "autonomous",
+{"episode_index": 0, "outcome": "autonomous_success", "task_success": true, "success_source": "autonomous",
  "human_takeover": false, "annotation_source": "operator_confirmation"}
 ```
 接管成功对应`success_source="human_intervention"`、`human_takeover=true`。文件还记录任务、trial_id、帧数、有效纠错帧数及保存请求ID。
-保存失败、未确认和丢弃不会向正式数据目录发布成功标注；回执的`success`仍只表示文件保存结果，`task_outcome.task_success`才是人工确认的任务结果。
+`outcome`取`autonomous_success`（自主成功）、`human_corrected_success`（人工纠正成功）或`failure`（任务失败）。
+任务失败时`task_success=false`、`success_source=null`，仍记录是否曾接管。三类保存在同一数据集，只加条目标签，不分文件夹、不复制或重新编码视频。
+磁盘保存失败、未确认和丢弃不会发布结果标注；录制失效条目也不能作为“任务失败”强行保存。
+回执的`success`仍只表示文件保存结果，`task_outcome.task_success`才是人工确认的任务结果。保存结果未知时复核原请求，不重发或因后来按另一个按钮改变标签。
 
 `dagger.train_mask`和`dagger.action_train_mask`保持原义，模型段仍为0。联合训练时，自主成功条目可进入经人工筛选的自模仿数据池，
 接管成功条目继续按原纠错掩码选择有效动作；不要为了混合训练将模型段伪装成专家纠错。混合比例由训练端决定。
 升级需先正常结束旧宿主，再重启新版整套DAgger；仅更新attach终端或启动器不能给旧宿主添加此标记。
 历史条目或旧客户端的普通save没有成功侧文件时，按“未标注”处理，不自动补成成功。此次新增侧文件不改变Parquet schema；
+旧成功侧文件若没有`outcome`，后续清洗可由`task_success`和`human_takeover`推导，采集器不回写历史文件。
 只有原有schema一致时才能续录，新旧纠错掩码字段不同仍需新目录。
 
 接入已有兼容宿主，另开终端并匹配机器人、目录、任务、发布权限：

@@ -339,6 +339,27 @@ class RecorderStorageTest(unittest.TestCase):
                             self.assertEqual([x['episode_index'] for x in outcomes], [0,1])
                             self.assertEqual([x['expert_frames'] for x in outcomes], [0,3])
                             self.assertTrue(all(x['task_success'] for x in outcomes))
+                            for takeover in (False, True):
+                                seed()
+                                self.assertTrue(node.start_episode('task-failure'))
+                                for _ in range(3):
+                                    add(source=int(takeover))
+                                outcome = dict(trial_id=node.dagger.trial_id, task_success=False, human_takeover=takeover)
+                                self.assertTrue(node.save_current_episode('failure-save', dagger_outcome=outcome))
+                                label = json.loads((root / f'annotations/dagger/episode_{node.saved_episodes-1:06d}.json').read_text())
+                                self.assertIs(label['task_success'], False)
+                                self.assertEqual(label['outcome'], 'failure')
+                                self.assertEqual(label['human_takeover'], takeover)
+                                self.assertIsNone(label['success_source'])
+                                receipt = json.loads(Path(args.status_file).read_text())
+                                self.assertIs(receipt['success'], True)
+                                self.assertEqual(receipt['task_outcome'], label)
+                            table = pq.read_table(sorted((root / 'data').rglob('*.parquet')),
+                                                  columns=['dagger.action_train_mask'])
+                            self.assertEqual(table['dagger.action_train_mask'].to_pylist(),
+                                [[0]*21]*3 + [[1]*14+[0,0]+[1]*5]*3 + [[0]*21]*3 + [[1]*14+[0,0]+[1]*5]*3)
+                            self.assertEqual({p.name for p in (root / 'annotations/dagger').iterdir()},
+                                             {f'episode_{i:06d}.json' for i in range(4)})
                         for path in (root / 'videos').rglob('*.mp4'):
                             with av.open(str(path)) as video:
                                 self.assertEqual(sum(1 for _ in video.decode(video=0)), 3)

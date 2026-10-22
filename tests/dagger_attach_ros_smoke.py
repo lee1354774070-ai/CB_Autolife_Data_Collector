@@ -87,16 +87,22 @@ def main():
             child.stdin.flush()
             wait_for(b'Accepted:')
             assert calls == ['start'], calls
+            child.stdin.write(b'f')
+            child.stdin.flush()
+            deadline = time.monotonic() + 5
+            while len(calls) < 2 and time.monotonic() < deadline:
+                time.sleep(.02)
+            assert calls == ['start', 'fail'], calls
             child.stdin.write(b'q')
             child.stdin.flush()
             assert child.wait(timeout=5) == 0
-            assert calls == ['start'], 'Detach must not stop/reset the host'
+            assert calls == ['start', 'fail'], 'Detach must not stop/reset the host'
             # A legacy publisher must never cause automatic owned-stack fallback.
             del state['collector_compat']
             checked = subprocess.run([*command_line, '--check'], env=env, capture_output=True, text=True, timeout=12)
             assert checked.returncode != 0
             assert 'no compatible attachment contract' in checked.stderr
-            assert calls == ['start']
+            assert calls == ['start', 'fail']
             print(f'ATTACH_ROS_SMOKE_PASS robot={robot.robot_id} profile={robot.model} preflight=true command_once=true detach_preserves_host=true legacy_rejected=true hardware_calls=0')
     finally:
         if child is not None and child.poll() is None:

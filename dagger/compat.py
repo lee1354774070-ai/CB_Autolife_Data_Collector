@@ -13,7 +13,7 @@ import uuid
 
 VERSION = 1
 SERVICE = '/collector_dagger/operator_command'
-COMMANDS = {'start', 'finish', 'discard', 'reset'}
+COMMANDS = {'start', 'finish', 'fail', 'discard', 'reset'}
 FEATURES = ['immediate_takeover', 'epoch_fencing', 'single_controller']
 
 

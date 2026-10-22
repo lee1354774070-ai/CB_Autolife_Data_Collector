@@ -15,7 +15,8 @@
       "Use unified A start / B save / X reset only / Y discard only in status hints",
       "Allow explicit Y discard after a confirmed invalid workspace; retain ambiguous publication results without replay",
       "Parameterize the joint-feedback topic; launch profile supplies robot/domain suffix",
-      "Forward optional operator-confirmed success metadata with a correlated save; retain legacy FIFO calls"
+      "Forward optional operator-confirmed success metadata with a correlated save; retain legacy FIFO calls",
+      "Register explicit task-failure save endpoint; existing motion and ABXY behavior unchanged"
     ],
     "recorder.py": [
       "Carry episode_invalid and publication_uncertain in correlated command receipts",

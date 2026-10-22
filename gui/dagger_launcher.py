@@ -71,7 +71,7 @@ class Launcher:
         (self.control_state, self.state_at, self.request) = ({}, 0.0, None)
         self.node = rclpy.create_node('dagger_desktop_' + str(os.getpid()))
         self.node.create_subscription(String, '/hg_dagger/control_state', self.on_state, 1)
-        self.clients = {name: self.node.create_client(Trigger, '/hg_dagger/launcher/' + name) for name in ('start', 'finish', 'discard', 'reset', 'quit')}
+        self.clients = {name: self.node.create_client(Trigger, '/hg_dagger/launcher/' + name) for name in ('start', 'finish', 'fail', 'discard', 'reset', 'quit')}
         self.estop_client = self.node.create_client(Trigger, '/openarmx_teleop_vr_306_v4/emergency_stop')
         self.estop_request = None
         root.title('云蝶DAgger启动器')
@@ -130,13 +130,13 @@ class Launcher:
         controls = tk.Frame(body, bg=BG)
         controls.pack(fill='x', pady=(16, 0))
         self.control_buttons = {}
-        for (index, (name, title)) in enumerate([('start', '开始推理 + 录制'), ('finish', '确认任务成功并保存'), ('discard', '丢弃本条（不复位）'), ('reset', '全身复位'), ('quit', '退出采集')]):
+        for (index, (name, title)) in enumerate([('start', '开始推理 + 录制'), ('finish', '确认任务成功并保存'), ('fail', '任务失败并保存'), ('discard', '丢弃本条（不复位）'), ('reset', '全身复位'), ('quit', '退出采集')]):
             button = self.button(controls, title, lambda name=name: self.command(name))
             button.configure(state='disabled', padx=10)
             button.grid(row=index // 3, column=index % 3, sticky='ew', padx=(0, 8), pady=(0, 8))
             self.control_buttons[name] = button
         self.estop_button = self.button(controls, '急停（锁定）', self.emergency_stop, '#c73838', '#ffffff')
-        self.estop_button.grid(row=1, column=2, sticky='ew', padx=(0, 8), pady=(0, 8))
+        self.estop_button.grid(row=2, column=0, columnspan=3, sticky='ew', padx=(0, 8), pady=(0, 8))
         self.live = self.label(body, '等待后台状态', 11)
         self.live.configure(wraplength=690, justify='left')
         self.live.pack(anchor='w', pady=(8, 0))
@@ -144,13 +144,13 @@ class Launcher:
         self.synced.configure(wraplength=690, justify='left')
         self.synced.pack(anchor='w', pady=(8, 0))
         self.label(body, 'A 开始 · 握持接管 · B 确认成功 · Y 丢弃 · X 仅复位', 11).pack(anchor='w', pady=(12, 8))
-        self.label(body, 'Shift+A 开始 / Shift+B 确认成功 / Shift+Y 丢弃 / Shift+X 仅复位', 10).pack(anchor='w')
+        self.label(body, 'Shift+A 开始 / Shift+B 成功保存 / Shift+F 失败保存 / Shift+Y 丢弃 / Shift+X 复位', 10).pack(anchor='w')
         self.label(body, '数据位置由 OUTPUT_BASE_DIR 指定', 10).pack(anchor='w', pady=(12, 0))
         root.after(400, self.poll)
 
     def shortcut_press(self, event):
         key = event.keysym.lower()
-        if key not in 'abxy' or len(key) != 1:
+        if key not in 'abxyf' or len(key) != 1:
             return
         if key in self.shortcut_held:
             pending = self.shortcut_held[key]
@@ -182,7 +182,7 @@ class Launcher:
         if key not in self.shortcut_held:
             return
         self.shortcut_held.pop(key)
-        action = {'a': 'start', 'b': 'finish', 'y': 'discard', 'x': 'reset'}[key]
+        action = {'a': 'start', 'b': 'finish', 'f': 'fail', 'y': 'discard', 'x': 'reset'}[key]
         button = self.control_buttons[action]
         if str(button['state']) != 'disabled':
             button.invoke()
