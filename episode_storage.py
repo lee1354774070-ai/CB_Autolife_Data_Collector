@@ -14,12 +14,54 @@ from pathlib import Path
 import shutil
 import threading
 import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 
 GIB = 1024 ** 3
 
 
 class StorageLimitError(RuntimeError):
     pass
+
+
+class AsyncTextLog:
+    """Ordered, bounded log writes; flush/close are command-boundary barriers."""
+    def __init__(self, path, max_pending=256):
+        self.stream = open(path, 'a', encoding='utf-8')
+        self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='collector-sync-log')
+        self.pending = deque()
+        self.max_pending = max_pending
+        self.error = None
+
+    def write(self, text):
+        while self.pending and self.pending[0].done():
+            try:
+                self.pending.popleft().result()
+            except OSError as exc:
+                self.error = self.error or exc
+        if self.error:
+            raise self.error
+        if len(self.pending) >= self.max_pending:
+            self.error = OSError('sync log queue full; storage cannot keep up')
+            raise self.error
+        self.pending.append(self.pool.submit(self.stream.write, text))
+
+    def flush(self):
+        while self.pending:
+            try:
+                self.pending.popleft().result()
+            except OSError as exc:
+                self.error = self.error or exc
+        if self.error:
+            raise self.error
+        self.stream.flush()
+
+    def close(self):
+        try:
+            self.flush()
+        finally:
+            self.pool.shutdown(wait=True)
+            self.stream.close()
 
 
 def sync_dir(path):

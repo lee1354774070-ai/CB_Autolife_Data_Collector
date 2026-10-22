@@ -962,7 +962,8 @@ class OfficialLeRobotRecorder(Node):
         )
 
         self._load_existing_task_counts()
-        self.sync_log = open(Path(self.args.output_dir) / "sync_log.jsonl", "a", encoding="utf-8")
+        from episode_storage import AsyncTextLog
+        self.sync_log = AsyncTextLog(Path(self.args.output_dir) / "sync_log.jsonl")
         self.started_sec = time.time()
         self.create_timer(1.0 / float(self.args.fps), self._record_tick)
         self.get_logger().info(f"active cameras: {', '.join(self.active_cameras)}")

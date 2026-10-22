@@ -4,11 +4,58 @@ import json
 from pathlib import Path
 import tempfile
 import time
+import threading
 import unittest
 from unittest.mock import patch
 
 import numpy as np
-from episode_storage import EpisodeStore, StorageBudget, StorageLimitError, durable_json
+from episode_storage import AsyncTextLog, EpisodeStore, StorageBudget, StorageLimitError, durable_json
+
+
+class SyncLogTest(unittest.TestCase):
+    def test_slow_disk_does_not_block_capture_and_flush_keeps_order(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / 'sync.jsonl'
+            log = AsyncTextLog(path)
+            release, entered = threading.Event(), threading.Event()
+            original = log.stream.write
+            def slow_write(text):
+                entered.set()
+                release.wait(2)
+                return original(text)
+            try:
+                with patch.object(log.stream, 'write', side_effect=slow_write):
+                    log.write('first\n')
+                    self.assertTrue(entered.wait(1))
+                    log.write('second\n')
+                    self.assertFalse(release.is_set())
+                    release.set()
+                    log.flush()
+                self.assertEqual(path.read_text(), 'first\nsecond\n')
+            finally:
+                release.set()
+                log.close()
+
+    def test_background_error_is_reported_before_publication(self):
+        with tempfile.TemporaryDirectory() as root:
+            log = AsyncTextLog(Path(root) / 'sync.jsonl')
+            with patch.object(log.stream, 'write', side_effect=OSError('disk full')):
+                log.write('first\n')
+                with self.assertRaisesRegex(OSError, 'disk full'):log.flush()
+                with self.assertRaisesRegex(OSError, 'disk full'):log.write('second\n')
+                with self.assertRaisesRegex(OSError, 'disk full'):log.close()
+
+    def test_queue_is_bounded_without_dropping_logs(self):
+        with tempfile.TemporaryDirectory() as root:
+            log = AsyncTextLog(Path(root) / 'sync.jsonl', max_pending=1)
+            release = threading.Event()
+            try:
+                with patch.object(log.stream, 'write', side_effect=lambda _:release.wait(2)):
+                    log.write('first\n')
+                    with self.assertRaisesRegex(OSError, 'queue full'):log.write('second\n')
+            finally:
+                release.set()
+                with self.assertRaisesRegex(OSError, 'queue full'):log.close()
 
 
 class BudgetTest(unittest.TestCase):
