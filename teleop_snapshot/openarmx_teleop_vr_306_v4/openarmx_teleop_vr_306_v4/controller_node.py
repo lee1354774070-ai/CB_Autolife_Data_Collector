@@ -5054,6 +5054,9 @@ class IndependentArmController(Node):
             },
             'grip_release_held_sides': sorted(self._grip_release_held),
             'follow_authority_allowed': self._follow_authority_allowed(),
+            'collector_heartbeat_ready': (
+                self._authority_heartbeat_required
+                and not self._heartbeat_guard_error(now)),
             'teleop_heartbeat_required': bool(
                 self.get_parameter('require_teleop_heartbeat').value
             ),

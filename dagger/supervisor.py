@@ -97,6 +97,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
                 self._publish_state()
             # Claim a hold-only lease; the vendor HOME planner can fail while
             # reporting settled feedback, so it must not define this reset.
+            self._wait_for_reset_heartbeat()
             requested = time.monotonic_ns()
             enabled = True
             accepted, detail = self._forward_enable(True)
@@ -310,6 +311,25 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             self._publish_state()
             self._timing_ms["grip_to_authority_publish"] = self._elapsed_ms(
                 self._takeover_requested_ns, time.monotonic_ns())
+
+    def _wait_for_reset_heartbeat(self):
+        """Wait for the controller's receipt, not just ROS service discovery."""
+        requested = time.monotonic_ns()
+        deadline = time.monotonic() + 10.
+        while time.monotonic() < deadline:
+            with self._lock:
+                if self._closing or self._cancel_start:
+                    raise RuntimeError('复位已取消')
+                status = dict(self._controller_status)
+                received = self._controller_status_received_ns
+            age = time.monotonic_ns() - received
+            if received > requested and 0 <= age < 500_000_000:
+                if status.get('emergency_stop_latched') or status.get('state') in ('FAULT', 'ESTOP', 'E_STOP'):
+                    raise RuntimeError(str(status.get('reason', '控制器故障')))
+                if status.get('collector_heartbeat_ready') is True:
+                    return
+            time.sleep(.02)
+        raise RuntimeError('复位尚未使能：等待控制器确认监管心跳超时')
 
     def _start_collector_for_trial(self, intervention_id, depth):
         # The recorder reads trace metadata to obtain this trial's identity.

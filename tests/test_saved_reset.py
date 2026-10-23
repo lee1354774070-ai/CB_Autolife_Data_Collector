@@ -24,6 +24,7 @@ class SavedResetTest(unittest.TestCase):
         self.node = SimpleNamespace(_lock=threading.RLock(), _reset_pending=False,
             _set_notice_locked=Mock(), _publish_state=Mock(),
             _forward_enable=Mock(return_value=(True, 'ready')),
+            _wait_for_reset_heartbeat=Mock(),
             _wait_for_reset_enable=Mock(return_value=(True, 'ready')),
             _saved_reset=Mock(), _wait_for_quick_reset=Mock(return_value=True),
             _open_reset_grippers=Mock(return_value=(True, 'open')),
@@ -71,6 +72,13 @@ class SavedResetTest(unittest.TestCase):
         self.node._saved_reset.call_async.assert_not_called()
         self.assertEqual(self.node._forward_enable.call_count, 2)
 
+    def test_missing_controller_heartbeat_never_enables_hardware(self):
+        self.node._wait_for_reset_heartbeat.side_effect = RuntimeError('heartbeat not ready')
+        self.run_reset()
+        self.node._forward_enable.assert_not_called()
+        self.node._saved_reset.call_async.assert_not_called()
+        self.assertIn('heartbeat not ready', self.node._set_notice_locked.call_args.args[0])
+
     def test_reset_environment_does_not_require_model(self):
         env = environment('reset', '', {'ROBOT_ID':'300'}, reset_only=True)
         self.assertNotIn('DAGGER_SERVER_URL', env)
@@ -87,6 +95,31 @@ class SavedResetTest(unittest.TestCase):
         node = SimpleNamespace(process=None, start=Mock(), stop=Mock())
         scope['command'](node, 'reset')
         node.start.assert_called_once_with(reset_only=True)
+
+
+class ResetHeartbeatTest(unittest.TestCase):
+    def run_wait(self, *, ready=True, cancel=False, stale=False):
+        now = [100.]
+        node = SimpleNamespace(_lock=threading.RLock(), _closing=cancel, _cancel_start=False,
+            _controller_status={'collector_heartbeat_ready': False}, _controller_status_received_ns=0)
+        def sleep(_):
+            now[0] += 1
+            node._controller_status = {'collector_heartbeat_ready': ready}
+            node._controller_status_received_ns = 0 if stale else int(now[0]*1e9)
+        method = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+                      and n.name == '_wait_for_reset_heartbeat')
+        scope = {'time':SimpleNamespace(monotonic=lambda:now[0],
+                    monotonic_ns=lambda:int(now[0]*1e9), sleep=sleep)}
+        exec(compile(ast.Module(body=[method], type_ignores=[]), '<heartbeat>', 'exec'), scope)
+        scope['_wait_for_reset_heartbeat'](node)
+        return now[0]
+
+    def test_waits_until_controller_confirms_new_heartbeat(self):
+        self.assertEqual(self.run_wait(), 101.)
+
+    def test_stale_missing_and_cancelled_never_pass(self):
+        for kwargs in ({'stale': True}, {'ready': False}, {'cancel': True}):
+            with self.assertRaises(RuntimeError):self.run_wait(**kwargs)
 
 
 if __name__ == '__main__':

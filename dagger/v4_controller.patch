@@ -179,7 +179,13 @@
          active_publisher = (
              self._velocity_pub
              if self._output_control_mode == 'velocity'
-@@ -4993,6 +5079,10 @@
+@@ -4971,2 +5057,5 @@
+             'follow_authority_allowed': self._follow_authority_allowed(),
++            'collector_heartbeat_ready': (
++                self._authority_heartbeat_required
++                and not self._heartbeat_guard_error(now)),
+             'teleop_heartbeat_required': bool(
+@@ -4993,6 +5082,10 @@
          self._status_pub.publish(String(data=json.dumps(payload, separators=(',', ':'))))
  
      def destroy_node(self):
