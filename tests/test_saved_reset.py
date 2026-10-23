@@ -38,7 +38,7 @@ class SavedResetTest(unittest.TestCase):
         exec(compile(ast.Module(body=[method], type_ignores=[]), str(ROOT/'dagger/supervisor.py'), 'exec'), self.scope)
 
     def run_reset(self, validation_error=None):
-        with patch.dict(os.environ, DAGGER_DEPENDENCY_ROOT='/reviewed'), \
+        with patch.dict(os.environ, DAGGER_DEPENDENCY_ROOT='/reviewed', DAGGER_RESET_STATE_PATH='/run/reset.json'), \
                 patch.dict('sys.modules', {self.loader.__name__:self.loader}), \
                 patch('dagger.dependencies.validate_saved_reset', side_effect=validation_error):
             self.scope['_mechanical_reset_worker'](self.node, 'X')
@@ -46,7 +46,7 @@ class SavedResetTest(unittest.TestCase):
     def test_complete_reset_waits_for_body_and_grippers_then_releases(self):
         self.run_reset()
         self.assertEqual([c.args[0] for c in self.node._forward_enable.call_args_list], [True, False])
-        self.loader.load_quick_reset_targets.assert_called_once_with('300')
+        self.loader.load_quick_reset_targets.assert_called_once_with('300', '/run/reset.json')
         self.node._wait_for_quick_reset.assert_called_once()
         self.node._open_reset_grippers.assert_called_once()
         self.assertEqual(self.node._set_notice_locked.call_args.args[1], 'success')

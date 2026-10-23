@@ -1,0 +1,10 @@
+--- a/openarmx_teleop_vr_306_v4/reset_pose_loader.py
++++ b/openarmx_teleop_vr_306_v4/reset_pose_loader.py
+@@ -119,1 +119,6 @@
+-    path = Path(DEFAULT_STATE_PATH if state_path is None else state_path).expanduser()
++    import os
++    if state_path is None:
++        state_path = os.environ.get('DAGGER_RESET_STATE_PATH')
++    if not state_path:
++        raise ValueError('DAgger task reset snapshot is missing')
++    path = Path(state_path).expanduser()

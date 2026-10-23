@@ -17,6 +17,7 @@ from tkinter import messagebox, ttk
 BASE = Path('/home/ubuntu/CB_Autolife_Data_Collector')
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dagger.inference_options import TASKS, PHASES, selected_phase
+from dagger.task_reset import pose_choices, task_pose
 from gui.checkpoint_panel import CheckpointDialog
 LOGS = Path.home() / '.local/state/collector-compatible-dagger'
 DATA_ROOT = Path(os.environ.get('OUTPUT_BASE_DIR', '/home/ubuntu/nas14'))
@@ -95,13 +96,21 @@ class Launcher:
         body.pack(fill='both', expand=True)
         self.label(body, '云蝶  /  ROBOT 300', 11, BLUE).pack(anchor='w')
         self.label(body, 'DAgger 启动器', 25, INK, True).pack(anchor='w', pady=(8, 4))
-        self.label(body, '启动服务后开始采集；全身复位可独立使用，按控制中心保存姿态执行', 11).pack(anchor='w')
+        self.label(body, '全身复位可独立使用，按所选任务姿态执行；本轮启动后锁定目标', 11).pack(anchor='w')
         panel = tk.Frame(body, bg=CARD, padx=16, pady=10)
         panel.pack(fill='x', pady=10)
         self.label(panel, '任务指令', 11, MUTED).pack(anchor='w')
         self.instruction = ttk.Combobox(panel, font=('Sans', 12), values=[task[1] for task in TASKS])
         self.instruction.insert(0, 'Pick the laundry bag.')
         self.instruction.pack(fill='x', ipady=3, pady=(4, 8))
+        self.label(panel, '复位姿态（自动匹配已知任务；自定义任务请明确选择）', 10).pack(anchor='w')
+        try:
+            reset_choices = pose_choices(os.environ)
+        except (OSError, ValueError, KeyError):
+            reset_choices = []
+        self.reset_pose = ttk.Combobox(panel, state='readonly', values=['按任务配置'] + reset_choices)
+        self.reset_pose.set('按任务配置')
+        self.reset_pose.pack(fill='x', pady=(4, 8))
         model_row = tk.Frame(panel, bg=CARD)
         model_row.pack(fill='x', pady=(0, 8))
         self.phase = ttk.Combobox(model_row, state='readonly', values=list(PHASES), width=26)
@@ -220,6 +229,10 @@ class Launcher:
             self.detail.configure(text='请填写任务指令。')
             return
         try:
+            reset_name = '' if self.reset_pose.get() == '按任务配置' else self.reset_pose.get()
+            reset_env = {**os.environ, 'ROBOT_ID': os.environ.get('ROBOT_ID', '300'),
+                         'TASK_TEXT': instruction, 'DAGGER_RESET_POSE': reset_name}
+            selected_reset = task_pose(reset_env)
             if not reset_only:
                 selected_phase(instruction, PHASES[self.phase.get()])
             active_root = LOGS / 'reset' if reset_only else DATA_ROOT
@@ -235,7 +248,7 @@ class Launcher:
         self.log_path = LOGS / (task + '.log')
         try:
             with self.log_path.open('w') as output:
-                self.process = subprocess.Popen([os.environ.get('DAGGER_ROS_PY', '/usr/bin/python3'), '/home/ubuntu/CB_Autolife_Data_Collector/dagger/run.py', task, instruction, '--reset-only' if reset_only else '--serve'], stdout=output, stderr=subprocess.STDOUT, start_new_session=True, env={**os.environ, 'DAGGER_BACKEND': 'owned', 'OUTPUT_BASE_DIR': str(active_root), 'TASK_TEXT': instruction, 'DAGGER_GRIPPER_PHASE': PHASES[self.phase.get()], 'DAGGER_EXPECTED_CHECKPOINT': self.checkpoint, **{key: str(int(value.get())) for (key, value) in self.options.items()}})
+                self.process = subprocess.Popen([os.environ.get('DAGGER_ROS_PY', '/usr/bin/python3'), '/home/ubuntu/CB_Autolife_Data_Collector/dagger/run.py', task, instruction, '--reset-only' if reset_only else '--serve'], stdout=output, stderr=subprocess.STDOUT, start_new_session=True, env={**reset_env, 'DAGGER_BACKEND': 'owned', 'OUTPUT_BASE_DIR': str(active_root), 'DAGGER_GRIPPER_PHASE': PHASES[self.phase.get()], 'DAGGER_EXPECTED_CHECKPOINT': self.checkpoint, **{key: str(int(value.get())) for (key, value) in self.options.items()}})
         except OSError as exc:
             self.status.configure(text='●  启动失败', fg='#ffb09a')
             self.detail.configure(text=str(exc))
@@ -248,6 +261,7 @@ class Launcher:
         self.stopping = False
         self.start_button.configure(state='disabled')
         self.instruction.configure(state='disabled')
+        self.reset_pose.configure(state='disabled')
         self.phase.configure(state='disabled')
         self.remark.configure(state='disabled')
         for widget in self.option_widgets:
@@ -255,7 +269,7 @@ class Launcher:
         self.stop_button.configure(state='normal', text='停止复位' if reset_only else '停止服务')
         self.log_button.configure(state='normal')
         self.status.configure(text='●  正在检查与启动', fg=BLUE)
-        self.detail.configure(text='正在准备独立全身复位；不启动模型或录制' if reset_only else '本次目录：' + task)
+        self.detail.configure(text='复位目标：' + selected_reset['pose_name'] + ('；正在准备独立复位' if reset_only else '；目录：' + task))
 
     def on_state(self, message):
         try:
@@ -361,6 +375,7 @@ class Launcher:
                 self.reader = None
                 self.start_button.configure(state='normal')
                 self.instruction.configure(state='normal')
+                self.reset_pose.configure(state='readonly')
                 self.phase.configure(state='readonly')
                 self.remark.configure(state='normal')
                 for widget in self.option_widgets:

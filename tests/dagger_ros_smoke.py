@@ -41,7 +41,12 @@ def check_controller_copy(root):
             subprocess.run(['patch', '--batch', '--fuzz=0', '-p1', '-i', str(variant / 'controller.patch')],
                            cwd=expected_root, check=True, capture_output=True)
             expected_controller = expected_controller_copy
-            assert (variant / 'reset_pose_loader.py').read_bytes() == (runtime / 'openarmx_teleop_vr_306_v4/reset_pose_loader.py').read_bytes()
+            expected_loader = expected_root / 'openarmx_teleop_vr_306_v4/reset_pose_loader.py'
+            expected_loader.write_bytes((variant / 'reset_pose_loader.py').read_bytes())
+            subprocess.run(['patch', '--batch', '--fuzz=0', '-p1', '-i',
+                            str(Path(__file__).resolve().parents[1] / 'dagger/task_reset_loader.patch')],
+                           cwd=expected_root, check=True, capture_output=True)
+            assert expected_loader.read_bytes() == (runtime / 'openarmx_teleop_vr_306_v4/reset_pose_loader.py').read_bytes()
         checked = 0
         for published in snapshot.rglob('*'):
             if published.is_file() and published.suffix != '.md' and not any(

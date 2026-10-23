@@ -87,8 +87,8 @@ def main():
         from dagger.control.groot_bridge_core import GrootContract
         robot = resolve_robot(os.environ)
         if component.endswith('-control'):
-            from openarmx_teleop_vr_306_v4.reset_pose_loader import load_quick_reset_targets
-            load_quick_reset_targets(robot.robot_id)
+            from dagger.task_reset import task_pose
+            task_pose(os.environ)
         else:
             token = os.environ.get("GROOT_REMOTE_TOKEN", "").strip()
             if not token:

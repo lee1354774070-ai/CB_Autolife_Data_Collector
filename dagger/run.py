@@ -172,6 +172,9 @@ def main():
         robot = resolve_robot(env)
         dependency = Path(env["DAGGER_DEPENDENCY_ROOT"])
         validate(dependency)
+        from dagger.task_reset import task_pose
+        reset_pose = task_pose(env)
+        print('INFO  本轮复位姿态：' + reset_pose['pose_name'], flush=True)
         if args.reset_only:
             validate_saved_reset(dependency)
             if not args.check and env['DAGGER_PUBLISH'] != '1':
@@ -206,6 +209,11 @@ def main():
     # Startup locks remain held through repair, launch and recorder shutdown.
     base = Path(env["DAGGER_BASE_DIR"])
     base.mkdir(parents=True, exist_ok=True)
+    # Freeze the selected calibration for this run; never rewrite control-center state.
+    reset_path = base / f'reset_pose_{time.time_ns()}.json'
+    reset_path.write_text(json.dumps(reset_pose, ensure_ascii=False, indent=2))
+    env['DAGGER_RESET_STATE_PATH'] = str(reset_path)
+    env['DAGGER_RESET_POSE_NAME'] = reset_pose['pose_name']
     recorder = stack = reset_client = None
     terminal = None
     stop = threading.Event()

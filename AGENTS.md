@@ -38,7 +38,7 @@ ROS_DOMAIN_ID=211 ROBOT_ID=345 DAGGER_ROBOT_PROFILE=s3_v3_1 DAGGER_DEPENDENCY_RO
 - 单人面键需GL+GR；DAgger面键无需双Grip，Grip用于人工接管。
 - A开始、B保存/阶段标记、X仅复位、Y丢弃；DAgger手柄Y改为短按松开丢弃、长按满1秒失败保存。终端键位按README保留。
 - 原厂X复位未接入，不调用另一套控制器补偿；错误和未确认结果不能显示成功。
-- DAgger X和启动器独立复位使用审核过的控制中心保存姿态路径，检查所有保存关节及夹爪；不退回原厂HOME规划。独立复位不启动Thor/录制/VR，保留控制权、版本和碰撞检查，不按任务文字猜姿态。
+- DAgger X和启动器独立复位使用本轮任务姿态快照，参考多任务计划的 task_poses/poses_file；检查所有保存关节及夹爪，不退回原厂HOME规划或全局姿态。独立复位不启动Thor/录制/VR，保留控制权、版本和碰撞检查；自定义任务必须明确选择姿态，不按文字猜测。无robot_id的历史多任务计划只可用于300。
 - 21维顺序、相机字段、FIFO回执、epoch/session门控与训练mask不得随意修改。
 - DAgger B/finish确认任务成功；手柄Y长按满1秒、启动器fail或终端F确认任务失败并保存。手柄Y短按松开丢弃；启动器/浏览器Shift+Y仍直接丢弃，右摇杆不负责失败保存。outcome区分autonomous_success/human_corrected_success/failure，接管记录与原纠错mask独立。只写同目录侧文件，不建分类文件夹；侧文件与episode事务提交，存储失败/丢弃不发布，历史缺失不回填。结果未知时不能重发保存或改变原标签。FIFO第三段JSON可选，旧命令/回执兼容。
 - `dagger.train_mask`保留整帧AND语义；`dagger.action_train_mask`按身体/双夹爪来源分别屏蔽。新旧DAgger schema不能在同一数据目录混写。

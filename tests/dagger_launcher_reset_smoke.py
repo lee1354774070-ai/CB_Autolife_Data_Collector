@@ -20,6 +20,7 @@ with tempfile.TemporaryDirectory() as directory, \
         patch.object(gui.subprocess, 'Popen') as popen:
     popen.return_value = Mock(poll=Mock(return_value=None))
     launcher = gui.Launcher(root)
+    launcher.instruction.set('Pick the laundry bag from the table.')
     try:
         launcher.poll()
         assert launcher.control_buttons['reset']['state'] == 'normal'

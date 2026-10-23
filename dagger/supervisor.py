@@ -81,7 +81,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
     def _mechanical_reset_worker(self, button, save_note=''):
         with self._lock:
             self._reset_pending = True
-            self._set_notice_locked(save_note + '按控制中心保存姿态全身复位中', 'warning')
+            self._set_notice_locked(save_note + '按本轮任务姿态全身复位中', 'warning')
             self._publish_state()
         success, detail = False, ''
         enabled = False
@@ -89,7 +89,12 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             from .dependencies import validate_saved_reset
             from openarmx_teleop_vr_306_v4.reset_pose_loader import load_quick_reset_targets
             validate_saved_reset(Path(os.environ['DAGGER_DEPENDENCY_ROOT']))
-            load_quick_reset_targets(resolve_robot(os.environ).robot_id)
+            load_quick_reset_targets(resolve_robot(os.environ).robot_id,
+                                     os.environ['DAGGER_RESET_STATE_PATH'])
+            pose_name = os.environ.get('DAGGER_RESET_POSE_NAME', '本轮任务姿态')
+            with self._lock:
+                self._set_notice_locked(save_note + '全身复位目标：' + pose_name, 'warning')
+                self._publish_state()
             # Claim a hold-only lease; the vendor HOME planner can fail while
             # reporting settled feedback, so it must not define this reset.
             requested = time.monotonic_ns()
