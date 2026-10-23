@@ -18,6 +18,32 @@ method = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
 
 
 class SavedResetTest(unittest.TestCase):
+    def test_reset_accepts_fresh_completion_without_observing_motion(self):
+        source = ROOT / 'dagger/control/supervisor_node.py'
+        wait = next(n for n in ast.walk(ast.parse(source.read_text()))
+                    if isinstance(n, ast.FunctionDef) and n.name == '_wait_for_quick_reset')
+        for state, ready, progress, expected in [
+                ('ARMED', True, 1., True), ('HOLDING', True, 1., True),
+                ('ARMED', True, .5, False), ('ARMED', False, 1., False),
+                ('FAULT', True, 1., False), ('ESTOP', True, 1., False)]:
+            with self.subTest(state=state, ready=ready, progress=progress):
+                clock = SimpleNamespace(value=10.)
+                node = SimpleNamespace(_lock=threading.RLock(),
+                    get_parameter=lambda _: SimpleNamespace(value=.2),
+                    _controller_status_received_ns=9_990_000_000,
+                    _controller_status=dict(state='ARMED', hardware_ready=True,
+                                           quick_reset_progress=1., quick_reset_active=False))
+                def sleep(seconds):
+                    clock.value += seconds
+                    node._controller_status_received_ns = round(clock.value * 1e9)
+                    node._controller_status.update(state=state, hardware_ready=ready,
+                                                   quick_reset_progress=progress)
+                scope = {'time': SimpleNamespace(monotonic=lambda:clock.value,
+                         monotonic_ns=lambda:round(clock.value * 1e9), sleep=sleep)}
+                exec(compile(ast.Module(body=[wait], type_ignores=[]), str(source), 'exec'), scope)
+                self.assertEqual(scope['_wait_for_quick_reset'](node), expected)
+                self.assertGreater(clock.value, 10.)  # Cached 100% must not complete this request.
+
     def setUp(self):
         future = Future()
         future.set_result(SimpleNamespace(success=True, message='accepted'))

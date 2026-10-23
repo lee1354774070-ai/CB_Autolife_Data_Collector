@@ -674,16 +674,20 @@ class HgDaggerSupervisor(Node):
         return False, "等待硬件使能就绪超时"
 
     def _wait_for_quick_reset(self) -> bool:
+        # Called after the reset ACK; ignore cached completion from an older reset.
+        acknowledged_ns = time.monotonic_ns()
         deadline = time.monotonic() + float(
             self.get_parameter("quick_reset_wait_timeout_sec").value
         )
-        observed_active = False
         while time.monotonic() < deadline:
             with self._lock:
                 status = dict(self._controller_status)
                 received_ns = self._controller_status_received_ns
             if time.monotonic_ns() - received_ns > 1_000_000_000:
                 return False
+            if received_ns <= acknowledged_ns:
+                time.sleep(0.05)
+                continue
             if status.get("emergency_stop_latched") or status.get("state") in (
                 "FAULT", "E_STOP", "ESTOP", "DISARMED"
             ):
@@ -691,8 +695,7 @@ class HgDaggerSupervisor(Node):
             active = bool(status.get("quick_reset_active")) or status.get(
                 "state"
             ) == "RESETTING"
-            observed_active = observed_active or active
-            if (observed_active and not active
+            if (not active
                     and status.get("hardware_ready") is True
                     and float(status.get("quick_reset_progress", 0.0)) >= 1.0):
                 return True

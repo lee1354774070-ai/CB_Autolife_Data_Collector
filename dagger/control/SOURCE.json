@@ -10,6 +10,7 @@
   },
   "changes": {
     "supervisor_node.py": [
+      "Accept fresh post-ACK reset completion even when an already-reached pose produces no observable RESETTING state",
       "Align gripper commands to Thor 10..360 degrees and feedback tolerance to <=365 degrees",
       "Save explicitly requested policy-only episodes; expert mask remains unchanged",
       "Use unified A start / B save / X reset only / Y discard only in status hints",
