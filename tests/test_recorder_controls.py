@@ -34,8 +34,9 @@ methods = [item for cls in tree.body if isinstance(cls, ast.ClassDef)
 methods.extend(item for cls in tree.body if isinstance(cls, ast.ClassDef)
                for item in cls.body if isinstance(item, ast.FunctionDef)
                and item.name in {'_write_command_status', 'process_control_commands', '_control_fifo_loop', '_validate_resume_schema', '_poll_shm_images'})
-methods.extend(item for item in tree.body if isinstance(item, ast.FunctionDef) and item.name == 'write_json_atomic')
+methods.extend(item for item in tree.body if isinstance(item, ast.FunctionDef) and item.name in {'write_json_atomic', 'make_depth_encoder'})
 namespace = {'time': time, 'Path': Path, 'os': os, 'json': json, 'prepare_annotation': prepare_annotation,
+             'argparse': __import__('argparse'),
              'Any': Any, 'Empty': Empty, 'validate_dagger_features': validate_dagger_features,
              'shutil': shutil, 'StorageLimitError': StorageLimitError,
              'success_annotation': success_annotation}
@@ -43,6 +44,23 @@ exec(compile(ast.Module(body=methods, type_ignores=[]), str(SOURCE), 'exec'), na
 
 
 class RecorderControlsTest(unittest.TestCase):
+    def test_dagger_depth_tuning_keeps_quantizer_and_lossless_encoding(self):
+        for dagger, codec in [(True, 'hevc'), (False, 'hevc'), (True, 'other')]:
+            args = SimpleNamespace(with_depth=True, dagger=dagger, depth_vcodec=codec,
+                                   depth_min=.05, depth_max=10., depth_shift=3.5, depth_use_log=True)
+            with patch.dict(namespace, DepthEncoderConfig=lambda **kw:kw):
+                result = namespace['make_depth_encoder'](args)
+                self.assertEqual([result[k] for k in ('depth_min','depth_max','shift','use_log')],
+                                 [.05,10.,3.5,True])
+                if dagger and codec == 'hevc':
+                    self.assertEqual(result['preset'], 'ultrafast')
+                    self.assertEqual(result['extra_options']['x265-params'],
+                                     'lossless=1:pools=4:frame-threads=1:bframes=0:scenecut=0')
+                else:
+                    self.assertNotIn('extra_options', result)
+                args.with_depth = False
+                self.assertIsNone(namespace['make_depth_encoder'](args))
+
     def test_dagger_start_excludes_delayed_pre_label_camera_on_every_trial(self):
         from time_sync import oldest_ready_sample
         from test_dagger_labels import packet, STAMP

@@ -252,12 +252,18 @@ def make_depth_encoder(args: argparse.Namespace) -> Any | None:
         raise RuntimeError(
             "Depth recording requires LeRobot >= 0.6 with DepthEncoderConfig. "
         )
+    tuning = {}
+    if args.dagger and args.depth_vcodec == "hevc":
+        # x265's worker pool ignores encoder_threads; bound it within recorder affinity.
+        tuning = dict(preset="ultrafast", extra_options={
+            "x265-params": "lossless=1:pools=4:frame-threads=1:bframes=0:scenecut=0"})
     return DepthEncoderConfig(
         vcodec=args.depth_vcodec,
         depth_min=args.depth_min,
         depth_max=args.depth_max,
         shift=args.depth_shift,
         use_log=args.depth_use_log,
+        **tuning,
     )
 
 
@@ -1749,6 +1755,8 @@ class OfficialLeRobotRecorder(Node):
             f"saving episode {episode_index} with {episode_frames} frame(s) ({reason})"
         )
         self.is_recording = False
+        save_started = time.perf_counter()
+        save_stages = {}
         try:
             if self.dagger_progress_future is not None:
                 self.dagger_progress_future.result()
@@ -1756,6 +1764,7 @@ class OfficialLeRobotRecorder(Node):
             self.dataset.writer.image_writer.wait_until_done()
             self.storage_budget.refresh()
             self.storage_budget.check(saving=True)
+            save_stages["drain_and_storage_check"] = time.perf_counter() - save_started
             annotation_paths = None
             if self.subtasks.enabled:
                 manifest = self.subtasks.manifest(
@@ -1773,12 +1782,18 @@ class OfficialLeRobotRecorder(Node):
                 if outcome_path.exists():
                     raise RuntimeError(f"DAgger outcome already exists: {outcome_path}")
                 write_json_atomic(outcome_path, task_outcome)
+            stage_started = time.perf_counter()
             self.dataset.save_episode(parallel_encoding=False)
+            save_stages["encode_and_write"] = time.perf_counter() - stage_started
+            stage_started = time.perf_counter()
             self.dataset.finalize()
+            save_stages["finalize"] = time.perf_counter() - stage_started
             if annotation_paths is not None:
                 os.replace(*annotation_paths)
             self._flush_sync_log()
+            stage_started = time.perf_counter()
             self.episode_store.commit(episode_index)
+            save_stages["durable_commit"] = time.perf_counter() - stage_started
         except Exception as exc:
             self.get_logger().error(f"failed to save episode {episode_index}: {exc}")
             self._invalidate_episode('episode_save_failed', time.time(), detail=str(exc))
@@ -1806,6 +1821,8 @@ class OfficialLeRobotRecorder(Node):
                 "frames": episode_frames,
                 "reason": reason,
                 "total_saved_episodes": self.saved_episodes,
+                "save_seconds": time.perf_counter() - save_started,
+                "stage_seconds": save_stages,
                 "wall_time": time.time(),
             }
         )

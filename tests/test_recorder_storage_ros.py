@@ -108,6 +108,7 @@ class RecorderStorageTest(unittest.TestCase):
                             with patch.object(recorder.time, 'time', return_value=start):
                                 node._record_tick()
                             self.assertTrue(node.dagger.ready)
+                            start += 1 / 30  # Saved anchors must follow the provenance barrier.
                         for index in range(3):
                             anchor = start + index / 30
                             seed(anchor)
