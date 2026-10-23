@@ -5057,6 +5057,14 @@ class IndependentArmController(Node):
             'collector_heartbeat_ready': (
                 self._authority_heartbeat_required
                 and not self._heartbeat_guard_error(now)),
+            'collector_startup_guard_error': (
+                self._active_command_guard_error(now)
+                or self._hardware_output_guard_error(require_prepare=False)
+                or ('guarded SYNC service unavailable' if bool(self.get_parameter(
+                    'require_sync_session_service').value) and not
+                    self._sync_session_client.service_is_ready() else '')
+                or ('fresh joint feedback required' if self._feedback is None or
+                    feedback_age > float(self.get_parameter('feedback_timeout_sec').value) else '')),
             'teleop_heartbeat_required': bool(
                 self.get_parameter('require_teleop_heartbeat').value
             ),

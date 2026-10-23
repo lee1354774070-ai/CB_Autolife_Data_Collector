@@ -98,13 +98,14 @@ class SavedResetTest(unittest.TestCase):
 
 
 class ResetHeartbeatTest(unittest.TestCase):
-    def run_wait(self, *, ready=True, cancel=False, stale=False):
+    def run_wait(self, *, ready=True, cancel=False, stale=False, guard='', quiet_until=101.):
         now = [100.]
         node = SimpleNamespace(_lock=threading.RLock(), _closing=cancel, _cancel_start=False,
             _controller_status={'collector_heartbeat_ready': False}, _controller_status_received_ns=0)
         def sleep(_):
             now[0] += 1
-            node._controller_status = {'collector_heartbeat_ready': ready}
+            node._controller_status = {'collector_heartbeat_ready': ready,
+                'collector_startup_guard_error': 'startup silence' if now[0] < quiet_until else guard}
             node._controller_status_received_ns = 0 if stale else int(now[0]*1e9)
         method = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
                       and n.name == '_wait_for_reset_heartbeat')
@@ -116,6 +117,40 @@ class ResetHeartbeatTest(unittest.TestCase):
 
     def test_waits_until_controller_confirms_new_heartbeat(self):
         self.assertEqual(self.run_wait(), 101.)
+
+    def test_heartbeat_alone_does_not_bypass_quiet_window(self):
+        self.assertEqual(self.run_wait(quiet_until=104.), 104.)
+
+    def test_unready_graph_remains_blocked_without_retrying_enable(self):
+        with self.assertRaisesRegex(RuntimeError, 'DDS not ready'):
+            self.run_wait(guard='DDS not ready')
+
+    def test_real_controller_quiet_guard_is_reported_before_enable(self):
+        source = ROOT / 'teleop_snapshot/openarmx_teleop_vr_306_v4/openarmx_teleop_vr_306_v4/controller_node.py'
+        parsed = ast.parse(source.read_text())
+        guard = next(n for n in ast.walk(parsed) if isinstance(n, ast.FunctionDef)
+                     and n.name == '_active_command_guard_error')
+        scope = {'np': SimpleNamespace(isfinite=lambda x: x == x and abs(x) != float('inf'))}
+        exec(compile(ast.Module(body=[guard], type_ignores=[]), str(source), 'exec'), scope)
+        node = SimpleNamespace(_command_monitor_started=100., _last_external_command_time=0.,
+            _last_external_command_topic='', _own_command_echo_timeout=lambda:1.,
+            get_parameter=lambda name:SimpleNamespace(value={
+                'enable_active_command_arbitration':True, 'external_command_quiet_sec':1.,
+                'require_sync_session_service':True, 'feedback_timeout_sec':.35}[name]),
+            _hardware_output_guard_error=lambda **_: '', _sync_session_client=Mock(), _feedback=object())
+        node._active_command_guard_error=lambda now:scope['_active_command_guard_error'](node,now)
+        expression = next(value for n in ast.walk(parsed) if isinstance(n, ast.Dict)
+                          for key,value in zip(n.keys,n.values)
+                          if isinstance(key,ast.Constant) and key.value=='collector_startup_guard_error')
+        evaluate=compile(ast.Expression(expression),str(source),'eval')
+        # The readiness status uses exactly the controller's actual guard.
+        self.assertIn('0.16s',eval(evaluate,{'self':node,'now':100.16,'feedback_age':0.}))
+        self.assertIn('1.00s',node._active_command_guard_error(100.16))
+        self.assertEqual(node._active_command_guard_error(101.01),'')
+        self.assertEqual(eval(evaluate,{'self':node,'now':101.01,'feedback_age':0.}),'')
+        self.assertIn('feedback',eval(evaluate,{'self':node,'now':101.01,'feedback_age':1.}))
+        node._last_external_command_time=101.
+        self.assertIn('external command on',node._active_command_guard_error(101.16))
 
     def test_stale_missing_and_cancelled_never_pass(self):
         for kwargs in ({'stale': True}, {'ready': False}, {'cancel': True}):

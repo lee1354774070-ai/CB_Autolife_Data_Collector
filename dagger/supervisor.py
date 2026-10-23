@@ -313,9 +313,10 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
                 self._takeover_requested_ns, time.monotonic_ns())
 
     def _wait_for_reset_heartbeat(self):
-        """Wait for the controller's receipt, not just ROS service discovery."""
+        """Await heartbeat, quiet window, DDS guard, SYNC discovery and feedback."""
         requested = time.monotonic_ns()
         deadline = time.monotonic() + 10.
+        detail = '等待控制器新鲜状态'
         while time.monotonic() < deadline:
             with self._lock:
                 if self._closing or self._cancel_start:
@@ -326,10 +327,12 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             if received > requested and 0 <= age < 500_000_000:
                 if status.get('emergency_stop_latched') or status.get('state') in ('FAULT', 'ESTOP', 'E_STOP'):
                     raise RuntimeError(str(status.get('reason', '控制器故障')))
-                if status.get('collector_heartbeat_ready') is True:
+                detail = ('等待监管心跳' if status.get('collector_heartbeat_ready') is not True
+                          else status.get('collector_startup_guard_error', '等待完整启动检查'))
+                if detail == '':
                     return
             time.sleep(.02)
-        raise RuntimeError('复位尚未使能：等待控制器确认监管心跳超时')
+        raise RuntimeError('复位尚未使能，启动检查超时：' + str(detail))
 
     def _start_collector_for_trial(self, intervention_id, depth):
         # The recorder reads trace metadata to obtain this trial's identity.
