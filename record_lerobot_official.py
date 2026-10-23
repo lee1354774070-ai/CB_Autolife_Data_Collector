@@ -1239,8 +1239,12 @@ class OfficialLeRobotRecorder(Node):
             self._clear_warmup_images()
             self.last_reference_stamp_sec = None
             if ready:
+                # A delayed SHM frame can arrive after clearing the buffers.
+                # Keep the first anchor strictly after the provenance barrier.
+                self.last_reference_stamp_sec = max(now, dagger.labels[-1]["timestamp_ns"] / 1e9)
                 dagger.ready = True
-                self._log_sync({"event": "dagger_start_barrier_ready", "wall_time": now})
+                self._log_sync({"event": "dagger_start_barrier_ready", "wall_time": now,
+                                "after_stamp_sec": self.last_reference_stamp_sec})
             return
         if self.args.duration is not None and now - self.started_sec >= self.args.duration:
             self.stop_requested = True
@@ -1444,7 +1448,12 @@ class OfficialLeRobotRecorder(Node):
             try:
                 labels = dagger.frame(anchor_sec, action_deltas_ms, self.args.max_action_hold_sec)
             except ValueError as exc:
-                self._invalidate_episode("missing_dagger_provenance", now, detail=str(exc))
+                self._invalidate_episode(
+                    "missing_dagger_provenance", now, detail=str(exc), anchor_sec=anchor_sec,
+                    started_ns=dagger.started_ns,
+                    label_oldest_ns=dagger.labels[0]["timestamp_ns"] if dagger.labels else None,
+                    label_latest_ns=dagger.labels[-1]["timestamp_ns"] if dagger.labels else None,
+                )
                 return
             frame.update({key: np.asarray(value, dtype=np.int64).reshape(-1) for key, value in labels.items()})
         self.storage_budget.admit(frame)

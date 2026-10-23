@@ -30,7 +30,7 @@ methods = [item for cls in tree.body if isinstance(cls, ast.ClassDef)
            for item in cls.body if isinstance(item, ast.FunctionDef)
            and item.name in {'start_episode', '_reset_episode_state', 'mark_subtask',
                              'save_current_episode', 'discard_current_episode', 'finish', '_clear_warmup_images',
-                             '_invalidate_episode', '_record_tick', '_log_sync', '_flush_sync_log'}]
+                             '_invalidate_episode', '_record_tick', '_record_frame', '_log_sync', '_flush_sync_log'}]
 methods.extend(item for cls in tree.body if isinstance(cls, ast.ClassDef)
                for item in cls.body if isinstance(item, ast.FunctionDef)
                and item.name in {'_write_command_status', 'process_control_commands', '_control_fifo_loop', '_validate_resume_schema', '_poll_shm_images'})
@@ -43,6 +43,41 @@ exec(compile(ast.Module(body=methods, type_ignores=[]), str(SOURCE), 'exec'), na
 
 
 class RecorderControlsTest(unittest.TestCase):
+    def test_dagger_start_excludes_delayed_pre_label_camera_on_every_trial(self):
+        from time_sync import oldest_ready_sample
+        from test_dagger_labels import packet, STAMP
+        node = Mock()
+        node.args = SimpleNamespace(dagger_start_timeout_sec=10, max_action_hold_sec=.5)
+        node.dagger = DaggerLabels()
+        for trial in range(4):
+            now = STAMP / 1e9 + trial * 10 + .025
+            node.started_sec = now - 2
+            node.dagger.reset()
+            node.dagger.started_ns = round((now - 2) * 1e9)
+            body = packet()
+            offset = trial * 10_000_000_000
+            body['timestamp_ns'] += offset
+            body['original_command_timestamp_ns'] += offset
+            body['dagger']['timestamp_ns'] += offset
+            body['dagger']['authority_timestamp_ns'] += offset
+            body['dagger']['trial_id'] = f'trial-{trial}'
+            node.dagger.ingest(body)
+            node.dagger.ingest(body, gripper=True)
+            node.action_body_buffer = node.action_gripper_buffer = [SimpleNamespace(stamp_sec=now)]
+            with patch.object(time, 'time', return_value=now):
+                namespace['_record_frame'](node)
+            self.assertTrue(node.dagger.ready)
+            # Delivered after clearing, but captured before the first label.
+            late = SimpleNamespace(stamp_sec=now - .010, received_sec=now + .001)
+            fresh = SimpleNamespace(stamp_sec=now + .020, received_sec=now + .021)
+            with self.assertRaisesRegex(ValueError, 'missing or stale'):
+                node.dagger.frame(late.stamp_sec, {}, .5)
+            chosen = oldest_ready_sample([late, fresh], now + .1, .03, node.last_reference_stamp_sec)
+            self.assertIs(chosen, fresh)
+            delta = (body['timestamp_ns'] / 1e9 - fresh.stamp_sec) * 1000
+            labels = node.dagger.frame(fresh.stamp_sec, {'action_body': delta, 'action_gripper': delta}, .5)
+            self.assertEqual(labels['dagger.action_train_mask'], [1] * 21)
+
     def test_jpeg_only_poll_deduplicates_and_never_probes_bgr(self):
         from camera_config import CAMERA_SPECS
         spec = CAMERA_SPECS['hand_left']
