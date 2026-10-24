@@ -2476,7 +2476,7 @@ class IndependentArmController(Node):
     def _collector_target_allowed(self, payload, *, policy_only):
         if not self._follow_authority_required:
             return True
-        if (not policy_only and self._follow_authority_mode == 'DISARMED'
+        if (not policy_only and self._follow_authority_mode in ('DISARMED', 'LAUNCHER')
                 and getattr(self, '_collector_reset_pending', False)
                 and payload.get('source') == 'hg_dagger_full_reset'):
             return 0 <= time.monotonic() - self._follow_authority_time <= 0.5

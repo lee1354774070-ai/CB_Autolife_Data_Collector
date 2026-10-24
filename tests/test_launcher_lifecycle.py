@@ -10,6 +10,34 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class LauncherLifecycleTest(unittest.TestCase):
+    def test_cleanup_retries_quit_when_startup_lost_first_request(self):
+        source = (ROOT / 'start_lerobot_official_collect.sh').read_text()
+        cleanup = source[source.index('cleanup_session() {'):source.index('on_interrupt() {')]
+        with tempfile.TemporaryDirectory() as directory:
+            script = '''
+set -eu
+ROOT=$1
+CLEANUP_DONE=0
+PIDFILE="$ROOT/pids"
+CONTROL_FIFO="$ROOT/control"
+STATUS_FILE="$ROOT/status"
+STATE_READY_FILE="$ROOT/ready"
+EPISODE_EVENT_FILE="$ROOT/event"
+LOG_PREFIX="$ROOT/log"
+CONTROL_SCRIPT=unused
+DATASET_ROOT="$ROOT/dataset"
+python3() { :; }
+send_control() { if [ -f "$ROOT/first" ]; then touch "$ROOT/quit"; else touch "$ROOT/first"; fi; }
+'''+cleanup+'''
+(while [ ! -f "$ROOT/quit" ]; do sleep .05; done; touch "$ROOT/finalized") &
+RECORDER_PID=$!
+cleanup_session
+test -f "$ROOT/finalized"
+'''
+            result = subprocess.run(['bash', '-c', script, 'retry-test', directory],
+                                    capture_output=True, text=True, timeout=8)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_finalization_waits_for_writer_before_removing_session_files(self):
         source = (ROOT / 'start_lerobot_official_collect.sh').read_text()
         cleanup = source[source.index('cleanup_session() {'):source.index('on_interrupt() {')]

@@ -52,6 +52,20 @@ class ControllerHandoffTest(unittest.TestCase):
         self.assertEqual(self.node._feedback.left_gripper, [365.16])
         self.assertEqual(self.node._feedback.right_gripper, [-3.78])
 
+    def test_waist_rebases_at_takeover_before_old_policy_gate_is_replaced(self):
+        self.node._waist_follow_enabled = True
+        self.node._waist_follow_profile = 'forward_pitch_only'
+        self.node._waist_follow_neutral_pitch_deg = 0.
+        self.node._feedback.as_dict = lambda: {'leg_waist': [74., 152., 80., -3.]}
+        self.assertTrue(apply_authority(self.node, self.packet, 'EXPERT_READY'))
+        self.assertEqual(self.node._waist_follow_neutral_pitch_deg, 80.)
+        self.assertEqual(self.node._waist_follow_locked_yaw_deg, -3.)
+        self.assertEqual(self.node._waist_follow_pitch_target_deg, 80.)
+        self.node._follow_authority_mode = 'EXPERT_ACTIVE'
+        self.node._feedback.as_dict = lambda: {'leg_waist': [74., 152., 85., -3.]}
+        apply_authority(self.node, self.packet, 'EXPERT_ACTIVE')
+        self.assertEqual(self.node._waist_follow_neutral_pitch_deg, 80.)
+
     def test_stale_state_never_restores_policy_authority(self):
         self.assertFalse(apply_authority(self.node, {**self.packet, 'authority_epoch': 4}, 'POLICY_ACTIVE'))
         self.assertEqual(self.node._collector_authority_epoch, 5)

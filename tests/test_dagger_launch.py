@@ -15,6 +15,15 @@ from dagger.run import environment, stop_child
 
 
 class DaggerLaunchTest(unittest.TestCase):
+    def test_recorder_timeout_never_kills_writer(self):
+        child = Mock(pid=12345)
+        child.poll.return_value = None
+        child.wait.side_effect = [subprocess.TimeoutExpired('test', 1), None]
+        with patch('dagger.run.os.killpg') as kill:
+            stop_child(child, timeout=1, preserve_writer=True)
+            kill.assert_called_once_with(child.pid, signal.SIGINT)
+        self.assertEqual(child.wait.call_count, 2)
+
     def test_launch_owns_first_shutdown_signal(self):
         child = Mock(pid=12345)
         child.poll.return_value = None

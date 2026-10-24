@@ -59,7 +59,8 @@ class SavedResetTest(unittest.TestCase):
         self.node._saved_reset.call_async.return_value = future
         self.loader = ModuleType('openarmx_teleop_vr_306_v4.reset_pose_loader')
         self.loader.load_quick_reset_targets = Mock()
-        self.scope = {'__package__':'dagger', 'Path':Path, 'os':os, 'time':time,
+        import json
+        self.scope = {'__package__':'dagger', 'Path':Path, 'os':os, 'time':time, 'json':json,
                       'threading':threading, 'Trigger':SimpleNamespace(Request=lambda:None),
                       'resolve_robot':lambda _:SimpleNamespace(robot_id='300')}
         exec(compile(ast.Module(body=[method], type_ignores=[]), str(ROOT/'dagger/supervisor.py'), 'exec'), self.scope)
@@ -67,7 +68,8 @@ class SavedResetTest(unittest.TestCase):
     def run_reset(self, validation_error=None):
         with patch.dict(os.environ, DAGGER_DEPENDENCY_ROOT='/reviewed', DAGGER_RESET_STATE_PATH='/run/reset.json'), \
                 patch.dict('sys.modules', {self.loader.__name__:self.loader}), \
-                patch('dagger.dependencies.validate_saved_reset', side_effect=validation_error):
+                patch('dagger.dependencies.validate_saved_reset', side_effect=validation_error), \
+                patch.object(Path, 'read_text', return_value='{"gripper_targets_deg":[10.0,10.0]}'):
             self.scope['_mechanical_reset_worker'](self.node, 'X')
 
     def test_complete_reset_waits_for_body_and_grippers_then_releases(self):

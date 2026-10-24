@@ -98,7 +98,7 @@ def ros_command(env, *command):
             "dagger-env", "/opt/ros/jazzy/setup.bash", env["DAGGER_ROS_SETUP"], *command]
 
 
-def stop_child(child, timeout=30, *, launch_managed=False):
+def stop_child(child, timeout=30, *, launch_managed=False, preserve_writer=False):
     if child is None or child.poll() is not None:
         return
     if launch_managed:
@@ -110,6 +110,10 @@ def stop_child(child, timeout=30, *, launch_managed=False):
     try:
         child.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
+        if preserve_writer:
+            print('Recorder still finalizing; preserving writer and dataset. Inspect recorder log.', flush=True)
+            child.wait()
+            return
         os.killpg(child.pid, signal.SIGTERM)
         try:
             child.wait(timeout=10)
@@ -275,7 +279,7 @@ def main():
         # frames, unlike ordinary keyboard mode's save-on-exit behavior.
         stop_child(stack, launch_managed=True)
         stop_child(reset_client)
-        stop_child(recorder, timeout=330)
+        stop_child(recorder, timeout=330, preserve_writer=True)
         if command_worker is not None:
             command_worker.join(timeout=12)
         for lock in locks:

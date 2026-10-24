@@ -181,6 +181,13 @@ cleanup_session() {
         echo "Waiting for recorder finalization. Keep this terminal open; encoding can take minutes."
     fi
     if [ -n "${RECORDER_PID:-}" ]; then
+        # Startup cancellation can precede the FIFO listener/signal handlers.
+        # Quit is idempotent; retry it without killing an encoding writer.
+        while kill -0 "${RECORDER_PID}" 2>/dev/null; do
+            sleep 2
+            kill -0 "${RECORDER_PID}" 2>/dev/null || break
+            send_control "quit" >/dev/null 2>&1 || true
+        done
         wait "${RECORDER_PID}" || echo "WARNING: recorder exited with an error; inspect ${LOG_PREFIX}.record_lerobot_official.log" >&2
     fi
 

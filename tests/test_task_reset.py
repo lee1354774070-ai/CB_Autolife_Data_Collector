@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from dagger.task_reset import task_pose, pose_choices
+from dagger.task_reset import task_pose, pose_choices, reset_grippers
 from teleop_snapshot.control_center_reset_pose.reset_pose_loader import CUSTOM_POSE_JOINTS
 
 
@@ -34,6 +34,16 @@ class TaskResetTest(unittest.TestCase):
         self.env['TASK_TEXT'] = 'Pick the laundry bag.'
         with self.assertRaisesRegex(ValueError, '没有复位姿态'):
             task_pose(self.env)
+
+    def test_task_grippers_are_frozen_and_laundry_targets_open(self):
+        self.joints.update(Joint_Left_Gripper=340., Joint_Right_Gripper=180.)
+        self.library.write_text(json.dumps({'poses': {name: {'joints_deg': self.joints}
+            for name in ('table', 'laundry_down', 'laundry_down_safe', 'laundry_down_1')}}))
+        self.assertEqual(task_pose(self.env)['gripper_targets_deg'], [340., 180.])
+        for name in ('laundry_down', 'laundry_down_safe', 'laundry_down_1'):
+            self.assertEqual(task_pose({**self.env, 'DAGGER_RESET_POSE': name})['gripper_targets_deg'], [10., 10.])
+        for bad in ([0., 10.], [361., 10.], [True, 10.], [float('nan'), 10.], [10.]):
+            with self.assertRaises(ValueError): reset_grippers({'gripper_targets_deg': bad})
 
     def test_other_robot_and_unknown_pose_rejected(self):
         with self.assertRaisesRegex(ValueError, '不属于'):

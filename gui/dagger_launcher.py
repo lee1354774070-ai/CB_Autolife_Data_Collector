@@ -1,6 +1,7 @@
 # Generated compatible COPY; colleague source unchanged.
 """Quiet desktop launcher; the existing collector owns all robot operations."""
 import datetime
+from concurrent.futures import ThreadPoolExecutor
 import os
 import json
 import re
@@ -19,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dagger.inference_options import TASKS, PHASES, selected_phase
 from dagger.task_reset import pose_choices, task_pose
 from gui.checkpoint_panel import CheckpointDialog
+from gui.dagger_counts import collection_counts, describe_counts
 LOGS = Path.home() / '.local/state/collector-compatible-dagger'
 DATA_ROOT = Path(os.environ.get('OUTPUT_BASE_DIR', '/home/ubuntu/nas14'))
 
@@ -75,6 +77,9 @@ class Launcher:
         self.active_root = DATA_ROOT
         self.checkpoint = ''
         self.task = ''
+        self.count_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix='dataset-counts')
+        self.count_future = None
+        self.count_next = 0.
         self.variant = 'rgbd'
         (self.control_state, self.state_at, self.request) = ({}, 0.0, None)
         self.node = rclpy.create_node('dagger_desktop_' + str(os.getpid()))
@@ -167,6 +172,9 @@ class Launcher:
         self.synced = self.label(body, '等待后台状态同步', 11)
         self.synced.configure(wraplength=690, justify='left')
         self.synced.pack(anchor='w', pady=(8, 0))
+        self.count_label = self.label(body, '保存计数：等待选择数据集', 11)
+        self.count_label.configure(wraplength=690, justify='left')
+        self.count_label.pack(anchor='w', pady=(8, 0))
         self.label(body, 'A开始 · Grip接管 · B成功 · X复位 · Y短按丢弃/长按1秒失败保存', 11).pack(anchor='w', pady=(12, 8))
         self.label(body, 'Shift+A 开始 / Shift+B 成功保存 / Shift+F 失败保存 / Shift+Y 丢弃 / Shift+X 复位', 10).pack(anchor='w')
         self.label(body, '数据位置由 OUTPUT_BASE_DIR 指定', 10).pack(anchor='w', pady=(12, 0))
@@ -320,6 +328,18 @@ class Launcher:
         rclpy.spin_once(self.node, timeout_sec=0)
         rclpy.spin_once(self.node, timeout_sec=0)
         now = time.monotonic()
+        if self.count_future is not None and self.count_future.done():
+            try:
+                counts = self.count_future.result()
+                if self.count_path == self.active_root / self.task:
+                    self.count_label.configure(text=describe_counts(counts))
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                self.count_label.configure(text='保存计数暂未确认：' + str(exc)[:140])
+            self.count_future = None
+            self.count_next = now + 2.
+        if self.task and self.count_future is None and now >= self.count_next:
+            self.count_path = self.active_root / self.task
+            self.count_future = self.count_worker.submit(collection_counts, self.count_path)
         fresh = self.process is not None and self.process.poll() is None and (now - self.state_at <= 3)
         state = self.control_state
         available = fresh and (not self.stopping) and (not state.get('launcher_pending')) and (not state.get('collection_exited'))
@@ -416,6 +436,7 @@ class Launcher:
             messagebox.showinfo('服务仍在运行', '请先保存或丢弃本条并等待回执，停止服务后再关闭窗口。', parent=self.root)
             return
         self.node.destroy_node()
+        self.count_worker.shutdown(wait=False, cancel_futures=True)
         self.root.destroy()
 if __name__ == '__main__':
     rclpy.init()

@@ -136,7 +136,20 @@ def check_controller_copy(root):
         node._collector_reset_pending = True
         node._follow_authority_time -= 1
         assert not node._collector_target_allowed(opening, policy_only=False)
-        print('PATCHED_CONTROLLER_HANDOFF_AND_GRIPPER_PASS range=10..360 reset_gate=true hardware_backend_imported=false')
+        node._on_follow_authority(message({**reset, 'launcher_control_active': True}))
+        node._gripper_targets = {'left': 180., 'right': 180.}
+        node._gripper_dirty = {'left': False, 'right': False}
+        node._on_gripper(message(opening))
+        assert node._gripper_targets == {'left': 10., 'right': 10.}, 'launcher reset grippers rejected'
+        assert all(node._gripper_dirty.values()), 'reset targets must schedule hardware output'
+        assert not node._collector_target_allowed(opening, policy_only=True)
+        assert not node._collector_target_allowed(target, policy_only=False)
+        node._on_follow_authority(message({**reset, 'launcher_control_active': True, 'quick_reset': {'pending': False}}))
+        assert not node._collector_target_allowed(opening, policy_only=False)
+        node._collector_reset_pending = True
+        node._follow_authority_time -= 1
+        assert not node._collector_target_allowed(opening, policy_only=False)
+        print('PATCHED_CONTROLLER_HANDOFF_AND_GRIPPER_PASS range=10..360 reset_gate=true launcher_reset=true hardware_backend_imported=false')
 
 
 def main():

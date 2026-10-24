@@ -55,7 +55,16 @@ def apply_authority(controller, payload, mode):
         # Reuse the vendor's clutch/trajectory reset, but never its hold-ACK
         # state machine. Replace all outstanding policy goals, including waist,
         # neck and grippers, with measured values in this same critical section.
-        controller._begin_fresh_teleop_session_locked(controller._feedback.as_dict())
+        groups = controller._feedback.as_dict()
+        controller._begin_fresh_teleop_session_locked(groups)
+        if (getattr(controller, '_waist_follow_enabled', False)
+                and controller._waist_follow_profile == 'forward_pitch_only'):
+            # The old policy authority still gates V4's rebase here; anchor
+            # follow to measured takeover posture, never the earlier reset pose.
+            waist = groups['leg_waist']
+            controller._waist_follow_neutral_pitch_deg = float(waist[2])
+            controller._waist_follow_locked_yaw_deg = float(waist[3])
+            controller._waist_follow_pitch_target_deg = float(waist[2])
         # Encoder overshoot is an observation, not a legal motor target.
         # Match the DAgger pickup clamp; policy actions/digests remain untouched.
         minimum = float(controller.get_parameter('gripper_min_position').value)

@@ -91,6 +91,8 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             validate_saved_reset(Path(os.environ['DAGGER_DEPENDENCY_ROOT']))
             load_quick_reset_targets(resolve_robot(os.environ).robot_id,
                                      os.environ['DAGGER_RESET_STATE_PATH'])
+            from .task_reset import reset_grippers
+            grippers = reset_grippers(json.loads(Path(os.environ['DAGGER_RESET_STATE_PATH']).read_text()))
             pose_name = os.environ.get('DAGGER_RESET_POSE_NAME', '本轮任务姿态')
             with self._lock:
                 self._set_notice_locked(save_note + '全身复位目标：' + pose_name, 'warning')
@@ -120,7 +122,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
                 with self._lock:
                     reason = self._controller_status.get('reason', '到位未确认')
                 raise RuntimeError('全身目标未到位：' + str(reason))
-            success, detail = self._open_reset_grippers()
+            success, detail = self._open_reset_grippers(grippers)
         except Exception as exc:
             detail = str(exc)
         finally:
@@ -130,7 +132,8 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
                     success, detail = False, '复位后停止输出未确认：' + message
             with self._lock:
                 self._reset_pending = False
-                self._set_notice_locked(save_note + ('全身复位完成，双夹爪已张开；按 A 开始' if success
+                self._set_notice_locked(save_note + (('全身复位完成，双夹爪已张开；按 A 开始' if grippers == [10.0, 10.0]
+                                        else f'全身复位完成，夹爪已到任务目标 {grippers}°；按 A 开始') if success
                                         else '全身复位失败：' + detail), 'success' if success else 'error')
                 self._publish_state()
 

@@ -9,6 +9,15 @@ PLAN = Path('/home/ubuntu/MZJ_laundry_launcher/laundry_cycle_plan.json')
 TASK_IDS = dict(zip((task[1] for task in TASKS), ('4', '0', '1', '3', '2', '5')))
 
 
+def reset_grippers(snapshot):
+    values = snapshot.get('gripper_targets_deg', [10.0, 10.0])
+    if (not isinstance(values, list) or len(values) != 2
+            or any(isinstance(v, bool) or not isinstance(v, (int, float))
+                   or not math.isfinite(v) or not 10.0 <= v <= 360.0 for v in values)):
+        raise ValueError('任务夹爪复位目标必须为左右两个10–360度数值')
+    return values.copy()
+
+
 def task_pose(env):
     import yaml
     plan_path = Path(env.get('DAGGER_RESET_PLAN', str(PLAN))).expanduser()
@@ -42,7 +51,11 @@ def task_pose(env):
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
             raise ValueError('任务姿态缺少有效关节角度：' + key)
         selected[key] = value
-    return {'version': 1, 'robot_id': robot_id, 'mode': 'custom',
+    grippers = [joints.get('Joint_Left_Gripper', 10.0), joints.get('Joint_Right_Gripper', 10.0)]
+    if name in ('laundry_down', 'laundry_down_safe', 'laundry_down_1'):
+        grippers = [10.0, 10.0]
+    grippers = reset_grippers({'gripper_targets_deg': grippers})
+    return {'version': 1, 'robot_id': robot_id, 'mode': 'custom', 'gripper_targets_deg': grippers,
             'custom': {'joints_deg': selected}, 'task_text': env.get('TASK_TEXT', ''),
             'pose_name': name, 'source': str(library)}
 

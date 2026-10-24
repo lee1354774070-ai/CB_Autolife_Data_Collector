@@ -133,6 +133,7 @@ class LauncherStatusTest(unittest.TestCase):
                           ('run.py: error: Missing Thor token file',1),
                           ('INFO  自检修复：正常退出空闲控制模块 PID 12',None)]:
             node=SimpleNamespace(node=Mock(),process=Mock(),state_at=0,control_state={},stopping=False,
+                count_future=None,count_next=0,task='',
                 request=None,estop_request=None,control_buttons={},reader=io.StringIO(line+'\n'),
                 pending='',failure='',status=Mock(),detail=Mock(),synced=Mock(),root=Mock(),poll=Mock(),
                 start_button=Mock(),stop_button=Mock(),instruction=Mock(),reset_pose=Mock(),phase=Mock(),remark=Mock(),option_widgets=[])

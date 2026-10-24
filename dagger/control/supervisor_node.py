@@ -702,9 +702,11 @@ class HgDaggerSupervisor(Node):
             time.sleep(0.05)
         return False
 
-    def _open_reset_grippers(self) -> tuple[bool, str]:
+    def _open_reset_grippers(self, targets=None) -> tuple[bool, str]:
         # Robot 300: 10 motor degrees is fully open. Confirm feedback before
         # disabling SYNC so an accepted command is not mistaken for completion.
+        from dagger.task_reset import reset_grippers
+        targets = reset_grippers({'gripper_targets_deg': [10.0, 10.0] if targets is None else targets})
         started_ns = time.monotonic_ns()
         deadline = time.monotonic() + 5.0
         stable_since = None
@@ -716,24 +718,24 @@ class HgDaggerSupervisor(Node):
                         or status.get('hardware_ready') is not True
                         or status.get('emergency_stop_latched')
                         or status.get('state') in ('FAULT', 'ESTOP', 'E_STOP')):
-                    return False, '夹爪张开中断：控制器未就绪或状态过期'
+                    return False, '夹爪复位中断：控制器未就绪或状态过期'
                 measured = self._measured_grippers
                 fresh = (self._gripper_measurement_ns > started_ns
                          and now_ns - self._gripper_measurement_ns < 250_000_000)
-                if fresh and measured and all(abs(v - 10.0) <= 3.0 for v in measured):
+                if fresh and measured and len(measured) == 2 and all(abs(v - target) <= 3.0 for v, target in zip(measured, targets)):
                     if stable_since is None:
                         stable_since = now_ns
                     if now_ns - stable_since >= 200_000_000:
-                        return True, '双夹爪已完全张开'
+                        return True, '双夹爪已到达任务目标'
                 else:
                     stable_since = None
                 self._selected_gripper_pub.publish(String(data=compact({
-                    'left_gripper_target_joints_position': [10.0],
-                    'right_gripper_target_joints_position': [10.0],
+                    'left_gripper_target_joints_position': [targets[0]],
+                    'right_gripper_target_joints_position': [targets[1]],
                     'source': 'hg_dagger_full_reset',
                 })))
             time.sleep(0.1)
-        return False, '双夹爪张开未到位或反馈过期（目标 10°），请检查'
+        return False, f'双夹爪复位未到位或反馈过期（左右目标 {targets}°），请检查'
 
     def _mechanical_reset_worker(self, button: str, save_note: str = "") -> None:
         with self._lock:
