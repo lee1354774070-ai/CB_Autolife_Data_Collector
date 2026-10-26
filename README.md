@@ -289,6 +289,9 @@ DatasetWriter/resume接口、ROS、OpenCV、PyArrow和编码依赖；深度需�
 VR辅助、相机桥和备用生产者使用 `ROBOT_PY`；纯SHM键盘录制不启动这些辅助时，不要求额外robot_env。
 工具不自动安装或重启硬件服务。
 
+新机器人从零配置请看 [部署与 SSH 密钥登录指南](docs/NEW_ROBOT_DEPLOYMENT_zh.md)，
+包括电脑/机器人分步命令、独立采集环境、只读检查与首次人工录制。
+
 独立仓库首次安装：
 
 ```bash
@@ -583,6 +586,7 @@ joint保留已录关节/夹爪，eef仅14维，eef+gripper为16维，all不裁�
 <a id="references"></a>
 ## 9. 更多说明
 
+- [新机器人部署与SSH密钥登录](docs/NEW_ROBOT_DEPLOYMENT_zh.md)
 - [中文实现](INSTRUCTION_zh.md) / [English design](INSTRUCTION.md)
 - [300测试与历史](ROBOT300_TESTING_zh.md)
 - [本次重构与345五组静止采集验证](docs/validation/20261019_refactor_345.md)

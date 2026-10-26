@@ -1,7 +1,8 @@
 """Bounded, lossless temporary-image writer shared by all recording modes.
 
-DAgger uses uncompressed PNG to reduce capture CPU; other modes use light PNG
-compression. Final video encoding runs through LeRobot at save time. Every
+All recorder modes use uncompressed PNG to reduce capture CPU. The optional
+compressed writer remains available to callers. Final video encoding runs
+through LeRobot at save time. Every
 worker failure propagates to the recorder. No ROS publishers or hardware APIs.
 """
 from collections import deque

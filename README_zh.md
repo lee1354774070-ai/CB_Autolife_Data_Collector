@@ -8,6 +8,7 @@
 - [参数设置：关节、深度、帧率、同步、存储与模式专用参数](README.md#parameters)
 - [Action 来源：常规数采与 DAgger 的区别](README.md#action-modes)
 - [环境准备](README.md#setup)
+- [新机器人部署与SSH密钥登录](docs/NEW_ROBOT_DEPLOYMENT_zh.md)
 - [S3历史采集验收记录](docs/validation/20261016_s3_collection.md)（与S2共用main，使用方法统一见README）
 - [四种模式使用的遥操作版本](README.md#modes)
 - [键盘数采](README.md#keyboard) / [原厂单人VR](README.md#vr) / [子任务数采](README.md#subtask)

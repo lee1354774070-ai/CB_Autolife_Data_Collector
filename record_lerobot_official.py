@@ -90,6 +90,7 @@ from time_sync import (
     nearest_sample,
     oldest_ready_sample,
     payload_timestamp_sec,
+    telemetry_timestamps,
     surrounding_samples,
 )
 
@@ -366,15 +367,15 @@ class OfficialLeRobotRecorder(Node):
                     f"direct SHM ({CAMERA_SPECS[name].buffer_path})"
                 )
 
-        self.create_subscription(String, args.state_topic, self._state_cb, 20)
+        self.create_subscription(String, args.state_topic, self._state_ros_cb, 20)
         if args.action_mode == "joint":
             self.create_subscription(String, args.action_arm_topic, self._action_arm_cb, 20)
             self.create_subscription(String, args.action_gripper_topic, self._action_gripper_cb, 20)
         if args.with_eef_state:
-            self.create_subscription(String, args.state_eef_topic, self._state_eef_cb, 20)
+            self.create_subscription(String, args.state_eef_topic, self._state_eef_ros_cb, 20)
             self.get_logger().info(f"EEF state topic: {args.state_eef_topic}")
         if args.with_eef_action:
-            self.create_subscription(String, args.action_eef_topic, self._action_eef_cb, 20)
+            self.create_subscription(String, args.action_eef_topic, self._action_eef_ros_cb, 20)
             self.get_logger().info(f"EEF action topic: {args.action_eef_topic}")
         self.get_logger().info(f"state topic: {args.state_topic}")
         self.get_logger().info(f"state/action joints ({self.schema.size}): {', '.join(self.schema.names)}")
@@ -522,25 +523,24 @@ class OfficialLeRobotRecorder(Node):
             )
             self.last_shm_timestamps[spec.meta_path] = frame.timestamp_ns
 
-    def _state_cb(self, msg: String) -> None:
+    def _state_ros_cb(self, msg: String, message_info: Any) -> None:
+        # Both arguments are required: rclpy otherwise selects message-only.
+        self._state_cb(msg, message_info)
+
+    def _state_cb(self, msg: String, message_info: Any = None) -> None:
         obj = parse_json_payload(msg.data)
-        received_sec = time.time()
+        stamp_sec, received_sec = telemetry_timestamps(
+            obj, time.time(), message_info, self.args.max_state_age_sec)
         state = self.schema.parse_state(obj) if obj is not None else None
         if state is not None:
             self.state_buffer.append(
                 StateSample(
                     state=state,
                     status_target_action=self.schema.parse_status_target(obj),
-                    # A few controller builds publish a regularly updating
-                    # timestamp from a clock several seconds behind wall time.
-                    # Such a stamp cannot share a synchronization domain with
-                    # camera SHM, so fall back to callback arrival time once the
-                    # offset exceeds the configured state freshness window.
-                    stamp_sec=payload_timestamp_sec(
-                        obj,
-                        received_sec,
-                        max_clock_skew_sec=self.args.max_state_age_sec,
-                    ),
+                    # DDS source time survives callback/PNG scheduling delays.
+                    # Invalid SDK clocks fall back to this local publication
+                    # time; old packets still fail the unchanged age guards.
+                    stamp_sec=stamp_sec,
                     received_sec=received_sec,
                 )
             )
@@ -575,15 +575,21 @@ class OfficialLeRobotRecorder(Node):
                        (self.args.with_eef_state, self.eef_state_buffer, self.args.max_state_age_sec),
                        (self.args.with_eef_action, self.action_eef_buffer, self.args.max_action_hold_sec)))
 
-    def _store_eef(self, msg: String, buffer: deque[TimedSample], max_age: float) -> None:
+    def _store_eef(self, msg: String, buffer: deque[TimedSample], max_age: float,
+                   message_info: Any = None) -> None:
         # These are vendor telemetry reports, not DAgger proxy commands. Do not
         # feed them into the command-authority/epoch tracker in _store_action.
         payload = parse_json_payload(msg.data)
         value = parse_eef_pose(payload)
         if value is not None:
-            received = time.time()
-            stamp = payload_timestamp_sec(payload, received, max_clock_skew_sec=max_age)
+            stamp, received = telemetry_timestamps(payload, time.time(), message_info, max_age)
             buffer.append(TimedSample(value, stamp, received))
+
+    def _state_eef_ros_cb(self, msg: String, message_info: Any) -> None:
+        self._store_eef(msg, self.eef_state_buffer, self.args.max_state_age_sec, message_info)
+
+    def _action_eef_ros_cb(self, msg: String, message_info: Any) -> None:
+        self._store_eef(msg, self.action_eef_buffer, self.args.max_action_hold_sec, message_info)
 
     def _state_eef_cb(self, msg: String) -> None:
         self._store_eef(msg, self.eef_state_buffer, self.args.max_state_age_sec)
@@ -1002,7 +1008,7 @@ class OfficialLeRobotRecorder(Node):
                 **self._dataset_options)
         self.dataset.writer.image_writer = CaptureImageWriter(
             self.args.image_writer_threads, self.args.image_writer_max_pending,
-            self.args.image_writer_max_mb, low_cpu=self.dagger is not None)
+            self.args.image_writer_max_mb, low_cpu=True)
         if self.capture_layout is not None:
             # LeRobot.create() starts fresh metadata for an empty dataset. Carry
             # the layout into each transaction, including its first episode.
@@ -1996,16 +2002,17 @@ def main() -> None:
     # The ROS recorder is single-threaded; avoid a second OpenCV worker pool
     # competing with LeRobot image writers and the robot's control processes.
     cv2.setNumThreads(1)
-    if args.dagger:
-        import torch
-        import pyarrow as pa
-        torch.set_num_threads(1)
-        torch.set_num_interop_threads(1)
-        pa.set_cpu_count(1)
-        pa.set_io_thread_count(1)
-        print(f"Recorder resources: cpus={sorted(os.sched_getaffinity(0))}, "
-              f"nice={os.getpriority(os.PRIO_PROCESS, 0)}, torch_threads=1, arrow_threads=1",
-              flush=True)
+    # Ordinary/VR/subtask captures need the same bounded native worker pools
+    # as DAgger; final video encoding remains a separate save-time operation.
+    import torch
+    import pyarrow as pa
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
+    pa.set_cpu_count(1)
+    pa.set_io_thread_count(1)
+    print(f"Recorder resources: cpus={sorted(os.sched_getaffinity(0))}, "
+          f"nice={os.getpriority(os.PRIO_PROCESS, 0)}, torch_threads=1, arrow_threads=1",
+          flush=True)
     rclpy.init()
     node = OfficialLeRobotRecorder(args)
     gc_started = {}
