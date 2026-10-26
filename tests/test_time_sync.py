@@ -15,6 +15,7 @@ from time_sync import (
     oldest_ready_sample,
     payload_timestamp_sec,
     surrounding_samples,
+    telemetry_timestamps,
 )
 
 
@@ -26,6 +27,32 @@ class Sample:
 
 
 class TimeSyncTest(unittest.TestCase):
+    def test_delayed_callbacks_do_not_change_dds_fallback_intervals(self):
+        base = 1_750_000_000.0
+        stamps = [telemetry_timestamps({'timestamp': base - 11 + i * .01},
+                    base + .08, {'source_timestamp': round((base + i * .01) * 1e9)})[0]
+                  for i in range(7)]
+        for first, second in zip(stamps, stamps[1:]):
+            self.assertAlmostEqual(second - first, .01, places=5)
+
+    def test_delayed_dds_packets_remain_stale(self):
+        base = 1_750_000_000.0
+        stamp, receipt = telemetry_timestamps({'timestamp': base - 11}, base + 2,
+                                              {'source_timestamp': round(base * 1e9)})
+        self.assertEqual((stamp, receipt), (base, base))
+
+    def test_valid_payload_and_missing_transport_keep_existing_semantics(self):
+        from types import SimpleNamespace
+        base = 1_750_000_000.0
+        for info in ({'source_timestamp': round(base * 1e9)},
+                     SimpleNamespace(source_timestamp=round(base * 1e9))):
+            stamp, receipt = telemetry_timestamps({'timestamp': base - .02}, base + .08, info)
+            self.assertAlmostEqual(stamp, base - .02)
+            self.assertEqual(receipt, base)
+        for info in (None, {}, {'source_timestamp': 0}, {'source_timestamp': 'bad'},
+                     {'source_timestamp': float('nan')}, {'source_timestamp': 123}):
+            self.assertEqual(telemetry_timestamps({'timestamp': base - 11}, base, info), (base, base))
+
     def test_epoch_units_are_normalized(self) -> None:
         expected = 1_750_000_000.125
         self.assertAlmostEqual(normalize_epoch_seconds(expected), expected)

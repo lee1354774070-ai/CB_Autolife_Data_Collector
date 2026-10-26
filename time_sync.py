@@ -109,6 +109,35 @@ def payload_timestamp_sec(payload: Any, received_sec: float, max_clock_skew_sec:
     return received_sec
 
 
+def telemetry_timestamps(
+    payload: Any, callback_sec: float, message_info: Any = None,
+    max_clock_skew_sec: float = 0.15,
+) -> tuple[float, float]:
+    """Use the local DDS publication clock, not delayed Python callback time.
+
+    Robot telemetry is published on this host. Some SDK payload clocks lag
+    wall time, while DDS source_timestamp still uses the host wall clock.
+    CycloneDDS received_timestamp can be the *take* time, so it is NOT an
+    independent arrival timestamp. A stale DDS packet must stay stale: do not
+    replace an old but valid epoch with the current callback time.
+
+    No offset is guessed and no samples are synthesized. Other-host publishers
+    need synchronized clocks. Missing/unsupported DDS metadata retains the
+    previous callback-time fallback.
+    """
+    raw = (message_info.get('source_timestamp') if isinstance(message_info, dict)
+           else getattr(message_info, 'source_timestamp', None))
+    transport_sec = None
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
+        candidate = raw / 1e9  # DDS explicitly specifies nanoseconds.
+        if EPOCH_SEC_MIN <= candidate <= EPOCH_SEC_MAX:
+            transport_sec = candidate
+    base = callback_sec if transport_sec is None else transport_sec
+    stamp = payload_timestamp_sec(payload, base, max_clock_skew_sec)
+    # A future publisher clock cannot make a packet look fresher than receipt.
+    return stamp, min(base, callback_sec)
+
+
 def nearest_sample(samples: Iterable[TimestampedT], target_sec: float) -> tuple[TimestampedT, float] | None:
     """Return the sample nearest ``target_sec`` and its absolute delta."""
 
