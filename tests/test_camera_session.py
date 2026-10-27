@@ -49,6 +49,18 @@ class CameraSessionTests(unittest.TestCase):
         self.assertEqual(self.config.read_bytes(), self.original)
         self.assertFalse((self.state / "pending.json").exists())
 
+    def test_rollback_only_requires_previously_live_streams(self):
+        import time
+        from camera_session import STREAMS
+        baseline = [name for name in STREAMS if name != "hand_right"]
+        self.restart.side_effect = [RuntimeError("right camera missing"), None]
+        with patch("camera_session.stream_stamp", side_effect=lambda name: time.time_ns() if name in baseline else 0):
+            with self.assertRaisesRegex(RuntimeError, "right camera missing"):
+                self.session().acquire()
+        self.assertEqual(self.restart.call_args_list[0].args[0], STREAMS)
+        self.assertEqual(self.restart.call_args_list[1].args[0], sorted(baseline))
+        self.assertEqual(self.config.read_bytes(), self.original)
+
     def test_parallel_session_is_rejected(self):
         first = self.session()
         first.acquire()

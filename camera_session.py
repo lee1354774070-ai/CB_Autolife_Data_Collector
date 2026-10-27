@@ -176,12 +176,13 @@ class CameraSession:
             if original_modules == selected_modules:
                 print("相机模式：原配置已只有所需四路，无需切换。", flush=True)
                 return
+            stamps = {name: stream_stamp(name) for name in ALL_STREAMS}
             now = time.time_ns()
-            live = [name for name in ALL_STREAMS if 0 <= now - stream_stamp(name) < 2_000_000_000]
+            live = [name for name, stamp in stamps.items() if 0 <= now - stamp < 2_000_000_000]
             state = dict(config=str(self.config), original=base64.b64encode(raw).decode(),
                          selected_sha256=digest(selected),
                          mode=stat.S_IMODE(self.config.stat().st_mode),
-                         previous_live_streams=sorted(set(live) | set(STREAMS)))
+                         previous_live_streams=sorted(live))
             atomic_write(self.journal, json.dumps(state).encode())
             atomic_write(self.config, selected, state["mode"])
             print("相机模式：切换为左右手、头部RGB、头部深度；等待视觉服务重连…", flush=True)
