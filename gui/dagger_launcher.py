@@ -372,11 +372,14 @@ class Launcher:
             lines = (self.pending + chunk).split('\n')
             self.pending = lines.pop()[-8192:]
             for line in lines:
-                if 'FAIL ' in line or 'PREFLIGHT FAILED' in line or '快捷启动已在运行' in line or 'run.py: error:' in line:
+                if 'FAIL ' in line or 'PREFLIGHT FAILED' in line or '快捷启动已在运行' in line or 'run.py: error:' in line or '相机切换失败：' in line or '相机恢复失败：' in line:
                     if not self.failure:
                         self.failure = line.strip()[:220]
                     self.status.configure(text='●  启动检查未通过', fg='#ffb09a')
                     self.detail.configure(text=self.failure)
+                elif '相机模式：' in line and not self.failure:
+                    self.status.configure(text='●  正在恢复相机' if self.stopping else '●  正在准备四路相机', fg=BLUE)
+                    self.detail.configure(text=line.strip()[:220])
                 elif 'INFO  启动自检' in line or 'INFO  自检修复' in line:
                     self.status.configure(text='●  自检与修复中', fg=BLUE)
                     self.detail.configure(text=line.strip()[:220])

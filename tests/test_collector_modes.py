@@ -12,6 +12,39 @@ from collector_modes import resolve_mode
 class CollectorModeTest(unittest.TestCase):
     launcher = Path(__file__).resolve().parents[1] / "start_lerobot_official_collect.sh"
 
+    def test_all_regular_modes_enter_camera_session_before_recording(self):
+        import json
+        import shutil
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher = root / self.launcher.name
+            shutil.copy2(self.launcher, launcher)
+            shutil.copy2(self.launcher.parent / "collector_modes.py", root / "collector_modes.py")
+            shutil.copy2(self.launcher.parent / "subtask_annotations.py", root / "subtask_annotations.py")
+            settings = root / ".config/autolife_collector/camera_session.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text("{}")
+            (root / "camera_session.py").write_text(
+                "import json, os, sys\n"
+                "print('CAMERA_HOOK ' + json.dumps(sys.argv[1:]))\n"
+            )
+            for mode, plan in (("keyboard", "[]"), ("vr", "[]"),
+                               ("subtask", '["pick","place"]')):
+                with self.subTest(mode=mode):
+                    env = dict(os.environ, HOME=str(root), COLLECTOR_MODE=mode,
+                               VR_CONTROL="", SUBTASKS_JSON=plan,
+                               COLLECTOR_CAMERA_SESSION_ACTIVE="",
+                               ACTION_MODE="status_target", WITH_HEAD="0",
+                               WITH_WAIST="0", WITH_UPPER_WAIST="0")
+                    result = subprocess.run(["bash", str(launcher), "camera_test"],
+                                            env=env, text=True, capture_output=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    line = next(x for x in result.stdout.splitlines()
+                                if x.startswith("CAMERA_HOOK "))
+                    args = json.loads(line.removeprefix("CAMERA_HOOK "))
+                    self.assertEqual(args, ["run", "--", "bash", str(launcher), "camera_test"])
+                    self.assertNotIn("recorder PID", result.stdout)
+
     def test_legacy_commands_keep_their_existing_behavior(self):
         for mode, vr, plan, expected in [
             ("", "", (), ("keyboard", False)),

@@ -70,6 +70,10 @@ if [[ "${TASK_NAME}" = "." || "${TASK_NAME}" = ".." || "${TASK_NAME}" = */* || "
     echo "ERROR: task_name must be one directory name, not a path or option." >&2
     exit 2
 fi
+# Own camera switching for the entire session, including graceful recorder cleanup.
+if [[ -f "${HOME}/.config/autolife_collector/camera_session.json" && "${COLLECTOR_CAMERA_SESSION_ACTIVE:-0}" != "1" ]]; then
+    exec /usr/bin/python3 "${SCRIPT_DIR}/camera_session.py" run -- bash "${BASH_SOURCE[0]}" "$@"
+fi
 TASK_TEXT="${TASK_TEXT:-${2:-${TASK_NAME}}}"
 OUTPUT_BASE_DIR="${OUTPUT_BASE_DIR:-/home/ubuntu/nas14}"
 BASE_DIR="${OUTPUT_BASE_DIR}/${TASK_NAME}"

@@ -218,6 +218,8 @@ def main():
     reset_path.write_text(json.dumps(reset_pose, ensure_ascii=False, indent=2))
     env['DAGGER_RESET_STATE_PATH'] = str(reset_path)
     env['DAGGER_RESET_POSE_NAME'] = reset_pose['pose_name']
+    from camera_session import CameraSession
+    cameras = CameraSession()
     recorder = stack = reset_client = None
     terminal = None
     stop = threading.Event()
@@ -229,6 +231,11 @@ def main():
             Path(env["DAGGER_DEPENDENCY_ROOT"]), ROOT / ".runtime"))
         print(f"V4 runtime COPY: {env['DAGGER_V4_RUNTIME_ROOT']}; colleague source unchanged.", flush=True)
         if not args.reset_only:
+            if env.get("COLLECTOR_CAMERA_SESSION_ACTIVE") != "1":
+                cameras.acquire()
+            env["COLLECTOR_CAMERA_SESSION_ACTIVE"] = "1"
+            if stop.is_set():
+                return
             started = time.time()
             recorder = subprocess.Popen(["bash", str(ROOT / "start_lerobot_official_collect.sh"), args.task_name],
                                         env=env, stdin=subprocess.PIPE, start_new_session=True)
@@ -280,6 +287,7 @@ def main():
         stop_child(stack, launch_managed=True)
         stop_child(reset_client)
         stop_child(recorder, timeout=330, preserve_writer=True)
+        cameras.release()
         if command_worker is not None:
             command_worker.join(timeout=12)
         for lock in locks:

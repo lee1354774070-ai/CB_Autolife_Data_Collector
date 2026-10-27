@@ -17,3 +17,6 @@
 - [WITH_EEF_STATE / WITH_EEF_ACTION 与 Joint/EEF 自由组合转换](README.md#conversion)
 - [300测试与验收](ROBOT300_TESTING_zh.md)
 - [实现与数据格式](INSTRUCTION_zh.md)
+
+
+四种采集模式（keyboard、vr、subtask、dagger）均支持采集会话只开启必要四路相机、退出恢复原配置，参见 [四路相机模式与测试](CAMERA_SESSION_zh.md)。300已配置启用，其他机器人需先核验原厂视觉配置路径再启用。
