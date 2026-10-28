@@ -112,7 +112,7 @@ def send_fifo_command(fifo_path: Path, command: str, request_id: str | None = No
 
     if not fifo_path.exists():
         raise RuntimeError(f"Control FIFO not found: {fifo_path}")
-    if command not in {"start", "resume", "enter", "mark_subtask", "save", "discard", "quit"}:
+    if command not in {"start", "resume", "enter", "mark_subtask", "save", "discard", "seal", "quit"}:
         raise RuntimeError(f"Invalid collector command: {command!r}")
     if request_id is not None and (not request_id or any(c.isspace() for c in request_id)):
         raise RuntimeError("Request ID must be one nonempty token")
@@ -187,6 +187,8 @@ def format_status(status: dict[str, Any]) -> str:
 
     if event == "start" and success:
         lines = [f"[STARTED] Episode {episode_index} | Task: {task}"]
+    elif event == "seal" and success:
+        lines = ["[SEALED] 本批已封口，保持运行，可开始下一条"]
     elif event == "save" and success:
         lines = [f"[SAVED] Episode {episode_index} | {frames} frames | Task: {task}"]
     elif event == "mark_subtask" and success:
@@ -385,7 +387,7 @@ def parse_args() -> argparse.Namespace:
     command_parser.add_argument("--base-dir", type=Path, required=True)
     command_parser.add_argument("--wait", action="store_true", help="Wait for save/discard completion.")
     command_parser.add_argument("--timeout", type=float, default=300.0)
-    command_parser.add_argument("command", choices=("start", "mark_subtask", "save", "discard", "quit"))
+    command_parser.add_argument("command", choices=("start", "mark_subtask", "save", "discard", "seal", "quit"))
 
     summary_parser = subparsers.add_parser("summary", help="Print dataset metadata summary.")
     summary_parser.add_argument("--dataset-root", type=Path, required=True)

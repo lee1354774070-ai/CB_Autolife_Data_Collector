@@ -493,11 +493,13 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
         if os.environ.get('DAGGER_RESET_ONLY') == '1' and action != 'reset':
             response.success, response.message = False, '独立复位模式不启动推理或录制'
             return response
-        if action not in ("start", "finish", "fail", "discard", "reset") or self._closing:
+        if action not in ("start", "finish", "fail", "discard", "reset", "seal") or self._closing:
             response.success, response.message = False, "操作无效；退出请用终端 Q"
             return response
         if self._button_worker_active or self._session_start_pending or self._reset_pending:
             response.success, response.message = False, "操作正在处理，请等待结果；没有排队"
+        elif action == "seal" and (self._machine.mode != Mode.DISARMED or self._intervention_id or self._pending_collector_result is not None):
+            response.success, response.message = False, "请先保存或丢弃当前条，再 F 封口"
         elif action == "reset" and (self._intervention_id or self._pending_collector_result is not None):
             response.success, response.message = False, "请先 B 保存或 Y 丢弃，确认后 X 仅复位；数据保留"
         elif action == "start" and (self._machine.mode != Mode.DISARMED or self._intervention_id or (not launcher and any(self._grips))):
@@ -514,6 +516,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
                       "finish": lambda: self._finish_collection_trial(True),
                       "fail": lambda: self._finish_collection_trial(True, task_success=False),
                       "discard": lambda: self._finish_collection_trial(False),
+                      "seal": self._seal_collection_batch,
                       "reset": lambda: self._mechanical_reset_worker("X")}[action]
             self._spawn_button_worker_locked(action, target)
             response.success, response.message = True, "已受理，请等待状态确认"
@@ -521,6 +524,12 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             self._set_notice_locked(response.message, "warning")
             self._publish_state()
         return response
+
+    def _seal_collection_batch(self):
+        result = self._collector.command_and_wait(self._active_depth, "seal", timeout=10.0)
+        with self._lock:
+            self._set_notice_locked(result.message, "success" if result.success else "error")
+            self._publish_state()
 
     def _finish_collection_trial(self, save, *, task_success=True):
         # Close motion authority before storage waits, using the DAgger FIFO and

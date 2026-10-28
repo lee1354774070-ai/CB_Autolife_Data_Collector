@@ -81,3 +81,6 @@ python3 /home/ubuntu/CB_Autolife_Data_Collector/camera_session.py recover
 此时才恢复原相机配置并短暂断开VR。保留期间 `recovery_pending=true` 是正常备份状态。
 相机不出帧或配置被外部修改时拒绝启动，不自动重启服务。首次切四路仍会重启视觉。
 更新不会热替换已运行进程；旧进程退出仍按旧逻辑恢复。独立头显心跳超时不由此设置解决。
+
+推荐使用 F 封口、Q 退出，保持 `retain_between_batches=false`：F在同一进程继续，
+不会恢复相机；Q真正退出后自动恢复相机（会短暂断开VR）。不再需要为了封口而退出重开。

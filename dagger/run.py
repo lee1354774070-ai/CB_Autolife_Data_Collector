@@ -254,7 +254,7 @@ def main():
                     raise RuntimeError('复位控制器已退出')
             raise InterruptedError('独立复位已取消，到位未确认')
         print("DAgger running. VR: A start, GL/GR held takeover, B save, Y tap discard / hold 1s failure save, X reset only. "
-              "Terminal: C start, A success save, F failure save, X/D discard, R reset, Q exit.", flush=True)
+              "Terminal: C start, A success save, F seal, K failure save, X/D discard, R reset, Q exit.", flush=True)
         print(f"Robot {robot.suffix} / {robot.model}; hardware publishing: {env['DAGGER_PUBLISH']} (1=enabled). "
               "VR X / terminal R resets all body joints and grippers after B/Y receipt; keep workspace clear.", flush=True)
         if not args.serve and sys.stdin.isatty():
@@ -268,7 +268,7 @@ def main():
             key = sys.stdin.read(1).lower()
             if key in ("", "q"):
                 break
-            service = {"c": "launcher/start", "x": "launcher/discard", "a": "launcher/finish", "f": "launcher/fail",
+            service = {"c": "launcher/start", "x": "launcher/discard", "a": "launcher/finish", "f": "launcher/seal", "k": "launcher/fail",
                        "d": "launcher/discard", "r": "launcher/reset"}.get(key)
             if service and (command_worker is None or not command_worker.is_alive()):
                 def command(service=service):

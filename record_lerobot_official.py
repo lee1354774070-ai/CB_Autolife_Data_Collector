@@ -1920,6 +1920,34 @@ class OfficialLeRobotRecorder(Node):
         )
         return True
 
+    def seal_batch(self, request_id=None):
+        """Checkpoint already committed episodes without ending the recording service."""
+        if self.is_recording or self.has_pending_episode() or self.save_failed or self.episode_invalid:
+            self._write_command_status("seal", False, request_id, message="请先保存或丢弃当前条，再按 F 封口；数据保留")
+            return False
+        if self.episode_store.journal.exists():
+            self._write_command_status("seal", False, request_id, message="发布结果未确认，不能封口")
+            return False
+        try:
+            self._flush_sync_log()
+            write_json_atomic(Path(self.args.output_dir) / "meta" / "collection_seal.json",
+                              {"total_episodes": self.saved_episodes, "wall_time": time.time(),
+                               "request_id": request_id})
+            seal_path = Path(self.args.output_dir) / "meta" / "collection_seal.json"
+            with seal_path.open("rb") as handle:
+                os.fsync(handle.fileno())
+            fd = os.open(seal_path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except Exception as exc:
+            self._write_command_status("seal", False, request_id, message=f"封口失败：{exc}")
+            return False
+        self._write_command_status("seal", True, request_id,
+                                   message="本批已封口，程序保持运行，可以开始下一条")
+        return True
+
     def request_quit(self, reason: str) -> None:
         self._log_sync({"event": "quit_requested", "reason": reason, "wall_time": time.time()})
         self.stop_requested = True
@@ -1960,6 +1988,8 @@ class OfficialLeRobotRecorder(Node):
                 self.mark_subtask(request_id)
             elif command == "discard":
                 self.discard_current_episode("command:discard", request_id)
+            elif command == "seal":
+                self.seal_batch(request_id)
             elif command == "quit":
                 self.request_quit("command:quit")
             else:

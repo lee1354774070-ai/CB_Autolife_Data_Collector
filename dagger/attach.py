@@ -86,7 +86,7 @@ def main():
         print(f"Attached preflight passed: task={args.task_name}, host={identity}, no processes replaced.", flush=True)
         if args.check:
             return
-        print('C=start A=success save F=failure save X/D=discard R=reset Q=detach. Host and VR stay running after detach.', flush=True)
+        print('C=start A=success save F=seal K=failure save X/D=discard R=reset Q=detach. Host and VR stay running after detach.', flush=True)
         print('Commands enabled.' if publish == '1' else 'Read-only attachment: DAGGER_PUBLISH=0.', flush=True)
         if sys.stdin.isatty():
             terminal = termios.tcgetattr(sys.stdin)
@@ -111,7 +111,7 @@ def main():
             key = sys.stdin.read(1).lower()
             if key in ('', 'q'):
                 break
-            action = {'c': 'start', 'a': 'finish', 'f': 'fail', 'x': 'discard', 'd': 'discard', 'r': 'reset'}.get(key)
+            action = {'c': 'start', 'a': 'finish', 'f': 'seal', 'k': 'fail', 'x': 'discard', 'd': 'discard', 'r': 'reset'}.get(key)
             if action and publish == '1' and pending is None and not uncertain:
                 packet = json.dumps(dict(instance_id=identity, request_id=uuid.uuid4().hex,
                                          issued_ns=time.time_ns(), command=action))

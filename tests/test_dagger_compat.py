@@ -111,7 +111,7 @@ class DesktopCopyTest(unittest.TestCase):
         class Button(dict):
             def invoke(self):
                 self['invoked'] = self.get('invoked', 0) + 1
-        for key, action in dict(a='start', b='finish', f='fail', x='reset', y='discard').items():
+        for key, action in dict(a='start', b='finish', f='seal', k='fail', q='quit', x='reset', y='discard').items():
             button = Button(state='normal')
             node = SimpleNamespace(shortcut_held={key: None}, control_buttons={action: button})
             namespace['shortcut_dispatch'](node, key)

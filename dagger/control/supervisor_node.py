@@ -212,7 +212,7 @@ class HgDaggerSupervisor(Node):
         self.create_service(Trigger, "/hg_dagger/finish_episode", self._on_finish_episode,
                             callback_group=service_group)
 
-        for action in ("start", "finish", "fail", "discard", "reset", "quit"):
+        for action in ("start", "finish", "fail", "discard", "reset", "seal", "quit"):
             self.create_service(
                 Trigger, f"/hg_dagger/launcher/{action}",
                 lambda request, response, action=action:

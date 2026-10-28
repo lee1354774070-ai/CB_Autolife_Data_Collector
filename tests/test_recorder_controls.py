@@ -28,7 +28,7 @@ SOURCE = Path(__file__).resolve().parents[1] / 'record_lerobot_official.py'
 tree = ast.parse(SOURCE.read_text())
 methods = [item for cls in tree.body if isinstance(cls, ast.ClassDef)
            for item in cls.body if isinstance(item, ast.FunctionDef)
-           and item.name in {'start_episode', '_reset_episode_state', 'mark_subtask',
+           and item.name in {'start_episode', '_reset_episode_state', 'mark_subtask', 'seal_batch',
                              'save_current_episode', 'discard_current_episode', 'finish', '_clear_warmup_images',
                              '_invalidate_episode', '_record_tick', '_record_frame', '_log_sync', '_flush_sync_log'}]
 methods.extend(item for cls in tree.body if isinstance(cls, ast.ClassDef)
@@ -44,6 +44,22 @@ exec(compile(ast.Module(body=methods, type_ignores=[]), str(SOURCE), 'exec'), na
 
 
 class RecorderControlsTest(unittest.TestCase):
+    def test_seal_does_not_stop_or_save_pending_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            node = Mock(is_recording=False, save_failed=False, episode_invalid=False,
+                        saved_episodes=10, stop_requested=False)
+            node.args = SimpleNamespace(output_dir=tmp)
+            node.has_pending_episode.return_value = False
+            node.episode_store.journal.exists.return_value = False
+            self.assertTrue(namespace['seal_batch'](node, 'seal-1'))
+            self.assertEqual(json.loads((Path(tmp)/'meta/collection_seal.json').read_text())['total_episodes'], 10)
+            self.assertFalse(node.stop_requested)
+            node.save_current_episode.assert_not_called()
+            node.is_recording = True
+            self.assertFalse(namespace['seal_batch'](node, 'seal-2'))
+            self.assertEqual(json.loads((Path(tmp)/'meta/collection_seal.json').read_text())['request_id'], 'seal-1')
+            node.save_current_episode.assert_not_called()
+
     def test_dagger_depth_tuning_keeps_quantizer_and_lossless_encoding(self):
         for dagger, codec in [(True, 'hevc'), (False, 'hevc'), (True, 'other')]:
             args = SimpleNamespace(with_depth=True, dagger=dagger, depth_vcodec=codec,

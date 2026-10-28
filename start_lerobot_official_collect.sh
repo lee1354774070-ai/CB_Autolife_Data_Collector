@@ -454,6 +454,7 @@ if [ "${SUBTASK_COUNT}" -gt 0 ]; then
 fi
 echo "  S / s   - Save the current episode and pause"
 echo "  D / d   - Discard the current episode and pause"
+echo "  F / f   - Seal saved episodes and stay ready (save/discard current episode first)"
 echo "  Q / q   - Save pending data and quit"
 fi
 echo "============================================================"
@@ -507,6 +508,9 @@ while true; do
                 echo ""
                 echo "[control] discard"
                 send_control_and_report "discard" || true
+                ;;
+            [fF])
+                send_control_and_report "seal" || true
                 ;;
             [qQ])
                 echo ""
