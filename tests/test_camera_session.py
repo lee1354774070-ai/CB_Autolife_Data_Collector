@@ -112,6 +112,33 @@ class CameraSessionTests(unittest.TestCase):
         self.assertEqual(self.config.read_bytes(), self.original)
         self.assertFalse((self.state / "pending.json").exists())
 
+    def test_retained_batches_do_not_restart_and_explicit_recover_restores(self):
+        import time
+        self.settings.write_text(json.dumps({"vision_config": str(self.config), "retain_between_batches": True}))
+        first = self.session()
+        first.acquire()
+        first.release()
+        self.assertTrue(first.journal.exists())
+        self.assertEqual(self.restart.call_count, 1)
+        with patch("camera_session.stream_stamp", side_effect=lambda name: time.time_ns()):
+            second = self.session()
+            second.acquire()
+            second.release()
+        self.assertEqual(self.restart.call_count, 1)
+        self.session().recover()
+        self.assertEqual(self.restart.call_count, 2)
+        self.assertEqual(self.config.read_bytes(), self.original)
+
+    def test_retained_stale_stream_does_not_restart_or_erase_backup(self):
+        self.settings.write_text(json.dumps({"vision_config": str(self.config), "retain_between_batches": True}))
+        first = self.session()
+        first.acquire()
+        first.release()
+        with self.assertRaisesRegex(RuntimeError, "持续出帧"):
+            self.session().acquire()
+        self.assertTrue(first.journal.exists())
+        self.assertEqual(self.restart.call_count, 1)
+
     def test_unconfigured_host_is_unchanged(self):
         s = CameraSession(self.root / "missing", self.state)
         s.acquire()

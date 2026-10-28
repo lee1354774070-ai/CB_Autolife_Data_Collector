@@ -66,3 +66,18 @@ python3 /home/ubuntu/CB_Autolife_Data_Collector/camera_session.py recover
 已实际验证三路闲置设备/dev/video6、/dev/video10、/dev/video9在四路模式下释放，恢复后重新打开；ARM用户服务PID保持653690。统一keyboard入口启动至4/4相机就绪，Q退出后恢复原配置；未发送开始录制命令，测试数据集0帧、0条，不用于训练。测试日志：/home/ubuntu/collector_validation/camera_session_20261027/startup_exit.log。
 
 启动器会显示相机准备/恢复进度，恢复失败会标记异常，不能误报正常退出。尚未进行头显操作与实际运动录制验收。
+
+## 连续多批采集：封口不重启视觉
+
+在机器人本地 camera_session.json 中设置 `"retain_between_batches": true`（默认 false）。
+本批Q退出或封口后保留四路配置及原配置备份；下一批检查四路持续出帧后复用，不重启视觉。
+普通、VR、子任务和DAgger共用此设置。它不改变数据保存或封口逻辑。
+整场结束、所有采集程序退出且机器人停稳后，执行：
+
+```bash
+python3 /home/ubuntu/CB_Autolife_Data_Collector/camera_session.py recover
+```
+
+此时才恢复原相机配置并短暂断开VR。保留期间 `recovery_pending=true` 是正常备份状态。
+相机不出帧或配置被外部修改时拒绝启动，不自动重启服务。首次切四路仍会重启视觉。
+更新不会热替换已运行进程；旧进程退出仍按旧逻辑恢复。独立头显心跳超时不由此设置解决。

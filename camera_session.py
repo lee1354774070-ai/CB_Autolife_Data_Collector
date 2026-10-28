@@ -94,10 +94,14 @@ class CameraSession:
         self.lock = None
         self.config = None
         self.service = None
+        self.retain = False
 
     def _load(self):
         settings = json.loads(self.settings.read_text())
         self.config = Path(settings["vision_config"]).resolve(strict=True)
+        self.retain = settings.get("retain_between_batches", False)
+        if not isinstance(self.retain, bool):
+            raise ValueError("retain_between_batches must be boolean")
         self.service = settings.get("service", "vision-service.service")
         if self.service != "vision-service.service":
             raise RuntimeError("相机管理只允许操作 vision-service.service")
@@ -165,6 +169,25 @@ class CameraSession:
             return
         self._load()
         self._lock()
+        # Reuse only our exact selected configuration; never overwrite an external edit.
+        if self.retain and self.journal.exists():
+            try:
+                self._idle()
+                state = json.loads(self.journal.read_text())
+                if Path(state["config"]).resolve() != self.config or digest(self.config.read_bytes()) != state["selected_sha256"]:
+                    raise RuntimeError("保留的四路配置已变化；请检查后显式 recover")
+                self._service_active()
+                first = {name: stream_stamp(name) for name in STREAMS}
+                time.sleep(0.25)
+                stamps = {name: stream_stamp(name) for name in STREAMS}
+                now = time.time_ns()
+                if not all(stamps[n] > first[n] and 0 <= now - stamps[n] < 2_000_000_000 for n in STREAMS):
+                    raise RuntimeError("保留的相机没有持续出帧；未自动重启，请检查视觉服务")
+                print("相机模式：复用四路相机，不重启视觉服务。", flush=True)
+                return
+            except BaseException:
+                self._unlock()
+                raise
         try:
             self._idle()
             self._restore()  # Recover a previous interrupted session before taking ownership.
@@ -205,7 +228,11 @@ class CameraSession:
     def release(self):
         try:
             if self.lock is not None:
-                self._restore()
+                if self.retain:
+                    self._idle()
+                    print("相机模式：本批已结束，保留四路。整场结束后运行 camera_session.py recover 恢复。", flush=True)
+                else:
+                    self._restore()
         except Exception as exc:
             print(f"相机恢复失败：{exc}；恢复记录已保留。", file=sys.stderr, flush=True)
             raise
