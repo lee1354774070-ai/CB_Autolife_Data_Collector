@@ -254,7 +254,7 @@ def make_depth_encoder(args: argparse.Namespace) -> Any | None:
             "Depth recording requires LeRobot >= 0.6 with DepthEncoderConfig. "
         )
     tuning = {}
-    if args.dagger and args.depth_vcodec == "hevc":
+    if (args.dagger or getattr(args, "background_save", False)) and args.depth_vcodec == "hevc":
         # x265's worker pool ignores encoder_threads; bound it within recorder affinity.
         tuning = dict(preset="ultrafast", extra_options={
             "x265-params": "lossless=1:pools=4:frame-threads=1:bframes=0:scenecut=0"})
@@ -276,6 +276,8 @@ class OfficialLeRobotRecorder(Node):
         self.dagger_progress_future = None
         # Only an unresolved publication latches the session. Ordinary write
         # failures invalidate the private workspace, which can be discarded.
+        self.background_saves = None
+        self.active_episode_index = None
         self.save_failed = False
         self.episode_store = None
         self.storage_budget = None
@@ -663,13 +665,17 @@ class OfficialLeRobotRecorder(Node):
         once for each task category.
         """
 
-        if self.dataset is None or self.saved_episodes == 0:
+        if self.saved_episodes == 0:
             return
         try:
-            episodes = getattr(self.dataset.meta, "episodes", None)
-            if episodes is None and hasattr(self.dataset.meta, "ensure_readable"):
-                self.dataset.meta.ensure_readable()
-                episodes = getattr(self.dataset.meta, "episodes", None)
+            meta = self.dataset.meta if self.dataset is not None else None
+            if getattr(self, 'background_saves', None):
+                from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
+                meta = LeRobotDatasetMetadata(self.args.repo_id, root=Path(self.args.output_dir))
+            episodes = getattr(meta, "episodes", None)
+            if episodes is None and hasattr(meta, "ensure_readable"):
+                meta.ensure_readable()
+                episodes = getattr(meta, "episodes", None)
             if episodes is None:
                 raise RuntimeError("episode metadata is unavailable")
             for episode in episodes:
@@ -719,7 +725,7 @@ class OfficialLeRobotRecorder(Node):
             "episode_index": episode_index,
             "frames": frames,
             "expert_frames": (
-                (self.dagger.last_expert_frames if event in ("save", "discard") and success
+                (self.dagger.last_expert_frames if event in ("save", "save_queued", "discard") and success
                  else self.dagger.expert_frames) if getattr(self, "dagger", None) else 0
             ),
             "message": message,
@@ -872,6 +878,8 @@ class OfficialLeRobotRecorder(Node):
         depth_encoder = make_depth_encoder(self.args)
         output_dir = Path(self.args.output_dir)
         self.episode_store = EpisodeStore(output_dir)
+        if not getattr(self.args, 'background_save', False) and any((output_dir / '.collector-queue').glob('*/job.json')):
+            raise RuntimeError('Pending background saves exist; restart with BACKGROUND_SAVE=1 to recover before synchronous rollback')
         recovered = self.episode_store.recover()
         if recovered is not None:
             self.get_logger().warn(f"interrupted unsaved workspace retained for inspection: {recovered}")
@@ -950,6 +958,26 @@ class OfficialLeRobotRecorder(Node):
             if self.capture_layout is not None:
                 write_json_atomic(output_dir / SCHEMA_PATH, self.capture_layout)
 
+        if getattr(self.args, 'background_save', False):
+            from background_saves import BackgroundSaves, probe_rgb_encoder
+            from dataclasses import asdict
+            self._capture_info = json.loads(info_path.read_text())
+            background_rgb = rgb_encoder
+            if self.args.vcodec in ('h264', 'h264_nvenc'):
+                try:
+                    background_rgb = RGBEncoderConfig(vcodec='h264_nvenc',
+                        crf=self.args.video_crf if self.args.video_crf is not None else 30,
+                        g=self.args.video_gop or 2, extra_options={'bf': '0'})
+                    probe_rgb_encoder(background_rgb, self._capture_info['features'])
+                except Exception as exc:
+                    if self.args.vcodec == 'h264_nvenc':
+                        raise
+                    background_rgb = rgb_encoder
+                    self.get_logger().warn(f'GPU encoder unavailable; bounded CPU fallback: {exc}')
+            self.background_saves = BackgroundSaves(self.episode_store, dict(
+                repo_id=self.args.repo_id, rgb=asdict(background_rgb),
+                depth=asdict(depth_encoder) if depth_encoder is not None else None), autostart=False)
+
         self.storage_budget = StorageBudget(
             output_dir, min_free_gb=self.args.min_free_disk_gb,
             max_temp_gb=self.args.max_episode_temp_gb, max_seconds=self.args.max_episode_seconds)
@@ -976,6 +1004,13 @@ class OfficialLeRobotRecorder(Node):
         self._load_existing_task_counts()
         from episode_storage import AsyncTextLog
         self.sync_log = AsyncTextLog(Path(self.args.output_dir) / "sync_log.jsonl")
+        if self.background_saves:
+            self.background_saves.start()
+            self.storage_budget.extra_reserve = self.background_saves.reserved_bytes
+            self._publish_background_status()
+        elif self.args.status_file:
+            write_json_atomic(Path(self.args.status_file).with_name('.official_background_saves.json'),
+                              dict(pending=0, completed=[], error=None))
         self.started_sec = time.time()
         self.create_timer(1.0 / float(self.args.fps), self._record_tick)
         self.get_logger().info(f"active cameras: {', '.join(self.active_cameras)}")
@@ -995,9 +1030,17 @@ class OfficialLeRobotRecorder(Node):
 
     def _open_episode_dataset(self) -> None:
         from dagger.capture_image_writer import CaptureImageWriter
-        root = self.episode_store.prepare()
-        info = json.loads((Path(self.args.output_dir) / 'meta/info.json').read_text())
-        if info['total_episodes']:
+        background = getattr(self, 'background_saves', None)
+        if background:
+            if background.pending >= background.limit or background.error:
+                self.dataset = None
+                return
+            root = background.new_capture()
+            info = self._capture_info
+        else:
+            root = self.episode_store.prepare()
+            info = json.loads((Path(self.args.output_dir) / 'meta/info.json').read_text())
+        if not background and info['total_episodes']:
             self.dataset = call_lerobot_dataset(LeRobotDataset.resume, root=root, **self._dataset_options)
         else:
             self.dataset = call_lerobot_dataset(
@@ -1630,6 +1673,15 @@ class OfficialLeRobotRecorder(Node):
         # Both keyboard and VR clients need an explicit outcome, including a
         # rejected start. Sending a command alone does not mean recording began.
         rejection = None
+        background = getattr(self, 'background_saves', None)
+        if background:
+            self._poll_background_saves()
+            if background.error or background.pending >= background.limit:
+                self._write_command_status('start', False, request_id,
+                    message='后台保存失败，数据保留' if background.error else '后台保存队列已满，请等待落盘')
+                return False
+            if self.dataset is None:
+                self._open_episode_dataset()
         if self.save_failed:
             rejection = "previous save failed; inspect dataset and restart the collector"
         elif self.sync_log_failed:
@@ -1655,7 +1707,8 @@ class OfficialLeRobotRecorder(Node):
             self._release_motion_lock()
             self._write_command_status('start', False, request_id, message=f"storage unavailable: {exc}")
             return False
-        episode_index = self.saved_episodes
+        episode_index = self.saved_episodes + (background.pending if background else 0)
+        self.active_episode_index = episode_index
         # Warmup frames are useful for dataset creation but belong before the
         # operator's start command. Clear them so a full warmup FIFO is not
         # mistaken for an overflow in the new episode.
@@ -1715,7 +1768,7 @@ class OfficialLeRobotRecorder(Node):
         # receipt is asynchronous; spans/labels are materialized only on save.
         if complete:
             return self.save_current_episode("subtasks_complete", request_id)
-        self._write_command_status("mark_subtask", True, request_id, episode_index=self.saved_episodes,
+        self._write_command_status("mark_subtask", True, request_id, episode_index=getattr(self, "active_episode_index", None) or self.saved_episodes,
                                    frames=self.current_episode_frames, message="subtask confirmed")
         return True
 
@@ -1743,7 +1796,7 @@ class OfficialLeRobotRecorder(Node):
                 message="no pending episode to save",
             )
             return False
-        episode_index = self.saved_episodes
+        episode_index = self.active_episode_index if getattr(self, "background_saves", None) else self.saved_episodes
         episode_frames = self.current_episode_frames
         task_outcome = None
         if dagger_outcome is not None:
@@ -1756,6 +1809,8 @@ class OfficialLeRobotRecorder(Node):
             except ValueError as exc:
                 self._write_command_status("save", False, request_id, message=str(exc))
                 return False
+        if getattr(self, 'background_saves', None):
+            return self._queue_current_episode(reason, request_id, task_outcome)
         subtask_status = self.subtasks.progress()
         self.get_logger().info(
             f"saving episode {episode_index} with {episode_frames} frame(s) ({reason})"
@@ -1855,6 +1910,78 @@ class OfficialLeRobotRecorder(Node):
         )
         return True
 
+    def _queue_current_episode(self, reason, request_id, outcome):
+        background = self.background_saves
+        index, frames = self.active_episode_index, self.current_episode_frames
+        progress = self.subtasks.progress()
+        self.is_recording = False
+        started = time.monotonic()
+        try:
+            if self.dagger_progress_future is not None:
+                self.dagger_progress_future.result()
+                self.dagger_progress_future = None
+            self.storage_budget.refresh()
+            self.storage_budget.check(saving=True)
+            annotation = None
+            if self.subtasks.enabled:
+                annotation = self.subtasks.manifest(index, self.args.task_name, frames, self.args.fps, reason)
+                self.subtasks.apply_to_buffer(self.dataset, frames)
+                progress.update(complete=annotation['annotation_complete'], needs_review=annotation['needs_review'])
+            receipt = dict(request_id=request_id, task=self.args.task_name, frames=frames,
+                           reserved_bytes=self.storage_budget.bytes,
+                           expert_frames=self.dagger.expert_frames if self.dagger else 0,
+                           subtasks=progress, task_outcome=outcome, reason=reason)
+            self._flush_sync_log()
+            background.submit(self.dataset, index, receipt, annotation, outcome)
+        except Exception as exc:
+            self._release_motion_lock()
+            self._invalidate_episode('background_staging_failed', time.time(), detail=str(exc))
+            self._write_command_status('save', False, request_id, message=f'save failed: {exc}')
+            return False
+        self.dataset = None
+        self._reset_episode_state()
+        self._release_motion_lock()
+        self._log_sync(dict(event='episode_save_queued', episode_index=index, frames=frames,
+                            staging_seconds=time.monotonic()-started, wall_time=time.time()))
+        self._write_command_status('save_queued', True, request_id, episode_index=index, frames=frames,
+                                   message='本条已进入后台保存，可以开始下一条；尚未确认落盘',
+                                   subtask_status=progress, task_outcome=outcome)
+        self.storage_budget.extra_reserve = background.reserved_bytes
+        self._publish_background_status()
+        return True
+
+    def _publish_background_status(self):
+        if not self.args.status_file:
+            return
+        background = self.background_saves
+        write_json_atomic(Path(self.args.status_file).with_name('.official_background_saves.json'),
+            dict(pending=background.pending, error=background.error,
+                 completed=background.completed, total_saved_episodes=self.saved_episodes,
+                 wall_time=time.time()))
+
+    def _poll_background_saves(self, wait=False):
+        background = getattr(self, 'background_saves', None)
+        if not background:
+            return True
+        try:
+            results = background.poll(wait=wait)
+        except Exception as exc:
+            if not getattr(self, '_background_error_logged', False):
+                self.get_logger().error(f'background save failed; raw data retained: {exc}')
+                self._background_error_logged = True
+                self._publish_background_status()
+            return False
+        self.storage_budget.extra_reserve = background.reserved_bytes
+        for result in results:
+            self.saved_episodes += 1
+            self.task_episode_counts[result['task']] += 1
+            self.session_saved_by_task[result['task']] += 1
+            self._log_sync(dict(event='episode_saved', **{k:v for k,v in result.items() if k != 'event'}))
+            self.get_logger().info(f"[SAVED BACKGROUND] Episode {result['episode_index']} | {result['frames']} frames")
+        if results:
+            self._publish_background_status()
+        return not bool(background.error)
+
     def discard_current_episode(self, reason: str, request_id: str | None = None) -> bool:
         if self.save_failed:
             self._write_command_status("discard", False, request_id,
@@ -1880,8 +2007,13 @@ class OfficialLeRobotRecorder(Node):
         )
         try:
             # Includes a partially submitted first frame with frame_count=0.
+            capture = Path(self.dataset.root) if getattr(self, 'background_saves', None) else None
             self._close_episode_dataset()
-            self.episode_store.discard()
+            if capture is not None:
+                import shutil
+                shutil.rmtree(capture.parent)
+            else:
+                self.episode_store.discard()
         except Exception as exc:
             self.is_recording = False
             self._release_motion_lock()
@@ -1925,6 +2057,9 @@ class OfficialLeRobotRecorder(Node):
         if self.is_recording or self.has_pending_episode() or self.save_failed or self.episode_invalid:
             self._write_command_status("seal", False, request_id, message="请先保存或丢弃当前条，再按 F 封口；数据保留")
             return False
+        if not self._poll_background_saves(wait=True):
+            self._write_command_status('seal', False, request_id, message='后台保存失败，暂存数据保留，请勿重录覆盖')
+            return False
         if self.episode_store.journal.exists():
             self._write_command_status("seal", False, request_id, message="发布结果未确认，不能封口")
             return False
@@ -1953,6 +2088,7 @@ class OfficialLeRobotRecorder(Node):
         self.stop_requested = True
 
     def process_control_commands(self) -> None:
+        self._poll_background_saves()
         while True:
             if self.mark_status_future is not None:
                 if not self.mark_status_future.done():
@@ -2006,11 +2142,14 @@ class OfficialLeRobotRecorder(Node):
                     self.discard_current_episode("shutdown:unconfirmed_dagger_trial")
                 elif self.has_pending_episode() and self.current_episode_frames > 0:
                     self.save_current_episode("shutdown")
+            self._poll_background_saves(wait=True)
             self._close_episode_dataset()
             if (self.episode_store is not None and not self.save_failed and not self.episode_invalid
                     and not self.episode_store.journal.exists()):
                 self.episode_store.discard()
         finally:
+            if getattr(self, 'background_saves', None):
+                self.background_saves.close()
             if self.storage_budget is not None:
                 self.storage_budget.close()
             if self.episode_store is not None:
@@ -2025,6 +2164,8 @@ class OfficialLeRobotRecorder(Node):
             if self.motion_lock_handle is not None:
                 self.motion_lock_handle.close()
                 self.motion_lock_handle = None
+        if getattr(self, 'background_saves', None) and self.background_saves.error:
+            raise RuntimeError('Background save failed; raw jobs retained; restart with BACKGROUND_SAVE=1 for recovery')
 
 
 def main() -> None:

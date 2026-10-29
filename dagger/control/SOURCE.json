@@ -19,7 +19,8 @@
       "Forward optional operator-confirmed success metadata with a correlated save; retain legacy FIFO calls",
       "Register explicit task-failure save endpoint; existing motion and ABXY behavior unchanged",
       "Run collection-only Y tap-discard / hold-1s failure-save detector after immediate Grip processing; base hook is a no-op",
-      "Check policy gripper tracking only after forwarding a target in the current authority epoch; never compare feedback to startup defaults or a previous trial"
+      "Check policy gripper tracking only after forwarding a target in the current authority epoch; never compare feedback to startup defaults or a previous trial",
+      "Distinguish durable save from queued save; release ended trial without falsely counting queued data as saved; expose cached background progress"
     ],
     "recorder.py": [
       "Carry episode_invalid and publication_uncertain in correlated command receipts",

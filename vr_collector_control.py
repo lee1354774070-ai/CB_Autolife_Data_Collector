@@ -334,6 +334,9 @@ class VrSession:
                 self.speak("已保存" if subtasks.get("complete") else "已保存，标注未完成")
             else:
                 self.speak(f"保存成功，共{status.get('total_saved_episodes', 0)}条，本条{status.get('frames', 0)}帧，可以开始下一次采集")
+        elif event == "save_queued":
+            self.state = "idle"
+            self.speak("后台保存中，可以开始下一条")
         elif event == "seal":
             self.state = "idle"
             self.speak("本批已封口，可以开始下一条")
@@ -349,6 +352,23 @@ class VrSession:
         else:
             self.state = "unknown"
             self.speak("收到异常确认，请检查采集终端")
+
+    def accept_background(self, status):
+        if not status:
+            return
+        seen = getattr(self, '_background_seen', set())
+        for result in status.get('completed', []):
+            if result['job_id'] not in seen:
+                seen.add(result['job_id'])
+                self.log(f"[SAVED BACKGROUND] Episode {result['episode_index']} | {result['frames']} frames")
+                self.speak(f"第{result['episode_index'] + 1}条已保存")
+        self._background_seen = seen
+        if status.get('error') and status['error'] != getattr(self, '_background_error', None):
+            self._background_error = status['error']
+            self.log('BACKGROUND SAVE FAILED: ' + status['error'])
+            self.speak('后台保存失败，暂存数据保留，请检查终端')
+        # Completion of a previous episode must never reset the current gesture,
+        # countdown, recording state, or pending command.
 
     def accept_event(self, event):
         if not isinstance(event, dict) or event.get("event") != "episode_invalidated":
@@ -494,7 +514,8 @@ def main():
     previous = read_json(paths.status_file)
     session.status_key = (previous.get("request_id"), previous.get("wall_time"))
     session.status_time = float(previous.get("wall_time", 0))
-    receipts = ReceiptCache((paths.status_file, args.base_dir / ".official_episode_event.json"))
+    receipts = ReceiptCache((paths.status_file, args.base_dir / ".official_episode_event.json",
+                             args.base_dir / ".official_background_saves.json"))
     ready_at = time.monotonic() + 1.0
     input_started_at = time.monotonic()
     input_missing = False
@@ -502,7 +523,8 @@ def main():
     def monitor():
         nonlocal ready_at, input_missing
         now = time.monotonic()
-        status, event = receipts.snapshot()
+        status, event, background = receipts.snapshot()
+        session.accept_background(background)
         session.accept_status(status)
         session.accept_event(event)
         if not process_is_running(pid):

@@ -17,7 +17,12 @@ from collections import Counter, deque
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import Mock, patch
+from unittest.mock import Mock as BaseMock, patch
+
+def Mock(*args, **kwargs):
+    kwargs.setdefault("background_saves", None)  # These are synchronous-path fixtures.
+    kwargs.setdefault("active_episode_index", None)
+    return BaseMock(*args, **kwargs)
 from queue import SimpleQueue, Empty
 from subtask_annotations import SubtaskAnnotations, check_pending_annotations, prepare_annotation
 from dagger_labels import DaggerLabels, success_annotation, validate_features as validate_dagger_features

@@ -84,7 +84,7 @@ wait
             sentinel.write_text('keep')
             with (base / '.official_session.lock').open('a') as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                env = dict(os.environ, OUTPUT_BASE_DIR=directory, COLLECTOR_MODE='keyboard',
+                env = dict(os.environ, COLLECTOR_CAMERA_SESSION_ACTIVE='1', OUTPUT_BASE_DIR=directory, COLLECTOR_MODE='keyboard',
                            VR_CONTROL='0', SUBTASKS_JSON='[]')
                 result = subprocess.run(['bash', str(ROOT / 'start_lerobot_official_collect.sh'), 'test'],
                                         env=env, capture_output=True, text=True, timeout=5)

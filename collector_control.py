@@ -189,6 +189,8 @@ def format_status(status: dict[str, Any]) -> str:
         lines = [f"[STARTED] Episode {episode_index} | Task: {task}"]
     elif event == "seal" and success:
         lines = ["[SEALED] 本批已封口，保持运行，可开始下一条"]
+    elif event == "save_queued" and success:
+        lines = [f"[QUEUED] Episode {episode_index} | 后台保存中，尚未落盘，可开始下一条"]
     elif event == "save" and success:
         lines = [f"[SAVED] Episode {episode_index} | {frames} frames | Task: {task}"]
     elif event == "mark_subtask" and success:

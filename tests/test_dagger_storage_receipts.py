@@ -50,6 +50,21 @@ class StorageReceiptTest(unittest.TestCase):
             finally:
                 os.close(fd)
 
+    def test_queued_save_releases_trial_without_claiming_durable_success(self):
+        node = Mock()
+        node._intervention_id = 'trial-1'
+        node._active_depth = False
+        node._recorder_active = True
+        node._pending_collector_result = None
+        node.get_parameter.return_value.value = 1
+        node._collector.command_and_wait.return_value = CollectorCommandResult(
+            True, True, 'save_queued', 'save-1', episode_index=2, frames=30)
+        self.assertFalse(namespace['_finish_intervention_locked'](node, True, 'test'))
+        self.assertTrue(node._last_finish_queued)
+        self.assertEqual(node._intervention_id, '')
+        self.assertFalse(node._recorder_active)
+        self.assertEqual(node._trace.finish.call_args.args[0], 'save_queued')
+
     def test_known_invalid_failure_clears_pending_but_unknown_retains_request(self):
         for uncertain in (False, True):
             node = Mock()

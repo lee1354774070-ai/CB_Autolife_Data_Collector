@@ -55,8 +55,15 @@ def describe_state(state):
     if trial.get('invalid_reason'):
         recording = '录制失效'
     lines = [f'{title}  ·  {recording}', f"本条 {trial.get('recorded_frames', 0)} 帧  /  人工 {trial.get('expert_frames', 0)} 帧  ·  " + ('已接管' if trial.get('human_takeover') else '完成后按 B 确认自主成功')]
+    background = state.get('background_saves', {})
+    if background.get('pending'):
+        lines.append(f"后台保存中：{background['pending']}条（尚未落盘）")
+    if background.get('completed'):
+        lines.append(f"最近落盘：第{background['completed'][-1]['episode_index'] + 1}条")
+    if background.get('error'):
+        lines.append('后台保存失败，暂存数据保留：' + background['error'])
     notice = state.get('notice', {})
-    error = trial.get('invalid_reason') or state.get('gripper_tracking_warning') or state.get('failure_reason')
+    error = background.get('error') or trial.get('invalid_reason') or state.get('gripper_tracking_warning') or state.get('failure_reason')
     if error:
         lines.append('异常：' + str(error))
     if notice.get('text'):

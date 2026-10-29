@@ -294,6 +294,15 @@ class RecorderStorageTest(unittest.TestCase):
                             add(source=0)
                         outcome = dict(trial_id=node.dagger.trial_id, task_success=True, human_takeover=False) if mode == 'dagger' else None
                         self.assertTrue(node.save_current_episode('test', dagger_outcome=outcome))
+                        self.assertEqual(json.loads(Path(args.status_file).read_text())['event'], 'save_queued')
+                        self.assertEqual(node.saved_episodes, 0)
+                        seed()
+                        self.assertTrue(node.start_episode('concurrent-capture'))
+                        add(source=0)
+                        self.assertTrue(node._poll_background_saves(wait=True))
+                        self.assertTrue(node.is_recording)
+                        self.assertEqual(node.current_episode_frames, 1)
+                        self.assertTrue(node.discard_current_episode('test concurrent discard'))
                         saved = {p: hashlib.sha256(p.read_bytes()).hexdigest()
                                  for group in ('data', 'videos', 'meta', 'annotations')
                                  for p in (root / group).rglob('*') if p.is_file()}
@@ -325,6 +334,8 @@ class RecorderStorageTest(unittest.TestCase):
                             add()
                         outcome = dict(trial_id=node.dagger.trial_id, task_success=True, human_takeover=True) if mode == 'dagger' else None
                         self.assertTrue(node.save_current_episode('test', dagger_outcome=outcome))
+                        self.assertTrue(node.seal_batch('seal-with-pending-save'))
+                        self.assertEqual(node.background_saves.pending, 0)
                         self.assertEqual(node.saved_episodes, 2)
                         self.assertEqual(sum(pq.read_metadata(p).num_rows for p in (root / 'data').rglob('*.parquet')), 6)
                         if mode == 'dagger':
@@ -347,6 +358,7 @@ class RecorderStorageTest(unittest.TestCase):
                                     add(source=int(takeover))
                                 outcome = dict(trial_id=node.dagger.trial_id, task_success=False, human_takeover=takeover)
                                 self.assertTrue(node.save_current_episode('failure-save', dagger_outcome=outcome))
+                                self.assertTrue(node._poll_background_saves(wait=True))
                                 label = json.loads((root / f'annotations/dagger/episode_{node.saved_episodes-1:06d}.json').read_text())
                                 self.assertIs(label['task_success'], False)
                                 self.assertEqual(label['outcome'], 'failure')

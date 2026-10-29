@@ -261,6 +261,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help='Maximum raw-image-plus-overhead GiB admitted per episode; reaching it invalidates, never drops frames.')
     parser.add_argument('--max-episode-seconds', type=float, default=600,
                         help='Maximum wall duration after start, including waits. Exceeding it invalidates the episode.')
+    parser.add_argument('--background-save', action=argparse.BooleanOptionalAction,
+                        default=os.environ.get('BACKGROUND_SAVE', '1') != '0',
+                        help='Durable background saves, at most two pending episodes; 0 rolls back to synchronous saving.')
     parser.add_argument("--vcodec", default="h264", help="RGB video codec passed to LeRobot; h264 favors speed, libsvtav1 favors smaller files.")
     parser.add_argument("--video-crf", type=float, default=None, help="Optional RGB video CRF/quality value.")
     parser.add_argument("--video-preset", default=None, help="Optional RGB video encoder preset.")

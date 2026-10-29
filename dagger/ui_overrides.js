@@ -28,10 +28,13 @@ hgDaggerVisualState = function (status) {
   const notice = status?.notice;
   const mode = String(status?.mode || 'DISARMED');
   return {
-    key: String(invalid || notice?.token || mode),
+    key: String(invalid || notice?.token || mode) + ':' + String(status?.background_saves?.pending ?? '') + ':' + String(status?.background_saves?.completed?.at(-1)?.job_id ?? '') + ':' + String(status?.background_saves?.error ?? ''),
     label: invalid ? `本条失效：${invalid}；Y 丢弃，X 仅全身复位（先保存或丢弃当前条）。`
-      : notice?.text || HG_DAGGER_MODE_LABELS[mode] || mode,
-    color: invalid || notice?.level === 'error' ? '#FF6B6B' : '#7DFFCF',
+      : [notice?.text || HG_DAGGER_MODE_LABELS[mode] || mode,
+          status?.background_saves?.error ? '后台保存失败，暂存数据保留' :
+          status?.background_saves?.pending ? `后台保存中：${status.background_saves.pending}条（尚未落盘）` :
+          status?.background_saves?.completed?.length ? `最近已保存：第${status.background_saves.completed.at(-1).episode_index + 1}条` : ''].filter(Boolean).join(' · '),
+    color: invalid || status?.background_saves?.error || notice?.level === 'error' ? '#FF6B6B' : '#7DFFCF',
     notice: Boolean(invalid || notice?.text)
   };
 };

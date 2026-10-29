@@ -25,7 +25,7 @@ WITH_WAIST="${WITH_WAIST:-0}"
 WITH_EEF_STATE="${WITH_EEF_STATE:-0}"
 WITH_EEF_ACTION="${WITH_EEF_ACTION:-0}"
 for parameter in WITH_HEAD WITH_WAIST WITH_UPPER_WAIST WITH_EEF_STATE WITH_EEF_ACTION \
-    WITH_DEPTH CAMERA_ONLY FALLBACK_ACTION_TO_STATE STREAMING_ENCODING VR_SPEECH DEPTH_USE_LOG START_HAND_PRODUCER; do
+    BACKGROUND_SAVE WITH_DEPTH CAMERA_ONLY FALLBACK_ACTION_TO_STATE STREAMING_ENCODING VR_SPEECH DEPTH_USE_LOG START_HAND_PRODUCER; do
     if [[ -v "${parameter}" && ! "${!parameter}" =~ ^[01]$ ]]; then
         echo "ERROR: ${parameter} must be 0 or 1." >&2
         exit 2
@@ -458,6 +458,13 @@ echo "  F / f   - Seal saved episodes and stay ready (save/discard current episo
 echo "  Q / q   - Save pending data and quit"
 fi
 echo "============================================================"
+
+# A single lightweight monitor prints durable completion, not a new Python
+# process on every keyboard poll. It never sends recorder or robot commands.
+if [ "${VR_CONTROL}" = "0" ] && [ "${BACKGROUND_SAVE:-1}" = "1" ]; then
+    python3 "${SCRIPT_DIR}/background_saves.py" --watch "${BASE_DIR}/.official_background_saves.json" "${RECORDER_PID}" &
+    echo "background_feedback $! ${LOG_PREFIX}.record_lerobot_official.log" >> "${PIDFILE}"
+fi
 
 while true; do
     if [ "${VR_CONTROL}" = "0" ] && [ "${_COLLECTOR_DAGGER_RECORDING:-0}" != "1" ] && [ -f "${EPISODE_EVENT_FILE}" ]; then

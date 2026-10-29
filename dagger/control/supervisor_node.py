@@ -1483,7 +1483,10 @@ class HgDaggerSupervisor(Node):
             self._pending_collector_result = result
             raise RuntimeError("collector result unresolved; trial retained for reconciliation/recovery")
         self._pending_collector_result = None
-        if save and collector_ok and result.event == "save":
+        self._last_finish_queued = bool(save and collector_ok and result.event == "save_queued")
+        if self._last_finish_queued:
+            status = "save_queued"
+        elif save and collector_ok and result.event == "save":
             status = "saved"
         elif not save and collector_ok:
             status = "discarded"
@@ -1762,6 +1765,7 @@ class HgDaggerSupervisor(Node):
                 ) if self._intervention_id and self._recorder_active else {}
             )
             state = {
+                "background_saves": getattr(self._collector, "background", {}),
                 "collector_fifo": str(self._collector.paths[self._depth_next]),
                 "operation_busy": self._button_worker_active or self._session_start_pending,
                 "launcher_pending": self._launcher_pending_action,

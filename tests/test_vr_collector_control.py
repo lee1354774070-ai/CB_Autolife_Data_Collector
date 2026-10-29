@@ -299,6 +299,20 @@ class SessionTest(unittest.TestCase):
         self.assertIn('未保存', self.speech[-1])
         self.assertFalse(any('保存成功' in text for text in self.speech))
 
+    def test_background_completion_does_not_interrupt_current_recording(self):
+        self.session.accept_status(self.receipt('save_queued'))
+        self.assertEqual(self.session.state, 'idle')
+        self.assertEqual(self.speech[-1], '后台保存中，可以开始下一条')
+        self.session.accept_status(self.receipt('start', stamp=101))
+        self.session.accept_background(dict(completed=[dict(job_id='one', episode_index=0, frames=30)]))
+        self.assertEqual(self.session.state, 'recording')
+        count = len(self.speech)
+        self.session.accept_background(dict(completed=[dict(job_id='one', episode_index=0, frames=30)]))
+        self.assertEqual(len(self.speech), count)
+        self.session.accept_background(dict(error='disk full'))
+        self.assertEqual(self.session.state, 'recording')
+        self.assertIn('后台保存失败', self.speech[-1])
+
     def test_seal_receipt_keeps_vr_ready_and_is_announced_once(self):
         for subtask_mode in (False, True):
             self.setUp()

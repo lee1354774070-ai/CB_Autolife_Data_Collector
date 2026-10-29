@@ -299,6 +299,10 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
                     self._set_notice_locked(f"Recording unavailable: {invalid.get('reason')}; output stopped", "error")
                     if not self._button_worker_active:
                         self._spawn_button_worker_locked("invalid-hold", lambda: self._forward_enable(False))
+            background = getattr(self._collector, 'background', {})
+            if isinstance(background, dict) and not background.get('pending') and background.get('completed'):
+                if self._save_notice.get('text', '').startswith('本条后台保存中'):
+                    self._set_notice_locked(f"第{background['completed'][-1]['episode_index'] + 1}条已保存", 'success')
             super()._publish_state()
 
     def _begin_failure_hold(self, reason, *, hold_to_intervene=False):
@@ -526,7 +530,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
         return response
 
     def _seal_collection_batch(self):
-        result = self._collector.command_and_wait(self._active_depth, "seal", timeout=10.0)
+        result = self._collector.command_and_wait(self._active_depth, "seal", timeout=600.0)
         with self._lock:
             self._set_notice_locked(result.message, "success" if result.success else "error")
             self._publish_state()
@@ -561,10 +565,12 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             if not self._intervention_id:
                 self._session_id = ""
                 self._finish_outcome = None
-            message = "本条已保存：" + outcome_kind if saved else ("本条未保存，请检查录制错误" if save else "本条已丢弃")
+            queued = save and getattr(self, "_last_finish_queued", False)
+            message = ("本条后台保存中，尚未落盘：" + outcome_kind if queued else
+                       "本条已保存：" + outcome_kind if saved else ("本条未保存，请检查录制错误" if save else "本条已丢弃"))
             if not disabled:
                 message += "；硬件停用未确认：" + detail
-            self._set_notice_locked(message, "success" if disabled and (saved or not save) else "error")
+            self._set_notice_locked(message, "success" if disabled and (saved or queued or not save) else "error")
             self._publish_state()
 
     def _on_finish_episode(self, request, response):

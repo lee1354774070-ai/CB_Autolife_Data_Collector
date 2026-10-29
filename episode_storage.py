@@ -97,6 +97,7 @@ class StorageBudget:
         self.maximum = int(max_temp_gb * GIB)
         self.max_seconds = max_seconds
         self.bytes = 0
+        self.extra_reserve = 0
         self.started = None
         self._snapshot = None
         self._stop = threading.Event()
@@ -131,7 +132,7 @@ class StorageBudget:
         if error:
             raise StorageLimitError('disk_check_failed: ' + error)
         # Retain an extra raw episode's worth for video encoding/publication.
-        reserve = self.bytes + additional
+        reserve = self.bytes + additional + self.extra_reserve
         available = free - max(0, self.bytes - admitted) - additional
         if available < self.minimum + reserve:
             raise StorageLimitError('disk_reserve_low')

@@ -5,6 +5,8 @@ short lock. A stalled filesystem cannot stall takeover; it makes this cache
 stale, which the supervisor treats as a reason to hold the robot.
 """
 
+import json
+from pathlib import Path
 import threading
 import time
 
@@ -14,6 +16,7 @@ class CachedCollector:
         self.collector = collector
         self.interval = interval
         self._lock = threading.Lock()
+        self.background = {}
         self._selector = (False, "", 0)
         self._snapshot = (self._selector, {}, {}, 0.)
         self._stopped = threading.Event()
@@ -52,6 +55,14 @@ class CachedCollector:
                 selector = self._selector
             depth, trial, since = selector
             try:
+                paths = getattr(self.collector, 'paths', {})
+                if isinstance(paths, dict) and bool(depth) in paths:
+                    path = Path(paths[bool(depth)]).parent / '.official_background_saves.json'
+                    try:
+                        status = json.loads(path.read_text())
+                        self.background = {**status, 'completed': status.get('completed', [])[-1:]}
+                    except FileNotFoundError:
+                        self.background = {}
                 progress = self.collector.progress(depth, trial)
                 invalid = self.collector.invalid_episode_event(depth, since)
             except Exception:
