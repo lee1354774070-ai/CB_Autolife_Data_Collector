@@ -299,6 +299,21 @@ class SessionTest(unittest.TestCase):
         self.assertIn('未保存', self.speech[-1])
         self.assertFalse(any('保存成功' in text for text in self.speech))
 
+    def test_seal_receipt_keeps_vr_ready_and_is_announced_once(self):
+        for subtask_mode in (False, True):
+            self.setUp()
+            self.session.subtask_mode = subtask_mode
+            self.session.state = 'unknown'
+            receipt = self.receipt('seal')
+            receipt['frames'] = 0
+            self.session.accept_status(receipt)
+            self.session.accept_status(receipt)
+            self.assertEqual(self.session.state, 'idle')
+            self.assertEqual(self.speech, ['本批已封口，可以开始下一条'])
+            self.session.on_payload(payload(), 200)
+            self.session.command('start', 200)
+            self.assertIsNotNone(self.session.start_at)
+
     def test_receipt_is_announced_once_and_keyboard_updates_state(self):
         receipt = self.receipt('start')
         self.session.accept_status(receipt)

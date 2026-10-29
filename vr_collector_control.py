@@ -334,6 +334,9 @@ class VrSession:
                 self.speak("已保存" if subtasks.get("complete") else "已保存，标注未完成")
             else:
                 self.speak(f"保存成功，共{status.get('total_saved_episodes', 0)}条，本条{status.get('frames', 0)}帧，可以开始下一次采集")
+        elif event == "seal":
+            self.state = "idle"
+            self.speak("本批已封口，可以开始下一条")
         elif event == "mark_subtask":
             self.state = "recording"
             self.speak("下一步")
