@@ -15,9 +15,11 @@ import shutil
 import threading
 import time
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
+from copy import deepcopy
 
 GIB = 1024 ** 3
+PUBLISHED_GROUPS = ('data', 'videos', 'annotations', 'first_frame')
 
 
 class StorageLimitError(RuntimeError):
@@ -25,43 +27,141 @@ class StorageLimitError(RuntimeError):
 
 
 class AsyncTextLog:
-    """Ordered, bounded log writes; flush/close are command-boundary barriers."""
+    """Ordered, bounded diagnostics with a single caller and worker.
+
+    ``write``, ``write_event`` and ``check`` never wait for disk work. Events
+    are snapshotted at admission and JSON serialization runs in the worker.
+    Queue exhaustion or any worker exception is sticky and fails closed: no
+    admitted record is silently dropped. Only ``flush`` / ``close`` are
+    blocking barriers; a capture callback must NOT call them on an error.
+    """
     def __init__(self, path, max_pending=256):
+        if not isinstance(max_pending, int) or isinstance(max_pending, bool) or max_pending < 1:
+            raise ValueError('sync log queue capacity must be a positive integer')
         self.stream = open(path, 'a', encoding='utf-8')
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='collector-sync-log')
         self.pending = deque()
         self.max_pending = max_pending
         self.error = None
+        self._error_lock = threading.Lock()
+        self._closed = False
 
-    def write(self, text):
-        while self.pending and self.pending[0].done():
+    def _remember_error(self, exc):
+        with self._error_lock:
+            if self.error is None:
+                self.error = exc if isinstance(exc, OSError) else OSError(
+                    f'sync log failed: {type(exc).__name__}: {exc}')
+            return self.error
+
+    def check(self):
+        """Observe completed failures without joining pending disk operations."""
+        remaining = deque()
+        while self.pending:
+            future = self.pending.popleft()
+            if not future.done():
+                remaining.append(future)
+                continue
             try:
-                self.pending.popleft().result()
-            except OSError as exc:
-                self.error = self.error or exc
+                future.result()
+            except Exception as exc:
+                self._remember_error(exc)
+        self.pending = remaining
         if self.error:
             raise self.error
+
+    def _admit(self):
+        if self._closed:
+            raise OSError('sync log is closed')
+        self.check()
         if len(self.pending) >= self.max_pending:
-            self.error = OSError('sync log queue full; storage cannot keep up')
+            raise self._remember_error(OSError('sync log queue full; storage cannot keep up'))
+
+    def _submit(self, function, value):
+        try:
+            future = self.pool.submit(self._execute, function, value)
+            self.pending.append(future)
+            return future
+        except Exception as exc:
+            raise self._remember_error(exc)
+
+    def _execute(self, function, value):
+        try:
+            return function(value)
+        except Exception as exc:
+            # An ordered barrier must see earlier failures even when the
+            # producer has not yet called check() to reap completed futures.
+            raise self._remember_error(exc)
+
+    def write(self, text):
+        self._admit()
+        self._submit(self.stream.write, text)
+
+    def _write_event(self, event):
+        self.stream.write(json.dumps(event, ensure_ascii=False) + '\n')
+
+    def write_event(self, event):
+        """Enqueue an independent event snapshot; encode only in the worker."""
+        self._admit()
+        try:
+            snapshot = deepcopy(event)
+        except Exception as exc:
+            raise self._remember_error(exc)
+        self._submit(self._write_event, snapshot)
+
+    def _flush_barrier(self, _):
+        self.stream.flush()
+        if self.error:
             raise self.error
-        self.pending.append(self.pool.submit(self.stream.write, text))
+
+    def barrier(self) -> Future:
+        """Queue a flush and return its Future without blocking the producer.
+
+        The single worker orders this after every previously admitted write.
+        A different receipt worker may await the returned Future; only the
+        recorder-owner thread may call write/check/flush/close or mutate the
+        pending queue. Later writes are allowed but not covered by this barrier.
+        Earlier errors stay sticky and make the returned Future fail.
+        """
+        self._admit()
+        return self._submit(self._flush_barrier, None)
 
     def flush(self):
+        """Wait for all admitted work and report errors before publication."""
+        if self._closed:
+            raise OSError('sync log is closed')
         while self.pending:
             try:
                 self.pending.popleft().result()
-            except OSError as exc:
-                self.error = self.error or exc
+            except Exception as exc:
+                self._remember_error(exc)
+        try:
+            self.stream.flush()
+        except Exception as exc:
+            self._remember_error(exc)
         if self.error:
             raise self.error
-        self.stream.flush()
 
     def close(self):
+        """Shutdown barrier, never a callback-time error handler."""
+        if self._closed:
+            return
         try:
             self.flush()
+        except Exception as exc:
+            self._remember_error(exc)
         finally:
-            self.pool.shutdown(wait=True)
-            self.stream.close()
+            self._closed = True
+            try:
+                self.pool.shutdown(wait=True)
+            except Exception as exc:
+                self._remember_error(exc)
+            finally:
+                try:
+                    self.stream.close()
+                except Exception as exc:
+                    self._remember_error(exc)
+        if self.error:
+            raise self.error
 
 
 def sync_dir(path):
@@ -221,7 +321,7 @@ class EpisodeStore:
         after = json.loads((self.work / 'meta/info.json').read_text())
         if before['total_episodes'] != expected_episode or after['total_episodes'] != expected_episode + 1:
             raise RuntimeError('episode index changed during publication')
-        files = self._files(self.work, ('data', 'videos', 'annotations'))
+        files = self._files(self.work, PUBLISHED_GROUPS)
         if not any(path.startswith('data/') for path in files):
             raise RuntimeError('finalized episode has no data file')
         if any((self.root / path).exists() for path in files):
@@ -279,7 +379,7 @@ class EpisodeStore:
         files = journal['files']
         for name in files:
             path = Path(name)
-            if path.is_absolute() or '..' in path.parts or not path.parts or path.parts[0] not in ('data', 'videos', 'annotations'):
+            if path.is_absolute() or '..' in path.parts or not path.parts or path.parts[0] not in PUBLISHED_GROUPS:
                 raise RuntimeError('unsafe publication journal path')
         if journal['phase'] == 'prepared':
             previous = self.work / 'previous-meta'

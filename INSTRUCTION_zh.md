@@ -1,214 +1,112 @@
 # Collector 实现说明
 
-日常命令及完整环境参数见 [README](README.md)；本文解释实现边界和扩展约束。
-[English design](INSTRUCTION.md)。历史实测保留在 `docs/validation/`，不混入当前行为说明。
+使用方法、完整参数和四种模式示例见 [README](README.md)；[English](INSTRUCTION.md)。
 
-## 模块与职责
+## 模块边界
 
 | 模块 | 职责 |
 |---|---|
-| `start_lerobot_official_collect.sh` | 选择模式，锁定session目录，准备ROS/解释器，管理自身子进程和终端按键 |
-| `collector_modes.py` | 无副作用解析四种互斥模式及旧开关冲突 |
-| `recorder_config.py` / `launcher_help.py` / `cli_help.py` | 标准库参数校验、环境参数帮助、单参数帮助；不加载ROS/模型 |
-| `record_lerobot_official.py` | 单线程ROS采样、图像FIFO、时间匹配、episode状态机与保存协调 |
-| `robot_schema.py` / `eef_schema.py` | 关节顺序、物理映射、位姿校验/插值、joint/EEF布局清单 |
-| `camera_config.py` / `shm_camera.py` / `time_sync.py` | 相机定义、SHM快照、解码、时间戳与匹配纯函数 |
-| `episode_storage.py` | 空间预算、私有暂存、提交journal、回滚和单写入者锁 |
-| `dagger/capture_image_writer.py` | 四种模式共用的有界异步写图器；目录名不表示仅供DAgger |
-| `collector_control.py` | 非阻塞FIFO、关联回执、摄像头就绪检测及摘要 |
-| `vr_collector_control.py` / `vr_reset.py` | 手势、倒计时、异步确认、TTS；已适配V4的受保护复位 |
-| `subtask_annotations.py` | 有序边界、逐帧标签和sidecar |
-| `dagger/` / `dagger_labels.py` | 宿主/attach、权限仲裁、Thor桥接、来源标签与训练mask |
-| `convert_dataset.py` | 在新目录独立投影state/action及对应统计量、mask |
-| `hand_camera_producer.py` / `shm_camera_topic_bridge.py` | 可选备用JPEG生产者和SHM到ROS桥；默认复用原厂SHM |
-| `tests/` | 无硬件回归、隔离ROS测试和显式运行的真机验证工具 |
+| start_lerobot_official_collect.sh / collector_modes.py | 参数检查、模式分派、会话锁、子进程和键盘 |
+| recorder_config.py / launcher_help.py / cli_help.py | 配置及全量、单参数帮助，避免重复定义 |
+| record_lerobot_official.py | ROS采样、FIFO同步、录制状态机和保存协调 |
+| robot_schema.py / eef_schema.py | 关节映射、末端位姿、单位、插值和schema |
+| shm_camera.py / jpeg_decoding.py / time_sync.py | SHM读取、GPU/CPU解码和时间匹配 |
+| camera_session.py | 明确配置后的四路相机会话切换、复用与恢复 |
+| dagger/capture_image_writer.py | 四种模式共用的有界PNG/TIFF写入器 |
+| episode_storage.py / background_saves.py | 磁盘预算、异步日志、持久化保存队列、提交与恢复 |
+| first_frames.py / extract_first_frames.py | 原始RGB首帧导出、历史数据离线补提 |
+| video_encoding.py | 同步/后台保存共用的硬件编码探针、完整读回与局部适配 |
+| vr_collector_control.py / vr_feedback.py / subtask_annotations.py | 手柄、反馈、子任务边界与回执 |
+| dagger/ / dagger_labels.py | 独立增量控制、权限、Thor接口、纠错mask和结果标签 |
+| convert_dataset.py | 独立state/action投影到新数据集 |
+| scripts/setup_collector_env.py | 不覆盖已有环境的CPU/GPU安装及合成检查 |
 
-`dagger/control/` 是经审核控制基础，`dagger/assets/` 是随版本打包的配置/Web资源。
-`teleop_snapshot/` 是已打补丁的审查快照，不能再次当作补丁输入。
-`SOURCE.json` 和依赖哈希保留来源；不是可随意删除的临时文件。
-`__pycache__/`、`.runtime/` 属于生成物，不提交；运行期间不要删除在用的runtime。
+遥操作快照、补丁、SOURCE.json和依赖哈希是运行/来源契约，不是中间文件。
+tests保留故障注入和回归；Python缓存、临时日志不入库。历史过程记录可从Git历史查看。
 
-## 配置与启动
+## 启动与控制边界
 
-普通/VR/子任务使用原厂控制器；DAgger使用独占增量控制副本。
-入口先校验模式、开关及任务目录名，再用session锁防止两个启动器竞争FIFO。
-数据集另有独立写锁，控制客户端持有从发送到回执的IPC锁；三把锁的作用不同，不能互相替代。
+普通、单人和子任务模式使用原厂遥操作；DAgger使用审核过的增量控制副本。
+启动器先验证参数和锁，再等待完整关节状态，初始化JPEG后端，最后等待相机与数据集就绪。
+有camera_session.json时，相机会话管理可能修改已确认的视觉配置并重启视觉服务；
+未配置时不主动管理视觉服务。具体恢复行为见 [相机会话](CAMERA_SESSION_zh.md)。
+安装器本身不重启服务、不启用电机。独立DAgger的启动自检、权限和复位规则见其专用指南。
 
-新session先接收完整joint状态，再启动可选相机生产者。已有SHM可提前探测，但不录制。
-相机和数据集初始化后才开放按键，不因历史meta存在就认为本次就绪。
-普通模式不自动使能、复位、重启硬件；无需模型和Thor。
-
-S2/S3共用main。ROBOT_ID和ROS_DOMAIN_ID选择话题，ROBOT_TYPE只标记新数据集；
-编号不能推断运动学型号。已有venv/Conda可通过解释器路径复用，不建立S3专属采集环境。
-DAgger另需经审核的DAGGER_ROBOT_PROFILE、URDF/SRDF、控制接口和模型。
-DDS覆盖优先级为COLLECT_CYCLONEDDS_URI、CYCLONEDDS_URI、内置本机回环配置。
+会话锁、数据集写锁、机器人控制锁及请求锁职责不同，不能互相替代。
+ROBOT_ID与ROS_DOMAIN_ID路由话题；ROBOT_TYPE标注型号，不执行S2/S3模型或动作转换。
 
 ## 数据契约
 
-policy向量顺序：左臂7、右臂7、左夹爪、右夹爪、可选头3、可选上腰2或完整腰腿4。
-基础16维，头+上腰21维，全量23维。两种腰部开关互斥。
-关节state/action名称和顺序一致；历史名称仅在物理布局兼容时保留。
-控制器q23顺序为腰腿4、左臂7、右臂7、夹爪2、头3，由robot_schema集中转换。
+基础顺序：左臂7、右臂7、左右夹爪2，再加头部3和上腰2或完整腰腿4。
+WITH_UPPER_WAIST与WITH_WAIST互斥；基础16维、头加上腰21维、全量23维。
+常规模式默认status_target：身体取状态包目标，夹爪取实测位置。
+DAgger强制joint，依据控制器真实发布的身体/夹爪目标及来源回执，不允许state代替action。
 
-| Action来源 | 语义 |
-|---|---|
-| `status_target` | 常规三种模式默认；身体取状态包控制目标，夹爪因无独立目标字段取实测位置 |
-| `joint` | DAgger必需，取已验证控制器的身体/夹爪目标发布记录；非DAgger仅用于已核实的命令源 |
+WITH_EEF_STATE/ACTION独立追加左右末端各XYZ+XYZW，共14维，不含夹爪。
+使用机器人坐标系、米、单位四元数；缺失拒绝，不填零、不用FK猜测。
+实测位置线性插值，四元数最短路径SLERP；action使用不晚于图像时刻的目标。
+EEF action的DAgger专家mask固定0，不能从joint来源推断其专家身份。
+续录校验FPS、相机、关节/EEF/子任务/DAgger字段和深度，维度相同不代表语义兼容。
 
-原厂App可驱动机器人，不代表默认joint命令话题有消息；不能只看发布者数量。
-DAgger禁止实测state回退。已移除的15维eef模式不会自动转换为joint。
-图像特征是 `observation.images.rgbd_head_color/hand_left/hand_right`，可加rgbd_head_depth。
-RGB写入前统一为RGB HWC；depth保留uint16毫米输入，交给LeRobot原生深度编码/量化。
+## 采样与同步
 
-WITH_EEF_STATE/ACTION独立追加14维，不改变joint前缀：左XYZ+XYZW、右XYZ+XYZW。
-数据来自原厂current/target位姿报告；米、机器人坐标系、单位四元数，不添加TCP偏移或FK。
-只接受完整双臂有限数值与非零四元数。实测位置线性插值，姿态最短弧SLERP；
-目标因果保持，不能用实测值或零替代。14维不含夹爪。
+原厂视觉写SHM，Collector只读。左右手使用JPEG流，无直接BGR手部回退。
+ShmCameraReader复用只读文件描述符，每次检查尺寸，检测生产者替换后重新打开；支持旧元数据及SHM2。
+使用pread而非mmap，避免生产者截断文件引发映射SIGBUS；不缓存旧图像作为新帧。
+读取当前发布槽，复制前后核对元数据；不调用SDK sequential，也不保证读取生产者所有帧。
+同次轮询先复制各路图像，再批量解码；时间戳未变化不重复入FIFO。
 
-meta/collector_schema.json记录名称、索引、单位和来源。
-续录校验FPS、feature、深度、joint/EEF布局、子任务及DAgger字段；不能混写不同schema。
-存在字段不等于物理语义已标定，S2/S3也不能仅因同维度就混用训练数据。
+JPEG_DECODER=auto优先nvJPEG，启动失败才回退OpenCV；nvjpeg严格要求GPU，opencv强制CPU。
+GPU输出归一为独立的CPU RGB HWC数组；原始深度不走JPEG。
+运行中GPU错误使本条invalid并停止录制器，不静默换后端、不复用旧图像。
 
-## 图像与时间同步
+图像FIFO默认每路16帧，信号历史默认64条。按参考相机FIFO取帧，其他图像最近时间匹配；
+state使用两侧有效样本插值，action只允许过去的因果目标。
+等待窗口是max(同步误差, state插值跨度)，不是每帧运算时限。
+停流、过旧、同步超限、参考间隔异常、活跃FIFO溢出会使整条invalid，不补帧掩盖。
+不可信时间戳回退接收时间，软件时间差不能作为硬件曝光同步证明。
 
-共享内存由原厂视觉服务写，Collector只读。备用hand producer只在设备空闲且显式配置时使用。
-双手只用hand_left_jpeg/hand_right_jpeg，JPEG解码为BGR再转RGB，不探测旧直接BGR路径。
-头部彩色及深度保持原生路径。
+## 写入、后台保存与恢复
 
-读者识别legacy `<qiiiii` 和SHM2协议。SHM2按metadata公布的active slot取当前快照，
-不是调用SDK sequential读取，也不遍历所有历史slot。复制前后metadata不一致则拒绝该快照，
-下一轮再试；这不能证明未遗漏任何生产者帧，连续性由后续参考帧间隔检查约束。
-一次轮询先批量读取metadata、复制新帧，再解码；相同源时间戳不会重复进FIFO。
+写图队列默认64项/256 MiB，深度保留TIFF及原量化路径。磁盘预算后台刷新；
+超时快照、空间不足、写图/日志失败拒绝继续本条，不影响已发布数据。
+同步日志在单工作线程中序列化写入，有界排队；确认起录/提交前检查屏障。
 
-Unix时间戳归一化后参与匹配；非epoch/不可信遥测时间回退接收时刻。
-接收时刻包含轮询与调度延迟，软件时间差不是硬件曝光同步证据。
+BACKGROUND_SAVE=1为默认：先停止当前条写图，将数组、图像路径、标签和配置固化到
+.collector-queue/<job>/，fsync后返回save_queued。它表示可靠暂存，不表示已发布。
+至多两条待处理；一个低优先级编码进程顺序发布，录制器可继续下一条。
+队列满拒绝起录，不无限堆积；F封口和Q退出等待队列完成。
+保存异常保留raw job，阻止新条，并作废正在采集的未完成条；重启按提交标记恢复，不能手工重发复制数据。
 
-1. 取参考FIFO内严格晚于上一锚点、已等待匹配窗口的最早帧。
-2. 其他相机取最近时间，检查MAX_SYNC_DELTA_SEC及接收年龄。
-3. joint/EEF state取两侧端点插值，检查端点年龄与最大跨度。
-4. action取参考时刻之前的新鲜目标，不使用未来目标。
-5. 完整行加入私有episode，然后移除已消费图像；失败不以跳帧补救。
+BACKGROUND_SAVE=0使用同步保存；有未完成后台job时拒绝切到同步模式。
+两条路径共用：私有工作区、首帧导出、编码器选择、标注、EpisodeStore提交日志。
+首帧来自已接受的第0帧PNG，硬链接到first_frame/{head,left,right}_frame；
+命名如head_episode_00000.png。首帧与episode共同提交/回滚，不能读取保存时的实时相机替代。
 
-等待窗口为max(同步误差, state插值跨度)，默认50ms；并非每帧处理必须在30ms内完成。
-默认30FPS参考间隔误差上限45%，可接受约18.3到48.3ms。
-不能只改数据FPS就假设会降采样硬件源流。FIFO默认每相机16帧，信号缓存每类64条。
-启动前参考FIFO清空，其他相机最多保留一帧跨起点邻居；仍检查时效，不输出起录前参考帧。
+VIDEO_ACCELERATOR=cpu不自动尝试NVENC；auto启动时探测NVENC再VAAPI；
+显式硬件不可用则拒绝，运行中不回退。GPU编码只处理RGB，深度不降精度。
+启动探针核对颜色/范围；每路硬件输出完整解码核对帧数、尺寸、FPS和时间戳，
+回执放annotations/video_encoding。完整读回不等于逐像素无损或模型效果验收。
+后台worker恢复每条提交时的配置，不按当前环境重新选择。
 
-等待未来state/参考帧只增加waiting ticks；停流、过旧、无因果action、同步超限、
-参考间隔异常或录制期FIFO溢出使整条invalid。关闭中的warmup滚动不是有效episode丢帧。
+EpisodeStore只在新工作区写入，不追加改写历史data/videos。先持久化文件与journal，
+再无覆盖发布文件、切换meta、标记committed。prepared回滚；committed只清理，不重复提交。
+后台成功以持久化标记和结果回执为准，成功后清理raw job；清理失败不意味着数据未保存。
+不要删除正在运行的数据集、队列、锁或恢复文件。
 
-## 写入与故障隔离
+## 操作、标注与DAgger
 
-写图队列四种模式共用，默认64任务/256MiB原始输入，满时立即失败而非阻塞或丢帧。
-DAgger无压缩PNG、其他模式轻压缩，depth TIFF；后台异常回传主录制器。
-内存预算不包含FIFO、编码器和所有进程开销。
+统一键位详见README：原厂VR/子任务需双Grip，DAgger不需要；Grip立即人工接管。
+子任务短B标记exclusive end边界，长B提前保存，未确认尾段为-1并标needs_review。
+VR_SUBTASK_B_REARM_SEC要求回执后持续松开B，防止误重复；中途不暂停录制或遍历图片。
 
-磁盘监控后台每0.5秒刷新；逐帧只查缓存及累计字节，快照超过2秒不新鲜就停止本条。
-默认空闲底线2GiB，另留一份当前条目原始大小供编码；单条预算8GiB/600秒，先到先作废。
-不是系统配额，也不保证任何分辨率都能录满600秒。
+DAgger结果与专家mask分开：B成功保存，Y短按丢弃、长按满1秒失败保存；终端K失败保存。
+F只封口不退出；Q退出。X仅复位，忙碌/待处理/结果未知时拒绝。
+dagger.train_mask保留身体与夹爪AND语义，dagger.action_train_mask逐维区分来源；
+held旧目标不能变为新专家动作。模型-only条目mask为0。
+保存成功不表示到位或任务成功，任务结果需人工确认。
 
-每条只写 `.collector-work`，从正式数据复制meta而不复制/追加历史视频和Parquet。
-保存先等待写图、编码、关闭writer、完成标注并刷新同步日志，再提交：
-- fsync新文件和目录，写提交journal；
-- 新数据以拒绝覆盖的硬链接发布，备份并切换meta；
-- 记录committed后清理，后续清理失败不撤销已提交数据。
-
-提交前失败恢复旧meta，仅删除与暂存inode一致的新链接。
-无法确认结果时停止会话，不自动重试/丢弃；重启按journal恢复。
-遗留未提交暂存改名为collector-interrupted目录供检查，不自动删除。
-要求同一文件系统支持hardlink、rename、flock和fsync；不支持时拒绝。
-meta切换期间不支持并发训练或编辑，本机制不保证任意掉电/硬盘损坏场景。
-
-失败先在内存标invalid，即使第一帧尚未计数。D/Y丢弃仅当前暂存。
-同步日志保持缓冲写，避免每帧flush；起录和提交前flush发现错误则拒绝成功，
-错误锁存到会话重启，防止下一条悄悄无日志采集。已提交后诊断失败不撤销已有数据。
-
-正常Q/EOF/中断先停止自身VR helper，再等待recorder完成，不因固定30秒强杀编码。
-DAgger的外层控制栈另有安全停机流程；未确认轨迹不自动保存。
-不关原厂服务，不影响其他任务进程；采集仍需用户明确开始下一条。
-
-## 控制与子任务
-
-FIFO只接受单条原子消息，拒绝普通文件、符号链接、多行注入及超过PIPE_BUF的写入。
-保存回执携带request_id，只有匹配结果才算确认；忙碌拒绝新命令，超时视为未知，不自动重试。
-状态以原子JSON替换；invalid事件与回执均失败时仍保持内存中的invalid状态。
-
-原厂VR：双Grip+面键释放触发，A开始、B保存、Y丢弃；X原厂复位未接入。
-格式错误、失联、多键或松Grip取消手势。倒计时非阻塞，要求新鲜输入。
-异步worker等待回执，ROS继续收消息；回执缓存读盘不在按键回调。
-语音走原厂TTS，未接入原厂振动协议，也没有原厂App内进度叠加。
-
-子任务短B标记、长B松开提前保存，最后标记保存。边界为已接受帧数的exclusive end。
-中间标记只追加边界、后台写小回执，不遍历图片、编码、暂停或重置FIFO。
-保存时回填subtask_index与sidecar。未确认尾段-1、needs_review=true。
-task_index始终是总任务；subtask_index只在本episode计划内解释。
-stock LeRobot不会自动将该字段转成子任务语言，chunk跨边界策略需训练侧决定。
-
-<a id="dagger"></a>
-## DAgger
-
-owned启动单一兼容宿主；attach只读取新鲜状态、调用其操作接口，不产生第二套发布器。
-绑定host/session、机器人、DDS域、数据FIFO；请求有ID和有效期，未知结果不重放。
-attach退出仅断开。未改造旧栈不能热替换；运行副本经哈希校验生成，同事源码不修改。
-
-控制预检检查真实move/joint/gripper输入与独占服务，不将target EEF报告误认为运动输入。
-硬件使能ACK不等于就绪，需新鲜ARMED、enabled、ready并且非pending后才放行模型。
-A先等recorder关联回执；首帧前有最长30秒的新鲜动作/来源屏障，之后不放宽同步。
-
-任一Grip新按下立刻换authority epoch，本地撤销旧模型输出，不等HTTP。
-唯一V4出口在锁内清旧目标/在途IK，增量mapper重新锚定实测关节及当前手柄。
-旧session/epoch的迟到模型、人工目标和释放指令拒绝；接管不自动还权。
-V4关节/碰撞/轨迹/watchdog保护保留，不能用较小目标跟随误差推断动作跳变。
-
-只有V4出口发布硬件指令，并发出含原始时间/来源的controller_output回执。
-代理动作保留原时间和权限，旧保持目标不会因刷新代理时间变成人工示范。
-B确认任务成功并撤销输出后保存；Y丢弃；X只复位，有待处理数据或忙碌则拒绝。
-操作员确认的成功结果写入annotations/dagger/episode_XXXXXX.json，与数据事务一起提交：
-task_success=true，success_source为autonomous（本条从未接管）或human_intervention（曾接管）。
-原有逐帧纠错掩码不改；失败/丢弃不发布成功标注，历史无标注条目保持未知。
-结果不确定时保留原请求ID核对，不重复save，也不在保存中复位。
-
-| 字段 | 训练语义 |
-|---|---|
-| dagger.control_source | 0模型、1人工有效控制、2保持/交接 |
-| dagger.is_intervention / intervention_id | 已接管标志和人工段号，不是loss mask |
-| dagger.authority_epoch | 控制权代次 |
-| dagger.train_mask | 整帧AND：身体与夹爪都满足人工来源才为1 |
-| dagger.action_train_mask | 与action同序，分身体/夹爪验证；追加EEF的14维固定0 |
-| dagger.anchor_timestamp_ns | 图像锚点 |
-| dagger.arm_command_timestamp_ns / gripper_command_timestamp_ns | 原始目标时间，不能用代理刷新时间替代 |
-
-纠错训练必须对chunk每个时间步、每个维度应用mask；只有部分维度纠错时不能先按旧标量mask过滤。
-模型-only条目可保存但mask全0。保存、提交回执不代表到位或任务成功。
-
-当前只支持Thor GR00T baseline/frame的controller_submission_receipts协议。
-controller_ack验证目标前缀/digest，只证明提交，不推进verifier历史。客户端不改动作。
-新Thor通过显式 `gripper_phase=pick|place|continuous` 将任务文本与夹爪阶段分开。
-启动器auto仅精确识别六个已有任务及旧抓袋任务，自定义文本必须选择阶段；旧客户端不传阶段时仍只接受原两个完整任务文本。
-抓取实测达到120度后锁持，放置预测不大于60度释放；连续模式保留原保护。
-详见 [模型与任务切换](INFERENCE_LAUNCHERS_zh.md)，客户端不修改动作或ACK。
-
-状态文件20Hz后台读取，超过1秒不更新撤销输出；DDS图缓存5Hz刷新，过期600ms拒绝输出。
-trace有界2048队列，诊断丢失统计单独记录，不影响训练标签。
-仅接管触发WebXR振动，依赖头显支持；模型仍是串行chunk，未实现RTC，不能承诺零卡顿。
-
-## 离线转换
-
-convert_dataset以源数据共享锁阻止并发续录，拒绝未完事务、符号链接和已有/嵌套输出。
-按批投影Parquet、Arrow/HF布局、全局及逐episode统计量；count不裁剪。
-action mask按同索引投影；任务、标注、帧序与视频偏移不变，视频独立复制。
-全部fsync后用Linux RENAME_NOREPLACE发布新目录，失败清理仅自己的私有输出。
-这是列选择，不是重采样、IK/FK、专家重标注或相对动作计算。
-
-## 验证与维护
-
-```bash
-PYTHONPATH=. /path/to/lerobot/python -B -m unittest discover -s tests -p 'test_*.py'
-node tests/test_feedback.js
-bash -n start_lerobot_official_collect.sh
-```
-
-ROS测试只在独立domain211运行；真机录制用独立目录标记NOT TRAINING DATA。
-软件回归、真实传感器静止录制、现场VR/DAgger运动是不同证据层级，不能互相替代。
-修改schema、资源哈希、存储事务或控制权契约必须补对应回归。
-不要删安全测试或降低同步/存储阈值来换取表面通过。
+离线转换独立选择state/action的joint、EEF或混合表示，同步投影mask、统计量、首帧和标注。
+首帧补提按LeRobot v3 episode的视频偏移解码，不能对共享MP4统一取第0帧。
+所有离线操作必须锁定并避开活动写入；不自动补造历史结果标签。
+验证范围和命令见 [验证指南](ROBOT300_TESTING_zh.md)。

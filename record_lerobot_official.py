@@ -75,6 +75,7 @@ from dagger_labels import (
     validate_features as validate_dagger_features, success_annotation,
 )
 from episode_storage import EpisodeStore, StorageBudget, StorageLimitError
+from first_frames import stage_first_frames
 from eef_schema import (
     EEF_NAMES, SCHEMA_PATH, EefSyncError, capture_schema, parse_eef_pose,
     synchronized_pose, validate_layout,
@@ -82,7 +83,8 @@ from eef_schema import (
 from subtask_annotations import (
     SUBTASK_FEATURE, SubtaskAnnotations, check_pending_annotations, prepare_annotation,
 )
-from shm_camera import frame_to_hwc, read_shm_frame, read_shm_metadata, shm_timestamp_sec
+from shm_camera import PIXEL_FORMAT_MJPEG, ShmCameraReader, frame_to_hwc, read_shm_frame, read_shm_metadata, shm_timestamp_sec
+from jpeg_decoding import select_jpeg_decoder
 from time_sync import (
     frame_interval_error_ratio,
     latest_at_or_before,
@@ -93,6 +95,7 @@ from time_sync import (
     telemetry_timestamps,
     surrounding_samples,
 )
+from video_encoding import accelerated_rgb_encoding, select_encoder, validate_resume_encoding
 
 
 @dataclass
@@ -254,10 +257,12 @@ def make_depth_encoder(args: argparse.Namespace) -> Any | None:
             "Depth recording requires LeRobot >= 0.6 with DepthEncoderConfig. "
         )
     tuning = {}
-    if (args.dagger or getattr(args, "background_save", False)) and args.depth_vcodec == "hevc":
-        # x265's worker pool ignores encoder_threads; bound it within recorder affinity.
+    if args.depth_vcodec == "hevc":
+        # x265 ignores the general encoder thread setting. Every mode must
+        # leave CPU capacity for vision/teleoperation; retain lossless depth.
+        workers = getattr(args, 'depth_encoder_threads', 2)
         tuning = dict(preset="ultrafast", extra_options={
-            "x265-params": "lossless=1:pools=4:frame-threads=1:bframes=0:scenecut=0"})
+            "x265-params": f"lossless=1:pools={workers}:frame-threads=1:bframes=0:scenecut=0"})
     return DepthEncoderConfig(
         vcodec=args.depth_vcodec,
         depth_min=args.depth_min,
@@ -285,6 +290,8 @@ class OfficialLeRobotRecorder(Node):
         # the frame/ROS thread; one outstanding receipt also bounds the queue.
         self.mark_status_writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="subtask_receipt")
         self.mark_status_future = None
+        self.receipt_writer_closed = False
+        self.pending_start_payload = None
         self.schema: RobotSchema = build_robot_schema(
             with_head=args.with_head,
             with_waist=args.with_waist,
@@ -353,6 +360,18 @@ class OfficialLeRobotRecorder(Node):
         self.control_thread: threading.Thread | None = None
         self.last_shm_timestamps: dict[str, int] = {}
         self.reported_image_overflows: set[str] = set()
+        self.shm_readers = ({name: ShmCameraReader(CAMERA_SPECS[name]) for name in args.cameras}
+                            if args.image_source == 'shm' else {})
+        self.hardware_video_encoder = None
+        # Delay CUDA imports/probing until telemetry is ready. The launcher
+        # waits for state before starting cameras; GPU startup must not consume
+        # that state-ready deadline or place CPU warmup frames in a GPU session.
+        self.jpeg_decoder = None
+        self.image_decoding = {
+            'image_source': args.image_source, 'requested_backend': args.jpeg_decoder,
+            'backend': 'upstream_ros' if args.image_source == 'ros' else 'pending',
+            'device': None,
+        }
 
         image_qos = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT)
         if args.image_source == "ros":
@@ -362,7 +381,6 @@ class OfficialLeRobotRecorder(Node):
                 camera_type = "depth" if is_depth_map else "RGB"
                 self.get_logger().info(f"{camera_type} camera {name}: ROS topic {topic}")
         else:
-            self.create_timer(1.0 / float(args.image_poll_fps), self._poll_shm_images)
             for name in args.cameras:
                 self.get_logger().info(
                     f"{'depth' if name in args.depth_cameras else 'RGB'} camera {name}: "
@@ -460,6 +478,19 @@ class OfficialLeRobotRecorder(Node):
         self.latest_images[camera_name] = sample
         buffer.append(sample)
 
+    def start_image_capture(self) -> None:
+        """Select the JPEG backend once, then enable SHM polling after state readiness."""
+        if self.image_decoding['backend'] != 'pending':
+            return
+        if not self.state_buffer:
+            raise RuntimeError('Image capture requires a complete joint-state packet first')
+        self.jpeg_decoder = select_jpeg_decoder(
+            self.args.jpeg_decoder, self.args.jpeg_device, self.get_logger())
+        self.image_decoding.update(
+            backend='nvjpeg' if self.jpeg_decoder is not None else 'opencv',
+            device=str(self.jpeg_decoder.device) if self.jpeg_decoder is not None else None)
+        self.create_timer(1.0 / float(self.args.image_poll_fps), self._poll_shm_images)
+
     def _poll_shm_images(self) -> None:
         """Batch-snapshot SHM metadata, then append new images in FIFO order.
 
@@ -483,7 +514,8 @@ class OfficialLeRobotRecorder(Node):
             # Exactly one SHM source per logical camera. Hands read *_jpeg;
             # no second representation can enter the FIFO for the same frame.
             spec = CAMERA_SPECS[camera_name]
-            metadata = read_shm_metadata(spec)
+            reader = self.shm_readers.get(camera_name)
+            metadata = reader.read_metadata() if reader is not None else read_shm_metadata(spec)
             if (
                 metadata is None
                 or metadata[0] <= 0
@@ -496,21 +528,38 @@ class OfficialLeRobotRecorder(Node):
         # let the depth producer replace the generation captured above.
         copied_frames = []
         for camera_name, (spec, metadata) in metadata_by_camera.items():
-            frame = read_shm_frame(spec, metadata)
+            reader = self.shm_readers.get(camera_name)
+            frame = reader.read_frame(metadata) if reader is not None else read_shm_frame(spec, metadata)
             if frame is None:
                 # One bounded retry on a fresh generation, still before decode.
                 # read_shm_frame validates the metadata pair on both attempts.
-                metadata = read_shm_metadata(spec)
+                metadata = reader.read_metadata() if reader is not None else read_shm_metadata(spec)
                 if (metadata is None or metadata[0] <= 0
                         or self.last_shm_timestamps.get(spec.meta_path) == metadata[0]):
                     continue
-                frame = read_shm_frame(spec, metadata)
+                frame = reader.read_frame(metadata) if reader is not None else read_shm_frame(spec, metadata)
             if frame is None or frame.timestamp_ns != metadata[0]:
                 continue
             copied_frames.append((camera_name, spec, frame, time.time()))
+        # Decode only the JPEGs already present in this poll. Raw color/depth
+        # and all original timestamps keep their existing paths and ordering.
+        jpeg_images = {}
+        decoder = getattr(self, 'jpeg_decoder', None)
+        if decoder is not None:
+            jpeg_frames = [frame for name, _, frame, _ in copied_frames
+                           if name not in self.args.depth_cameras and frame.pixel_format == PIXEL_FORMAT_MJPEG]
+            try:
+                decoded = decoder.decode([(frame.data, frame.width, frame.height) for frame in jpeg_frames]) if jpeg_frames else []
+                jpeg_images = {id(frame): image for frame, image in zip(jpeg_frames, decoded, strict=True)}
+            except Exception as exc:
+                if self.is_recording:
+                    self._invalidate_episode('jpeg_decode_failed', time.time(), error=str(exc))
+                raise RuntimeError(f'GPU JPEG decode failed; recording stopped: {exc}') from exc
         for camera_name, spec, frame, received_sec in copied_frames:
             try:
-                image = frame_to_hwc(frame, camera_name in self.args.depth_cameras, rgb=True)
+                image = jpeg_images.get(id(frame))
+                if image is None:
+                    image = frame_to_hwc(frame, camera_name in self.args.depth_cameras, rgb=True)
             except ValueError as exc:
                 self.get_logger().warn(f"drop {camera_name}: {exc}")
                 continue
@@ -703,7 +752,11 @@ class OfficialLeRobotRecorder(Node):
         subtask_status: dict | None = None,
         task_outcome: dict | None = None,
     ) -> None:
-        """Publish receipts; mid-episode marks use compact asynchronous I/O."""
+        """Publish ordered receipts without blocking an active acquisition.
+
+        Start waits for its ordered log barrier in the receipt worker, not in
+        the ROS callback. Receipt timestamps preserve invalidation precedence.
+        """
 
         if not self.args.status_file:
             return
@@ -747,8 +800,31 @@ class OfficialLeRobotRecorder(Node):
         if task_outcome is not None:
             payload["task_outcome"] = task_outcome
         status_path = Path(self.args.status_file)
-        if event == "mark_subtask":
-            self.mark_status_future = self.mark_status_writer.submit(write_json_atomic, status_path, payload)
+        if event == 'start' and success:
+            self.pending_start_payload = payload
+        pending = self.mark_status_future
+        if (event in {"start", "mark_subtask"} or
+                (pending is not None and not pending.done())) and not getattr(self, 'receipt_writer_closed', False):
+            try:
+                barrier = (self.sync_log.barrier()
+                           if event == 'start' and success and self.sync_log is not None else None)
+                def persist():
+                    if barrier is not None:
+                        barrier.result()
+                    result = payload
+                    if event == 'start' and success and self.episode_invalid:
+                        result = dict(payload, success=False, recording=False, episode_invalid=True,
+                                      message=self.episode_invalid_reason or 'episode invalidated during start')
+                    write_json_atomic(status_path, result)
+                self.mark_status_future = self.mark_status_writer.submit(persist)
+            except Exception as exc:
+                # Admission can fail before submit (e.g. a full log queue).
+                # Route this through the same fail-closed command guard, not
+                # an exception escaping the ROS callback or a blocking flush.
+                from concurrent.futures import Future
+                failed_receipt = Future()
+                failed_receipt.set_exception(exc)
+                self.mark_status_future = failed_receipt
         else:
             try:
                 write_json_atomic(status_path, payload)
@@ -876,6 +952,9 @@ class OfficialLeRobotRecorder(Node):
         # depth configurations fail without leaving a partial dataset shell.
         rgb_encoder = make_rgb_encoder(self.args)
         depth_encoder = make_depth_encoder(self.args)
+        self.hardware_video_encoder = select_encoder(
+            self.args, {(sample.width, sample.height) for sample in active.values()
+                        if not sample.is_depth_map}, self.get_logger())
         output_dir = Path(self.args.output_dir)
         self.episode_store = EpisodeStore(output_dir)
         if not getattr(self.args, 'background_save', False) and any((output_dir / '.collector-queue').glob('*/job.json')):
@@ -889,6 +968,8 @@ class OfficialLeRobotRecorder(Node):
 
         if info_path.exists():
             existing_info = json.loads(info_path.read_text(encoding="utf-8"))
+            if self.hardware_video_encoder is not None:
+                validate_resume_encoding(existing_info)
 
         self._dataset_options = dict(
             repo_id=self.args.repo_id, image_writer_threads=0,
@@ -959,23 +1040,13 @@ class OfficialLeRobotRecorder(Node):
                 write_json_atomic(output_dir / SCHEMA_PATH, self.capture_layout)
 
         if getattr(self.args, 'background_save', False):
-            from background_saves import BackgroundSaves, probe_rgb_encoder
+            from background_saves import BackgroundSaves
             from dataclasses import asdict
             self._capture_info = json.loads(info_path.read_text())
-            background_rgb = rgb_encoder
-            if self.args.vcodec in ('h264', 'h264_nvenc'):
-                try:
-                    background_rgb = RGBEncoderConfig(vcodec='h264_nvenc',
-                        crf=self.args.video_crf if self.args.video_crf is not None else 30,
-                        g=self.args.video_gop or 2, extra_options={'bf': '0'})
-                    probe_rgb_encoder(background_rgb, self._capture_info['features'])
-                except Exception as exc:
-                    if self.args.vcodec == 'h264_nvenc':
-                        raise
-                    background_rgb = rgb_encoder
-                    self.get_logger().warn(f'GPU encoder unavailable; bounded CPU fallback: {exc}')
             self.background_saves = BackgroundSaves(self.episode_store, dict(
-                repo_id=self.args.repo_id, rgb=asdict(background_rgb),
+                repo_id=self.args.repo_id, rgb=asdict(rgb_encoder),
+                encoder_threads=self.args.encoder_threads,
+                hardware_rgb=asdict(self.hardware_video_encoder) if self.hardware_video_encoder else None,
                 depth=asdict(depth_encoder) if depth_encoder is not None else None), autostart=False)
 
         self.storage_budget = StorageBudget(
@@ -1011,6 +1082,7 @@ class OfficialLeRobotRecorder(Node):
         elif self.args.status_file:
             write_json_atomic(Path(self.args.status_file).with_name('.official_background_saves.json'),
                               dict(pending=0, completed=[], error=None))
+        self._log_sync({'event': 'image_decoder_selected', 'wall_time': time.time(), **self.image_decoding})
         self.started_sec = time.time()
         self.create_timer(1.0 / float(self.args.fps), self._record_tick)
         self.get_logger().info(f"active cameras: {', '.join(self.active_cameras)}")
@@ -1190,6 +1262,15 @@ class OfficialLeRobotRecorder(Node):
         self.episode_invalid_reason = reason
         self.is_recording = False
         self._release_motion_lock()
+        pending_start = self.pending_start_payload
+        self.pending_start_payload = None
+        if pending_start is not None:
+            # A start write may already be in progress on a slow mount. Queue
+            # a terminal rejection behind it so command-only clients also see
+            # the invalid result, not just VR's separate episode event file.
+            # Invalidation is latched, so this adds at most one queued receipt.
+            self._write_command_status('start', False, pending_start['request_id'],
+                                       message=reason, episode_index=pending_start.get('episode_index'))
         event = {
                 "event": "episode_invalidated",
                 "reason": reason,
@@ -1263,6 +1344,13 @@ class OfficialLeRobotRecorder(Node):
             return
         started = time.perf_counter()
         try:
+            if self.sync_log is not None:
+                try:
+                    self.sync_log.check()
+                except OSError as exc:
+                    self.sync_log_failed = True
+                    self._invalidate_episode('sync_log_write_failed', time.time(), detail=str(exc))
+                    return
             self.dataset.writer.image_writer.check()
             if self.dagger_progress_future is not None and self.dagger_progress_future.done():
                 self.dagger_progress_future.result()
@@ -1586,18 +1674,15 @@ class OfficialLeRobotRecorder(Node):
         return True
 
     def _log_sync(self, event: dict[str, Any]) -> None:
-        if self.sync_log is None:
+        if self.sync_log is None or self.sync_log_failed:
             return
         try:
-            self.sync_log.write(json.dumps(event, ensure_ascii=False) + "\n")
+            self.sync_log.write_event(event)
         except OSError as exc:
             self.sync_log_failed = True
             self.get_logger().error(f"sync diagnostic log unavailable: {exc}")
-            try:
-                self.sync_log.close()
-            except OSError:
-                pass
-            self.sync_log = None
+            # Keep the object for the controlled shutdown barrier. Joining a
+            # stuck disk worker here would freeze the acquisition callback.
             if self.is_recording:
                 self._invalidate_episode('sync_log_write_failed', time.time(), detail=str(exc))
 
@@ -1702,6 +1787,9 @@ class OfficialLeRobotRecorder(Node):
             return False
         self._reset_episode_state()
         try:
+            # Finish any earlier log work BEFORE establishing the new camera
+            # boundary. The new start record is flushed by its async receipt.
+            self._flush_sync_log()
             self.storage_budget.start()
         except (OSError, RuntimeError) as exc:
             self._release_motion_lock()
@@ -1734,11 +1822,8 @@ class OfficialLeRobotRecorder(Node):
             "episode_index": episode_index,
             "reason": reason,
             "wall_time": time.time(),
+            "image_decoding": self.image_decoding,
         })
-        try:
-            self._flush_sync_log()
-        except OSError as exc:
-            self._invalidate_episode('sync_log_write_failed', time.time(), detail=str(exc))
         if self.episode_invalid:
             self._write_command_status('start', False, request_id, message=self.episode_invalid_reason)
             return False
@@ -1826,6 +1911,7 @@ class OfficialLeRobotRecorder(Node):
             self.storage_budget.refresh()
             self.storage_budget.check(saving=True)
             save_stages["drain_and_storage_check"] = time.perf_counter() - save_started
+            stage_first_frames(self.dataset, self.episode_store.work, episode_index)
             annotation_paths = None
             if self.subtasks.enabled:
                 manifest = self.subtasks.manifest(
@@ -1844,7 +1930,16 @@ class OfficialLeRobotRecorder(Node):
                     raise RuntimeError(f"DAgger outcome already exists: {outcome_path}")
                 write_json_atomic(outcome_path, task_outcome)
             stage_started = time.perf_counter()
-            self.dataset.save_episode(parallel_encoding=False)
+            with accelerated_rgb_encoding(self.dataset, self.hardware_video_encoder) as encoding_receipt:
+                self.dataset.save_episode(parallel_encoding=False)
+            if encoding_receipt is not None:
+                encoding_receipt.update(episode_index=episode_index, frames=episode_frames, fps=int(self.args.fps))
+                encoding_path = (self.episode_store.work / 'annotations/video_encoding'
+                                 / f'episode_{episode_index:06d}.json')
+                encoding_path.parent.mkdir(parents=True, exist_ok=True)
+                if encoding_path.exists():
+                    raise RuntimeError(f'Video encoding receipt already exists: {encoding_path}')
+                write_json_atomic(encoding_path, encoding_receipt)
             save_stages["encode_and_write"] = time.perf_counter() - stage_started
             stage_started = time.perf_counter()
             self.dataset.finalize()
@@ -1928,6 +2023,7 @@ class OfficialLeRobotRecorder(Node):
                 self.subtasks.apply_to_buffer(self.dataset, frames)
                 progress.update(complete=annotation['annotation_complete'], needs_review=annotation['needs_review'])
             receipt = dict(request_id=request_id, task=self.args.task_name, frames=frames,
+                           image_decoding=self.image_decoding,
                            reserved_bytes=self.storage_budget.bytes,
                            expert_frames=self.dagger.expert_frames if self.dagger else 0,
                            subtasks=progress, task_outcome=outcome, reason=reason)
@@ -1966,6 +2062,8 @@ class OfficialLeRobotRecorder(Node):
         try:
             results = background.poll(wait=wait)
         except Exception as exc:
+            if self.is_recording and not self.episode_invalid:
+                self._invalidate_episode('background_save_failed', time.time(), detail=str(exc))
             if not getattr(self, '_background_error_logged', False):
                 self.get_logger().error(f'background save failed; raw data retained: {exc}')
                 self._background_error_logged = True
@@ -2093,11 +2191,16 @@ class OfficialLeRobotRecorder(Node):
             if self.mark_status_future is not None:
                 if not self.mark_status_future.done():
                     return  # Recording timers continue; only commands wait.
+                completed_receipt = self.mark_status_future
+                self.mark_status_future = None
                 try:
-                    self.mark_status_future.result()
+                    completed_receipt.result()
                 except Exception as exc:
                     self._invalidate_episode('receipt_write_failed', time.time(), detail=str(exc))
-                self.mark_status_future = None
+                    if self.mark_status_future is not None:
+                        continue
+                else:
+                    self.pending_start_payload = None
             try:
                 command_line = self.control_queue.get_nowait()
             except Empty:
@@ -2134,6 +2237,16 @@ class OfficialLeRobotRecorder(Node):
     def finish(self) -> None:
         self.stop_requested = True
         self.mark_status_writer.shutdown(wait=True)
+        self.receipt_writer_closed = True
+        pending = self.mark_status_future
+        self.mark_status_future = None
+        if pending is not None:
+            try:
+                pending.result()
+            except Exception as exc:
+                self._invalidate_episode('receipt_write_failed', time.time(), detail=str(exc))
+            else:
+                self.pending_start_payload = None
         try:
             if self.dataset is not None and not self.save_failed:
                 if self.episode_invalid:
@@ -2150,6 +2263,8 @@ class OfficialLeRobotRecorder(Node):
         finally:
             if getattr(self, 'background_saves', None):
                 self.background_saves.close()
+            for reader in self.shm_readers.values():
+                reader.close()
             if self.storage_budget is not None:
                 self.storage_budget.close()
             if self.episode_store is not None:
@@ -2231,7 +2346,8 @@ def main() -> None:
                 "Check the state topic and selected joint schema."
             )
 
-        # Phase 2 starts after the launcher sees the state-ready marker. Wait
+        node.start_image_capture()
+        # Phase 2 starts after state readiness and JPEG initialization. Wait
         # for every requested camera when possible, then let create_dataset()
         # apply MIN_CAMERAS and required-depth checks at the deadline.
         camera_deadline = time.time() + args.camera_warmup_sec

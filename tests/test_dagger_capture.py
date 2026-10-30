@@ -22,6 +22,28 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipIf(module is None, 'requires the deployed LeRobot image-writer API')
 class CaptureTest(unittest.TestCase):
+    def test_singleton_channel_shapes_retain_lerobot_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for shape in ((3, 24, 1), (1, 24, 3)):
+                image = np.zeros(shape, dtype=np.uint8)
+                with self.subTest(shape=shape), patch.object(
+                        module, 'image_array_to_pil_image', side_effect=ValueError('single channel validation')) as convert:
+                    with self.assertRaisesRegex(ValueError, 'single channel validation'):
+                        module.write_capture_image(image, Path(directory) / 'frame.png')
+                    convert.assert_called_once_with(image)
+
+    def test_uint8_fast_path_avoids_pil_roundtrip_without_changing_pixels(self):
+        if not hasattr(module.cv2, 'IMWRITE_PNG_FILTER'):
+            self.skipTest('OpenCV PNG filter control unavailable')
+        rgb = np.random.default_rng(32).integers(0, 256, (24, 32, 3), dtype=np.uint8)
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(module, 'image_array_to_pil_image', side_effect=AssertionError('PIL copy')):
+                for index, source in enumerate((rgb, rgb.transpose(2, 0, 1), rgb[:, ::-1])):
+                    path = Path(directory) / f'fast{index}.png'
+                    module.write_capture_image(source, path)
+                    with Image.open(path) as result:
+                        np.testing.assert_array_equal(np.asarray(result), rgb[:, ::-1] if index == 2 else rgb)
+
     def test_rgb_chw_depth_and_older_opencv_are_lossless(self):
         rng = np.random.default_rng(17)
         rgb = rng.integers(0, 256, (24, 32, 3), dtype=np.uint8)

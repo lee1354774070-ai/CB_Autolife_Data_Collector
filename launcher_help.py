@@ -14,7 +14,7 @@ from recorder_config import build_parser
 # Most environment names map directly to argparse options. Only spelling and
 # launcher-specific defaults differ; keep those exceptions explicit.
 RECORDER_ENV = '''
-COLLECT_FPS IMAGE_SOURCE IMAGE_POLL_FPS WITH_HEAD WITH_UPPER_WAIST WITH_WAIST
+COLLECT_FPS IMAGE_SOURCE IMAGE_POLL_FPS JPEG_DECODER JPEG_DEVICE WITH_HEAD WITH_UPPER_WAIST WITH_WAIST
 WITH_DEPTH WITH_EEF_STATE WITH_EEF_ACTION STATE_EEF_TOPIC ACTION_EEF_TOPIC
 SUBTASKS_JSON ROBOT_TYPE SYNC_REFERENCE_CAMERA MAX_SYNC_DELTA_SEC
 SYNC_IMAGE_BUFFER_SIZE SYNC_SIGNAL_BUFFER_SIZE MIN_CAMERAS MAX_IMAGE_AGE_SEC
@@ -24,8 +24,10 @@ MAX_EPISODE_SECONDS IMAGE_WRITER_MAX_PENDING IMAGE_WRITER_MAX_MB
 BACKGROUND_SAVE IMAGE_WRITER_THREADS ACTION_MODE COLLECT_VCODEC DEPTH_VCODEC DEPTH_MIN
 DEPTH_MAX DEPTH_SHIFT DEPTH_USE_LOG BATCH_ENCODING_SIZE ENCODER_QUEUE_MAXSIZE
 ENCODER_THREADS VIDEO_CRF VIDEO_PRESET VIDEO_GOP VIDEO_FILES_SIZE_IN_MB
+VIDEO_ACCELERATOR VIDEO_FFMPEG_BIN VIDEO_HW_DEVICE VIDEO_HW_QP VIDEO_ENCODING_TIMEOUT_SEC
 DATA_FILES_SIZE_IN_MB STREAMING_ENCODING FALLBACK_ACTION_TO_STATE
 CAMERA_WARMUP_SEC STATE_READY_TIMEOUT_SEC
+DEPTH_ENCODER_THREADS
 '''.split()
 SPELLINGS = {'COLLECT_FPS': 'fps', 'COLLECT_VCODEC': 'vcodec',
              'STATE_READY_TIMEOUT_SEC': 'state-warmup-sec'}
@@ -54,7 +56,7 @@ EXTRA = {
     'VR_INPUT_TOPIC': ('/control_topic_<domain>_<robot>', 'Factory VR input. The reviewed V4 input is /openarmx_teleop_vr_306_v4/vr_input.'),
     'VR_RESET_PREFIX': ('/openarmx_teleop_vr_306_v4', 'Guarded reset/status service prefix for compatible V4 only. Factory X reset is NOT integrated; use the factory reset control.'),
     'CONTROL_ACK_TIMEOUT_SEC': (300, 'Maximum wait for a recorder receipt, in seconds. A timeout is an UNKNOWN outcome: inspect logs, do not retry automatically. Normal shutdown waits for finalization and never kills an encoding job at this deadline.'),
-    'CAMERA_DETECTION_TIMEOUT_SEC': (15, 'Launcher wait for camera/dataset initialization, seconds; separate from recorder warmup.'),
+    'CAMERA_DETECTION_TIMEOUT_SEC': ('45 with SHM auto/nvjpeg or video acceleration; otherwise 15', 'Launcher wait for camera/dataset initialization, seconds; includes GPU decode startup and encoding probes. Does not relax frame synchronization limits. Explicit values override the default.'),
     'START_HAND_PRODUCER': ('auto (0 if devices busy, otherwise 1)', '0 reuses factory JPEG SHM. 1 starts the fallback hand-camera producer; never compete with the vision service for devices.'),
     'CAMERA_ONLY': (0, '1 selects only head color and permits state-as-action fallback. Link diagnostics only, NOT training data.'),
     'ROBOT_PY': ('/home/ubuntu/miniconda3/envs/robot_env/bin/python', 'Interpreter for camera bridge/producer and VR helper; ROS/OpenCV required.'),
@@ -116,7 +118,7 @@ def main(argv=None):
         default, description = values[name]
         print(f'{name} (default: {default if default is not None else "unset"})\n  {description}\n')
     if not requested:
-        print('Keyboard: Enter=start, S=save, D=discard, N=subtask mark, Q=finalize and exit.')
+        print('Keyboard: Enter=start, S=save, D=discard, N=subtask mark, F=seal batch, Q=drain saves and exit.')
         print('VR/subtask: hold GL+GR; A=start, B=save/mark, Y=discard. Factory X reset is not integrated.')
 
 

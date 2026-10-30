@@ -334,4 +334,4 @@ git merge --ff-only origin/main
 每次验收至少记录：机器/IP、源码 commit、Python/LeRobot 版本、schema、测试范围与结果。
 可以在独立日志目录保存 `pip freeze`；不要将密码、私钥、token、数据集或大量安装日志提交 Git。
 
-347 本次部署结果见 [部署与只读验证记录](validation/20261020_s3_347_deployment.md)。
+环境安装见[一键部署](ENVIRONMENT_SETUP_zh.md)，验证边界见[当前验证说明](VALIDATION.md)。

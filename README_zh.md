@@ -9,17 +9,20 @@
 - [Action 来源：常规数采与 DAgger 的区别](README.md#action-modes)
 - [环境准备](README.md#setup)
 - [新机器人部署与SSH密钥登录](docs/NEW_ROBOT_DEPLOYMENT_zh.md)
-- [S3历史采集验收记录](docs/validation/20261016_s3_collection.md)（与S2共用main，使用方法统一见README）
+- [可选GPU视频编码及性能验证](docs/GPU_ENCODING_zh.md)
+- [录制时GPU JPEG解码、像素差异与性能测试](docs/GPU_JPEG_zh.md)
+- [CPU/GPU采集环境一键部署](docs/ENVIRONMENT_SETUP_zh.md)
 - [四种模式使用的遥操作版本](README.md#modes)
 - [键盘数采](README.md#keyboard) / [原厂单人VR](README.md#vr) / [子任务数采](README.md#subtask)
 - [V4增量遥操作与DAgger](README.md#dagger)
 - [续录、输出与故障处理](README.md#data)
+- [为历史数据补提每条episode的三路RGB首帧](README.md#first-frame-extraction)
 - [WITH_EEF_STATE / WITH_EEF_ACTION 与 Joint/EEF 自由组合转换](README.md#conversion)
 - [300测试与验收](ROBOT300_TESTING_zh.md)
 - [实现与数据格式](INSTRUCTION_zh.md)
 
 
-四种采集模式（keyboard、vr、subtask、dagger）均支持采集会话只开启必要四路相机、退出恢复原配置，参见 [四路相机模式与测试](CAMERA_SESSION_zh.md)。300已配置启用，其他机器人需先核验原厂视觉配置路径再启用。
+四种采集模式（keyboard、vr、subtask、dagger）均支持采集会话只开启必要四路相机、退出恢复原配置，参见 [四路相机模式与测试](CAMERA_SESSION_zh.md)。每台机器人需先核验原厂视觉配置路径和本机配置，不会仅根据机器人编号启用。
 
 ## F封口与Q退出（所有采集模式）
 

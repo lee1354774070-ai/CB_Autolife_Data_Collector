@@ -29,6 +29,79 @@ if os.environ.get('ROS_DOMAIN_ID') == '211':
 
 @unittest.skipIf(recorder is None, 'requires ROS + LeRobot and isolated ROS_DOMAIN_ID=211')
 class RecorderStorageTest(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get('COLLECTOR_TEST_NVJPEG') == '1', 'requires opt-in CUDA JPEG decode')
+    def test_nvjpeg_shm_poll_sync_and_real_dataset_save(self):
+        from PIL import Image
+        from shm_camera import ShmFrame, PIXEL_FORMAT_MJPEG
+        recorder.rclpy.init()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / 'dataset'
+                with patch.object(sys, 'argv', ['recorder', '--output-dir', str(root),
+                                               '--vcodec', 'h264',
+                                               '--encoder-threads', '1']):
+                    args = recorder.parse_args([*sys.argv[1:], '--no-background-save'])
+                node = recorder.OfficialLeRobotRecorder(args)
+                node.shm_readers = {}  # Synthetic SHM functions below, never hardware.
+                self.assertIsNone(node.jpeg_decoder)  # No CUDA work before joint readiness.
+                self.assertEqual(args.jpeg_decoder, 'auto')
+                def seed(anchor):
+                    for stamp in (anchor - .005, anchor + .005):
+                        node.state_buffer.append(recorder.StateSample(
+                            np.zeros(16, np.float32), np.ones(16, np.float32), stamp, stamp))
+                    node.start_image_capture()
+                    frames = {}
+                    for i, name in enumerate(args.cameras):
+                        bgr = np.full((64, 64, 3), 40 + 60 * i, np.uint8)
+                        _, encoded = recorder.cv2.imencode('.jpg', bgr)
+                        stamp = round(anchor * 1e9)
+                        frames[name] = ShmFrame(stamp, 64, 64, 3, PIXEL_FORMAT_MJPEG,
+                                                len(encoded), encoded.tobytes())
+                    with patch.object(recorder, 'read_shm_metadata', side_effect=lambda spec: (stamp,)), \
+                         patch.object(recorder, 'read_shm_frame', side_effect=lambda spec, meta: frames[spec.name]), \
+                         patch.object(recorder.time, 'time', return_value=anchor):
+                        node._poll_shm_images()
+                try:
+                    seed(time.time())
+                    self.assertEqual(node.image_decoding['backend'], 'nvjpeg')
+                    node.create_dataset()
+                    self.assertTrue(node.start_episode('synthetic-gpu-jpeg'))
+                    start = time.time() + .1
+                    for i in range(3):
+                        anchor = start + i / 30
+                        seed(anchor)
+                        with patch.object(recorder.time, 'time', return_value=anchor + .06):
+                            node._record_tick()
+                    self.assertFalse(node.episode_invalid, node.episode_invalid_reason)
+                    self.assertEqual(node.current_episode_frames, 3)
+                    self.assertTrue(node.save_current_episode('synthetic-gpu-jpeg'))
+                    for position, value in [('head', 40), ('left', 100), ('right', 160)]:
+                        with Image.open(root / 'first_frame' / f'{position}_frame' / f'{position}_episode_00000.png') as image:
+                            np.testing.assert_array_equal(np.asarray(image), np.full((64, 64, 3), value, np.uint8))
+                    saved = {p: hashlib.sha256(p.read_bytes()).hexdigest()
+                             for folder in ('meta', 'data', 'videos', 'first_frame')
+                             for p in (root / folder).rglob('*') if p.is_file()}
+                    self.assertTrue(node.start_episode('injected-gpu-failure'))
+                    with patch.object(node.jpeg_decoder, 'decode', side_effect=RuntimeError('injected GPU failure')):
+                        with self.assertRaisesRegex(RuntimeError, 'GPU JPEG decode failed'):
+                            seed(time.time() + 1)
+                    self.assertTrue(node.episode_invalid)
+                    self.assertEqual(node.episode_invalid_reason, 'jpeg_decode_failed')
+                finally:
+                    node.finish()
+                    node.destroy_node()
+                self.assertEqual(json.loads((root / 'meta/info.json').read_text())['total_episodes'], 1)
+                for path, digest in saved.items():
+                    self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest)
+                events = [json.loads(line) for line in (root / 'sync_log.jsonl').read_text().splitlines()]
+                selected = next(e for e in events if e['event'] == 'image_decoder_selected')
+                self.assertEqual(selected['backend'], 'nvjpeg')
+                self.assertEqual(selected['requested_backend'], 'auto')
+                self.assertEqual(selected['device'], 'cuda:0')
+                self.assertEqual(next(e for e in events if e['event'] == 'episode_started')['image_decoding']['backend'], 'nvjpeg')
+        finally:
+            recorder.rclpy.shutdown()
+
     def test_eef_flags_real_frame_path_save_resume_and_conversion(self):
         from convert_dataset import convert_dataset
         from eef_schema import SCHEMA_PATH, parse_eef_pose
@@ -49,7 +122,7 @@ class RecorderStorageTest(unittest.TestCase):
                     if with_dagger:
                         argv.extend(['--dagger', '--action-mode', 'joint'])
                     with patch.object(sys, 'argv', argv):
-                        args = recorder.parse_args()
+                        args = recorder.parse_args([*sys.argv[1:], '--no-background-save'])
                     node = recorder.OfficialLeRobotRecorder(args)
                     topics = {subscription.topic_name for subscription in node.subscriptions}
                     self.assertEqual(args.action_arm_topic in topics, with_dagger)
@@ -144,6 +217,9 @@ class RecorderStorageTest(unittest.TestCase):
                     if with_dagger:
                         sidecar = Path('annotations/dagger/episode_000000.json')
                         self.assertEqual((root / sidecar).read_bytes(), (Path(directory) / 'training' / sidecar).read_bytes())
+                    for source in (root / 'first_frame').rglob('*.png'):
+                        copied = Path(directory) / 'training' / source.relative_to(root)
+                        self.assertEqual(copied.read_bytes(), source.read_bytes())
                     # A second real recorder reopens this root without losing
                     # the sidecar during create/resume/empty-workspace cleanup.
                     node = recorder.OfficialLeRobotRecorder(args)
@@ -225,6 +301,9 @@ class RecorderStorageTest(unittest.TestCase):
     def test_four_workflows_save_invalidate_discard_and_resume(self):
         import pyarrow.parquet as pq
         import av
+        from PIL import Image
+        from first_frames import RGB_POSITIONS
+        from extract_first_frames import extract_first_frames
         recorder.rclpy.init()
         try:
             for mode in ('keyboard', 'vr', 'subtask', 'dagger'):
@@ -235,6 +314,14 @@ class RecorderStorageTest(unittest.TestCase):
                             '--task-name', 'SYNTHETIC STORAGE TEST - NOT TRAINING DATA',
                             '--status-file', str(Path(directory) / 'status.json'),
                             '--episode-event-file', str(Path(directory) / 'event.json')]
+                    # Opt-in hardware integration uses only synthetic images
+                    # on isolated DDS. The normal suite remains CPU-portable.
+                    if accelerator := os.environ.get('COLLECTOR_TEST_VIDEO_ACCELERATOR'):
+                        argv += ['--video-accelerator', accelerator, '--video-ffmpeg-bin',
+                                 os.environ.get('COLLECTOR_TEST_FFMPEG', 'ffmpeg')]
+                    # Tiny CPU fixtures are below some hardware encoders'
+                    # minimum dimensions. Hardware checks use camera-sized RGB.
+                    height, width = (480, 640) if accelerator else (64, 64)
                     if mode == 'subtask':
                         argv += ['--subtasks-json', '["pick", "place"]']
                     if mode in ('vr', 'dagger'):
@@ -248,10 +335,10 @@ class RecorderStorageTest(unittest.TestCase):
                         now = time.time()
                         for name in args.cameras:
                             depth = name in args.depth_cameras
-                            image = np.full((64, 64, 1 if depth else 3), 1000 if depth else 80,
+                            image = np.full((height, width, 1 if depth else 3), 1000 if depth else 80,
                                             dtype=np.uint16 if depth else np.uint8)
                             node._store_image(camera_name=name, image=image, stamp_sec=now,
-                                              received_sec=now, width=64, height=64, is_depth_map=depth)
+                                              received_sec=now, width=width, height=height, is_depth_map=depth)
                         node.state_buffer.append(recorder.StateSample(
                             np.zeros(node.schema.size, dtype=np.float32),
                             np.zeros(node.schema.size, dtype=np.float32), now, now))
@@ -260,6 +347,8 @@ class RecorderStorageTest(unittest.TestCase):
                         for name, feature in node.dataset.features.items():
                             if name.startswith('observation.images.'):
                                 frame[name] = node.latest_images[name.removeprefix('observation.images.')].image_hwc
+                                if name.removeprefix('observation.images.') not in args.depth_cameras:
+                                    frame[name] = np.full_like(frame[name], 80 + 30 * node.saved_episodes + 10 * node.current_episode_frames)
                             elif name in ('observation.state', 'action', 'subtask_index') or name.startswith('dagger.'):
                                 frame[name] = np.zeros(feature['shape'], dtype=feature['dtype'])
                         if mode == 'dagger':
@@ -304,9 +393,13 @@ class RecorderStorageTest(unittest.TestCase):
                         self.assertEqual(node.current_episode_frames, 1)
                         self.assertTrue(node.discard_current_episode('test concurrent discard'))
                         saved = {p: hashlib.sha256(p.read_bytes()).hexdigest()
-                                 for group in ('data', 'videos', 'meta', 'annotations')
+                                 for group in ('data', 'videos', 'meta', 'annotations', 'first_frame')
                                  for p in (root / group).rglob('*') if p.is_file()}
                         self.assertEqual(node.saved_episodes, 1)
+                        # Encoder/first-frame failures are injected in the actual
+                        # worker tests; parent monkeypatches do not cross processes.
+                        if node.hardware_video_encoder is not None:
+                            self.assertTrue((root / 'annotations/video_encoding/episode_000000.json').is_file())
                         seed()
                         self.assertTrue(node.start_episode('failed-write'))
                         def fail(*_):
@@ -337,6 +430,13 @@ class RecorderStorageTest(unittest.TestCase):
                         self.assertTrue(node.seal_batch('seal-with-pending-save'))
                         self.assertEqual(node.background_saves.pending, 0)
                         self.assertEqual(node.saved_episodes, 2)
+                        self.assertEqual(len(list((root / 'first_frame').rglob('*.png'))), 6)
+                        for position in RGB_POSITIONS.values():
+                            for episode in range(2):
+                                path = root / 'first_frame' / f'{position}_frame' / f'{position}_episode_{episode:05d}.png'
+                                with Image.open(path) as image:
+                                    self.assertEqual(image.mode, 'RGB')
+                                    np.testing.assert_array_equal(np.asarray(image), np.full((height, width, 3), 80 + 30 * episode, np.uint8))
                         self.assertEqual(sum(pq.read_metadata(p).num_rows for p in (root / 'data').rglob('*.parquet')), 6)
                         if mode == 'dagger':
                             table = pq.read_table(sorted((root / 'data').rglob('*.parquet')),
@@ -376,9 +476,47 @@ class RecorderStorageTest(unittest.TestCase):
                         for path in (root / 'videos').rglob('*.mp4'):
                             with av.open(str(path)) as video:
                                 self.assertEqual(sum(1 for _ in video.decode(video=0)), 3)
+                        if node.hardware_video_encoder is not None:
+                            from lerobot.datasets import LeRobotDataset
+                            dataset = LeRobotDataset('local/hardware-save-test', root=root, video_backend='pyav')
+                            self.assertEqual(len(dataset), node.saved_episodes * 3)
+                            for index in (0, 2, 3, 5):
+                                row = dataset[index]
+                                self.assertEqual(tuple(row['observation.state'].shape), (node.schema.size,))
+                                for camera in args.cameras:
+                                    image = row[f'observation.images.{camera}']
+                                    self.assertEqual(tuple(image.shape[-2:]), (height, width))
+                                    if camera in args.depth_cameras:
+                                        self.assertLess(abs(float(image.float().mean()) - 1000), 10)
+                                    else:
+                                        expected = (80 + 30 * (index // 3) + 10 * (index % 3)) / 255
+                                        self.assertLess(abs(float(image.mean()) - expected), .03)
                     finally:
                         node.finish()
                         node.destroy_node()
+                    # Backfill only temporary synthetic fixtures, after releasing
+                    # the recorder lock. Exercise actual v3 writer metadata/codecs.
+                    before = {p: hashlib.sha256(p.read_bytes()).hexdigest()
+                              for group in ('meta', 'data', 'videos', 'annotations')
+                              for p in (root / group).rglob('*') if p.is_file()}
+                    kept = {}
+                    for path in (root / 'first_frame').rglob('*.png'):
+                        if path.name.endswith('00001.png'):
+                            path.unlink()
+                        else:
+                            kept[path] = path.read_bytes()
+                    self.assertEqual(extract_first_frames(root, report=lambda text: None),
+                                     {'episodes': node.saved_episodes, 'saved': 3,
+                                      'skipped': (node.saved_episodes - 1) * 3})
+                    for position in RGB_POSITIONS.values():
+                        with Image.open(root / 'first_frame' / f'{position}_frame' / f'{position}_episode_00001.png') as image:
+                            self.assertEqual(image.size, (width, height))
+                            self.assertEqual(image.mode, 'RGB')
+                            self.assertLess(abs(float(np.asarray(image).mean()) - 110), 4)
+                    for path, value in kept.items():
+                        self.assertEqual(path.read_bytes(), value)
+                    for path, digest in before.items():
+                        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest)
         finally:
             recorder.rclpy.shutdown()
 

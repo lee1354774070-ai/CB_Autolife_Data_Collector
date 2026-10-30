@@ -224,7 +224,7 @@ def convert_dataset(source, destination, *, state="all", action="all"):
         new_info, new_layout, projections = project_layout(info, layout, (state, action))
         stats = project_stats(read_json(source / "meta/stats.json"), projections)
         files = []
-        for group in ("meta", "data", "videos", "annotations"):
+        for group in ("meta", "data", "videos", "annotations", "first_frame"):
             parent = source / group
             if parent.is_symlink():
                 raise ValueError(f"Symlink source group is not supported: {parent}")

@@ -78,7 +78,9 @@ def main():
         pump_until(lambda: not supervisor._button_worker_active, 150)
     try:
         recorder.start_control_listener()
-        pump_until(lambda: recorder.all_requested_cameras_seen() and bool(recorder.state_buffer), 10)
+        pump_until(lambda: bool(recorder.state_buffer), 10)
+        recorder.start_image_capture()
+        pump_until(lambda: recorder.all_requested_cameras_seen(), 10)
         recorder.create_dataset()
         for trial in range(3):
             grip[0] = False

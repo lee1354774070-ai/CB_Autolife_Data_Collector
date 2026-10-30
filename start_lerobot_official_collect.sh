@@ -324,6 +324,8 @@ RECORDER_ARGS=(
     --fps "${COLLECT_FPS}"
     --image-source "${IMAGE_SOURCE}"
     --image-poll-fps "${IMAGE_POLL_FPS}"
+    --jpeg-decoder "${JPEG_DECODER:-auto}"
+    --jpeg-device "${JPEG_DEVICE:-cuda:0}"
     --state-warmup-sec "${STATE_READY_TIMEOUT_SEC:-10}"
     --camera-warmup-sec "${CAMERA_WARMUP_SEC:-10}"
     --state-ready-file "${STATE_READY_FILE}"
@@ -345,6 +347,12 @@ RECORDER_ARGS=(
     --image-writer-threads "${IMAGE_WRITER_THREADS:-4}"
     --action-mode "${ACTION_MODE:-status_target}"
     --vcodec "${COLLECT_VCODEC:-h264}"
+    --video-accelerator "${VIDEO_ACCELERATOR:-cpu}"
+    --video-ffmpeg-bin "${VIDEO_FFMPEG_BIN:-ffmpeg}"
+    --video-hw-device "${VIDEO_HW_DEVICE:-/dev/dri/renderD128}"
+    --video-hw-qp "${VIDEO_HW_QP:-23}"
+    --video-encoding-timeout-sec "${VIDEO_ENCODING_TIMEOUT_SEC:-600}"
+    --depth-encoder-threads "${DEPTH_ENCODER_THREADS:-2}"
     --depth-vcodec "${DEPTH_VCODEC:-hevc}"
     --depth-min "${DEPTH_MIN:-0.05}"
     --depth-max "${DEPTH_MAX:-10.0}"
@@ -423,11 +431,19 @@ fi
 echo "  logs              : ${LOG_PREFIX}.*.log"
 echo ""
 echo "Waiting for camera warmup and dataset initialization ..."
+camera_ready_timeout=15
+# GPU decode initialization runs after state readiness, before camera warmup.
+# Include it and video probes in the launcher deadline, never in sync limits.
+# An explicit operator timeout always wins.
+if [ "${VIDEO_ACCELERATOR:-cpu}" != "cpu" ] || \
+   { [ "${IMAGE_SOURCE}" = "shm" ] && [ "${JPEG_DECODER:-auto}" != "opencv" ]; }; then
+    camera_ready_timeout=45
+fi
 python3 "${CONTROL_SCRIPT}" cameras \
     --dataset-root "${DATASET_ROOT}" \
     --recorder-log "${LOG_PREFIX}.record_lerobot_official.log" \
     --pid "${RECORDER_PID}" \
-    --timeout "${CAMERA_DETECTION_TIMEOUT_SEC:-15}"
+    --timeout "${CAMERA_DETECTION_TIMEOUT_SEC:-${camera_ready_timeout}}"
 
 if [ "${VR_CONTROL}" = "1" ]; then
     # Keep VR output in this terminal and in the session log. Only the helper

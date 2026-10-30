@@ -1,6 +1,8 @@
 """No ROS/hardware: real four-camera encoding, queue recovery and publication."""
 import json
 from pathlib import Path
+import shutil
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -20,6 +22,14 @@ except ImportError:
 @unittest.skipIf(LeRobotDataset is None, 'requires robot LeRobot environment')
 class BackgroundSaveTest(unittest.TestCase):
     def test_queue_four_cameras_labels_recovery_and_history(self):
+        self._exercise_queue(hardware_adapter=False)
+
+    def test_hardware_adapter_worker_and_first_frame_publication(self):
+        # CPU FFmpeg exercises the same adapter and subprocess boundary without
+        # requiring a GPU. Opt-in recorder tests cover actual NVENC/VAAPI.
+        self._exercise_queue(hardware_adapter=True)
+
+    def _exercise_queue(self, hardware_adapter):
         import pyarrow.parquet as pq
         from dataclasses import asdict
         with tempfile.TemporaryDirectory(prefix='background-save-test-') as tmp:
@@ -38,6 +48,12 @@ class BackgroundSaveTest(unittest.TestCase):
             shell.finalize()
             store = EpisodeStore(root)
             options=dict(repo_id='local/background_test',rgb=asdict(rgb),depth=asdict(depth))
+            if hardware_adapter:
+                from video_encoding import HardwareVideoEncoder
+                binary = shutil.which('ffmpeg') or str(Path(sys.prefix) / 'bin/ffmpeg')
+                if not Path(binary).is_file():
+                    self.skipTest('requires FFmpeg; never probes GPU')
+                options['hardware_rgb'] = asdict(HardwareVideoEncoder('cpu', binary))
             q=BackgroundSaves(store,options)
             def capture(index):
                 ds=LeRobotDataset.create('local/background_test',root=q.new_capture(),fps=30,features=features,
@@ -67,13 +83,17 @@ class BackgroundSaveTest(unittest.TestCase):
                 ds=capture(1)
                 q.submit(ds,1,dict(frames=8,task='test',expert_frames=4))
                 with self.assertRaisesRegex(RuntimeError,'queue full'):q.new_capture()
-                with patch('background_saves.shutil.rmtree'):
-                    results=q.poll(wait=True)  # Simulate crash before committed raw cleanup.
+                with patch('background_saves.shutil.rmtree', side_effect=OSError('injected cleanup failure')):
+                    try:
+                        results=q.poll(wait=True)  # Simulate crash before committed raw cleanup.
+                    except RuntimeError as exc:
+                        self.fail(str(exc) + '\n' + (q.root/'encoder.log').read_text()[-5000:])
                 q.close()
                 q=BackgroundSaves(store,options)
                 self.assertEqual(q.pending,0)
                 self.assertEqual(list(q.root.glob('*/job.json')),[])
                 self.assertEqual([x['episode_index'] for x in results],[0,1])
+                self.assertIsNone(q.error)
                 self.assertEqual(json.loads((root/'meta/info.json').read_text())['total_episodes'],2)
                 for e in range(2):
                     table=pq.read_table(root/f'data/chunk-000/file-{e:03d}.parquet').to_pydict()
@@ -87,6 +107,31 @@ class BackgroundSaveTest(unittest.TestCase):
                 for i in [0,7,8,15]:self.assertEqual(tuple(reader[i]['observation.images.rgbd_head_depth'].shape),(1,32,32))
                 self.assertTrue((root/'annotations/subtasks/episode_000000.json').exists())
                 self.assertTrue((root/'annotations/dagger/episode_000000.json').exists())
+                from PIL import Image
+                for index in range(2):
+                    for position in ('head', 'left', 'right'):
+                        with Image.open(root / 'first_frame' / f'{position}_frame' / f'{position}_episode_{index:05d}.png') as image:
+                            np.testing.assert_array_equal(np.asarray(image), np.zeros((32,32,3), np.uint8))
+                if hardware_adapter:
+                    self.assertEqual(len(list((root/'annotations/video_encoding').glob('*.json'))), 2)
+                q.close()
+                # Fail the worker on an actually missing raw first frame. The
+                # publication and all historical files must remain unchanged.
+                import hashlib
+                before = {p:hashlib.sha256(p.read_bytes()).digest()
+                          for group in ('meta','data','videos','annotations','first_frame')
+                          for p in (root/group).rglob('*') if p.is_file()}
+                q=BackgroundSaves(store,options,autostart=False)
+                ds=capture(2)
+                q.submit(ds,2,dict(frames=8,task='test',expert_frames=4))
+                next(Path(ds.root).rglob('frame-000000.png')).unlink()
+                q.start()
+                with self.assertRaises(RuntimeError):q.poll(wait=True)
+                self.assertEqual(json.loads((root/'meta/info.json').read_text())['total_episodes'],2)
+                self.assertEqual(len(list(q.root.glob('*/buffer.npz'))),1)
+                for p,digest in before.items():
+                    self.assertEqual(hashlib.sha256(p.read_bytes()).digest(),digest)
+                with self.assertRaisesRegex(RuntimeError,'background save failed'):q.new_capture()
             finally:
                 q.close();store.close()
 

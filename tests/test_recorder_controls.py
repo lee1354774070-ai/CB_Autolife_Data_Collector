@@ -12,7 +12,7 @@ import time
 import tempfile
 import threading
 import unittest
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from collections import Counter, deque
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,11 +22,16 @@ from unittest.mock import Mock as BaseMock, patch
 def Mock(*args, **kwargs):
     kwargs.setdefault("background_saves", None)  # These are synchronous-path fixtures.
     kwargs.setdefault("active_episode_index", None)
+    kwargs.setdefault("_last_shm_poll_sec", time.time())
+    kwargs.setdefault("shm_readers", {})
     return BaseMock(*args, **kwargs)
 from queue import SimpleQueue, Empty
 from subtask_annotations import SubtaskAnnotations, check_pending_annotations, prepare_annotation
 from dagger_labels import DaggerLabels, success_annotation, validate_features as validate_dagger_features
 from episode_storage import StorageLimitError
+from first_frames import stage_first_frames
+from video_encoding import accelerated_rgb_encoding
+from shm_camera import PIXEL_FORMAT_MJPEG
 
 
 SOURCE = Path(__file__).resolve().parents[1] / 'record_lerobot_official.py'
@@ -35,20 +40,36 @@ methods = [item for cls in tree.body if isinstance(cls, ast.ClassDef)
            for item in cls.body if isinstance(item, ast.FunctionDef)
            and item.name in {'start_episode', '_reset_episode_state', 'mark_subtask', 'seal_batch',
                              'save_current_episode', 'discard_current_episode', 'finish', '_clear_warmup_images',
-                             '_invalidate_episode', '_record_tick', '_record_frame', '_log_sync', '_flush_sync_log'}]
+                             '_invalidate_episode', '_record_tick', '_record_frame', '_log_sync', '_flush_sync_log',
+                             '_poll_background_saves'}]
 methods.extend(item for cls in tree.body if isinstance(cls, ast.ClassDef)
                for item in cls.body if isinstance(item, ast.FunctionDef)
-               and item.name in {'_write_command_status', 'process_control_commands', '_control_fifo_loop', '_validate_resume_schema', '_poll_shm_images'})
+               and item.name in {'_write_command_status', 'process_control_commands', '_control_fifo_loop', '_validate_resume_schema', '_poll_shm_images', 'start_image_capture'})
 methods.extend(item for item in tree.body if isinstance(item, ast.FunctionDef) and item.name in {'write_json_atomic', 'make_depth_encoder'})
 namespace = {'time': time, 'Path': Path, 'os': os, 'json': json, 'prepare_annotation': prepare_annotation,
              'argparse': __import__('argparse'),
              'Any': Any, 'Empty': Empty, 'validate_dagger_features': validate_dagger_features,
              'shutil': shutil, 'StorageLimitError': StorageLimitError,
-             'success_annotation': success_annotation}
+             'success_annotation': success_annotation,
+             'PIXEL_FORMAT_MJPEG': PIXEL_FORMAT_MJPEG,
+             'accelerated_rgb_encoding': accelerated_rgb_encoding, 'stage_first_frames': stage_first_frames}
 exec(compile(ast.Module(body=methods, type_ignores=[]), str(SOURCE), 'exec'), namespace)
 
 
 class RecorderControlsTest(unittest.TestCase):
+    def test_background_failure_invalidates_only_active_capture(self):
+        for active in (False, True):
+            node = Mock(is_recording=active, episode_invalid=False, saved_episodes=3,
+                        _background_error_logged=False)
+            node.background_saves = Mock()
+            node.background_saves.poll.side_effect = RuntimeError('injected encoder failure')
+            self.assertFalse(namespace['_poll_background_saves'](node))
+            self.assertEqual(node.saved_episodes, 3)
+            if active:
+                self.assertEqual(node._invalidate_episode.call_args.args[0], 'background_save_failed')
+            else:
+                node._invalidate_episode.assert_not_called()
+
     def test_seal_does_not_stop_or_save_pending_data(self):
         with tempfile.TemporaryDirectory() as tmp:
             node = Mock(is_recording=False, save_failed=False, episode_invalid=False,
@@ -73,10 +94,10 @@ class RecorderControlsTest(unittest.TestCase):
                 result = namespace['make_depth_encoder'](args)
                 self.assertEqual([result[k] for k in ('depth_min','depth_max','shift','use_log')],
                                  [.05,10.,3.5,True])
-                if dagger and codec == 'hevc':
+                if codec == 'hevc':
                     self.assertEqual(result['preset'], 'ultrafast')
                     self.assertEqual(result['extra_options']['x265-params'],
-                                     'lossless=1:pools=4:frame-threads=1:bframes=0:scenecut=0')
+                                     'lossless=1:pools=2:frame-threads=1:bframes=0:scenecut=0')
                 else:
                     self.assertNotIn('extra_options', result)
                 args.with_depth = False
@@ -116,12 +137,53 @@ class RecorderControlsTest(unittest.TestCase):
             delta = (body['timestamp_ns'] / 1e9 - fresh.stamp_sec) * 1000
             labels = node.dagger.frame(fresh.stamp_sec, {'action_body': delta, 'action_gripper': delta}, .5)
             self.assertEqual(labels['dagger.action_train_mask'], [1] * 21)
+    def test_backend_selection_waits_for_state_and_starts_exactly_one_timer(self):
+        for decoder in (None, SimpleNamespace(device='cuda:0')):
+            node = Mock()
+            node.image_decoding = {'backend': 'pending'}
+            node.state_buffer = []
+            node.args = SimpleNamespace(jpeg_decoder='auto', jpeg_device='cuda:0', image_poll_fps=120)
+            selector = Mock(return_value=decoder)
+            with patch.dict(namespace, select_jpeg_decoder=selector):
+                with self.assertRaisesRegex(RuntimeError, 'joint-state packet'):
+                    namespace['start_image_capture'](node)
+                selector.assert_not_called()
+                node.create_timer.assert_not_called()
+                node.state_buffer.append(object())
+                namespace['start_image_capture'](node)
+                namespace['start_image_capture'](node)
+                selector.assert_called_once()
+                node.create_timer.assert_called_once_with(1/120, node._poll_shm_images)
+                self.assertIs(node.jpeg_decoder, decoder)
+                self.assertEqual(node.image_decoding['backend'], 'nvjpeg' if decoder else 'opencv')
+
+    def test_strict_gpu_failure_does_not_enable_camera_polling(self):
+        node = Mock()
+        node.image_decoding = {'backend': 'pending'}
+        node.state_buffer = [object()]
+        node.args = SimpleNamespace(jpeg_decoder='nvjpeg', jpeg_device='cuda:0')
+        with patch.dict(namespace, select_jpeg_decoder=Mock(side_effect=RuntimeError('no GPU'))):
+            with self.assertRaisesRegex(RuntimeError, 'no GPU'):
+                namespace['start_image_capture'](node)
+        node.create_timer.assert_not_called()
+        self.assertEqual(node.image_decoding['backend'], 'pending')
+
+    def test_ros_images_never_initialize_nvjpeg(self):
+        node = Mock()
+        node.image_decoding = {'backend': 'upstream_ros'}
+        selector = Mock()
+        with patch.dict(namespace, select_jpeg_decoder=selector):
+            namespace['start_image_capture'](node)
+        selector.assert_not_called()
+        node.create_timer.assert_not_called()
 
     def test_jpeg_only_poll_deduplicates_and_never_probes_bgr(self):
         from camera_config import CAMERA_SPECS
         spec = CAMERA_SPECS['hand_left']
         node = Mock()
         node._last_shm_poll_sec = time.time()
+        node.shm_readers = {}
+        node.jpeg_decoder = None
         node.args = SimpleNamespace(cameras=['hand_left'], depth_cameras=[])
         node.dataset = None
         node.last_shm_timestamps = {spec.meta_path: 1}
@@ -159,6 +221,8 @@ class RecorderControlsTest(unittest.TestCase):
         cameras = ['hand_left', 'hand_right', 'rgbd_head_depth']
         node = Mock()
         node._last_shm_poll_sec = time.time()
+        node.shm_readers = {}
+        node.jpeg_decoder = None
         node.args = SimpleNamespace(cameras=cameras, depth_cameras=['rgbd_head_depth'])
         node.dataset = None
         node.last_shm_timestamps = {}
@@ -183,6 +247,8 @@ class RecorderControlsTest(unittest.TestCase):
         for succeeds in (False, True):
             node = Mock()
             node._last_shm_poll_sec = time.time()
+            node.shm_readers = {}
+            node.jpeg_decoder = None
             node.args = SimpleNamespace(cameras=['rgbd_head_depth'], depth_cameras=['rgbd_head_depth'])
             node.dataset = None
             node.last_shm_timestamps = {}
@@ -199,10 +265,59 @@ class RecorderControlsTest(unittest.TestCase):
             else:
                 node._store_image.assert_not_called()
 
+    def test_gpu_poll_batches_only_copied_jpegs_and_keeps_timestamps(self):
+        from camera_config import CAMERA_SPECS
+        cameras = ['hand_left', 'hand_right', 'rgbd_head_depth']
+        node = Mock()
+        node.args = SimpleNamespace(cameras=cameras, depth_cameras=['rgbd_head_depth'])
+        node.dataset, node.last_shm_timestamps = None, {}
+        copied = []
+        outputs = [object(), object()]
+        def read(spec, metadata):
+            copied.append(spec.name)
+            return SimpleNamespace(timestamp_ns=123, width=2, height=1, data=spec.name.encode(),
+                                   pixel_format=2 if spec.name.endswith('depth') else PIXEL_FORMAT_MJPEG)
+        def decode(frames):
+            self.assertEqual(copied, cameras)
+            self.assertEqual(frames, [(b'hand_left', 2, 1), (b'hand_right', 2, 1)])
+            return outputs
+        node.jpeg_decoder.decode.side_effect = decode
+        with patch.dict(namespace, CAMERA_SPECS=CAMERA_SPECS, read_shm_metadata=lambda spec: (123,),
+                        read_shm_frame=read, frame_to_hwc=Mock(return_value='depth'),
+                        shm_timestamp_sec=lambda stamp, now: stamp):
+            namespace['_poll_shm_images'](node)
+            calls = node._store_image.call_args_list
+            self.assertEqual([c.kwargs['image'] for c in calls], [*outputs, 'depth'])
+            self.assertEqual([c.kwargs['stamp_sec'] for c in calls], [123]*3)
+            namespace['_poll_shm_images'](node)
+            self.assertEqual(node._store_image.call_count, 3)
+
+    def test_gpu_decode_error_invalidates_and_does_not_publish_partial_batch(self):
+        from camera_config import CAMERA_SPECS
+        node = Mock()
+        node.args = SimpleNamespace(cameras=['hand_left'], depth_cameras=[])
+        node.dataset, node.last_shm_timestamps, node.is_recording = None, {}, True
+        node.jpeg_decoder.decode.side_effect = RuntimeError('injected GPU failure')
+        frame = SimpleNamespace(timestamp_ns=1, width=2, height=1, data=b'bad', pixel_format=PIXEL_FORMAT_MJPEG)
+        with patch.dict(namespace, CAMERA_SPECS=CAMERA_SPECS, read_shm_metadata=lambda spec: (1,),
+                        read_shm_frame=lambda *a: frame):
+            with self.assertRaisesRegex(RuntimeError, 'GPU JPEG decode failed'):
+                namespace['_poll_shm_images'](node)
+        node._store_image.assert_not_called()
+        node._invalidate_episode.assert_called_once()
+        self.assertEqual(node._invalidate_episode.call_args.args[0], 'jpeg_decode_failed')
+        self.assertEqual(node.last_shm_timestamps, {})
+
     def recorder(self):
         node = Mock()
         node.dagger = None
+        node.hardware_video_encoder = None
+        node.shm_readers = {}
+        node.receipt_writer_closed = False
+        node.mark_status_future = None
+        node.pending_start_payload = None
         node.dataset = object()
+        node.image_decoding = {'backend': 'opencv', 'device': None}
         node.subtasks = SubtaskAnnotations(())
         node.save_failed = False
         node.sync_log_failed = False
@@ -227,7 +342,7 @@ class RecorderControlsTest(unittest.TestCase):
         node = self.recorder()
         node.args = SimpleNamespace(episode_event_file=None)
         node.sync_log = Mock()
-        node.sync_log.write.side_effect = OSError('disk full')
+        node.sync_log.write_event.side_effect = OSError('disk full')
         node._log_sync = lambda event: namespace['_log_sync'](node, event)
         node._flush_sync_log = lambda: namespace['_flush_sync_log'](node)
         node._invalidate_episode = lambda *a, **kw: namespace['_invalidate_episode'](node, *a, **kw)
@@ -236,6 +351,7 @@ class RecorderControlsTest(unittest.TestCase):
         self.assertFalse(node.is_recording)
         self.assertTrue(node.episode_invalid)
         self.assertEqual(node._write_command_status.call_args.args, ('start', False, 'request'))
+        node.sync_log.close.assert_not_called()
         namespace['_reset_episode_state'](node)
         self.assertFalse(namespace['start_episode'](node, 'retry', 'second'))
         self.assertIn('sync log failed', node._write_command_status.call_args.kwargs['message'])
@@ -280,6 +396,15 @@ class RecorderControlsTest(unittest.TestCase):
         self.assertTrue(namespace['start_episode'](node, 'test'))
         self.assertEqual(node.storage_budget.started, 123)
 
+    def test_start_flushes_old_diagnostics_before_establishing_capture_boundary(self):
+        node = self.recorder()
+        def flush_old_log():
+            self.assertFalse(node.is_recording)
+            self.assertEqual(node.image_buffers['left'][-1].stamp_sec, 10)
+        node._flush_sync_log.side_effect = flush_old_log
+        self.assertTrue(namespace['start_episode'](node, 'test'))
+        node._flush_sync_log.assert_called_once()
+
     def test_disk_guard_rejects_start_and_releases_motion_lock(self):
         node = self.recorder()
         node.storage_budget.start.side_effect = StorageLimitError('disk_reserve_low')
@@ -322,6 +447,7 @@ class RecorderControlsTest(unittest.TestCase):
         node.frames_written = 3
         node.has_pending_episode.return_value = True
         node.dataset = Mock()
+        node.dataset.features = {}
         node._saved_dataset = node.dataset
         work = Path(root) / '.collector-work'
         work.mkdir(exist_ok=True)
@@ -555,6 +681,19 @@ class RecorderControlsTest(unittest.TestCase):
             node._close_episode_dataset.assert_called_once()
             node.episode_store.discard.assert_called_once()
 
+    def test_delayed_log_failure_is_detected_before_next_frame_without_join(self):
+        with tempfile.TemporaryDirectory() as root:
+            node = self.annotation_recorder(root)
+            node.sync_log = Mock()
+            node.sync_log.check.side_effect = OSError('injected delayed log error')
+            namespace['_record_tick'](node)
+            self.assertTrue(node.sync_log_failed)
+            self.assertTrue(node.episode_invalid)
+            self.assertEqual(node.episode_invalid_reason, 'sync_log_write_failed')
+            node._record_frame.assert_not_called()
+            node.sync_log.close.assert_not_called()
+            node.sync_log.flush.assert_not_called()
+
     def test_failed_public_discard_keeps_video_images(self):
         with tempfile.TemporaryDirectory() as root:
             node = self.annotation_recorder(root)
@@ -594,6 +733,112 @@ class RecorderControlsTest(unittest.TestCase):
                 finally:
                     release.set()
                 node.mark_status_future.result(timeout=1)
+
+    def test_start_receipt_waits_for_log_in_worker_not_capture_thread(self):
+        with tempfile.TemporaryDirectory() as root:
+            node = self.annotation_recorder(root)
+            node.args.status_file = Path(root) / 'status.json'
+            node.sync_log = Mock()
+            barrier = Future()
+            node.sync_log.barrier.return_value = barrier
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                node.mark_status_writer = executor
+                try:
+                    namespace['_write_command_status'](node, 'start', True, 'start-1', message='episode started')
+                    self.assertFalse(node.mark_status_future.done())
+                    self.assertFalse(node.args.status_file.exists())
+                    node.sync_log.flush.assert_not_called()
+                    # Capture remains free to append while disk flush is pending.
+                    node.current_episode_frames += 1
+                    self.assertEqual(node.current_episode_frames, 4)
+                finally:
+                    barrier.set_result(None)
+                node.mark_status_future.result(timeout=1)
+            self.assertEqual(json.loads(node.args.status_file.read_text())['request_id'], 'start-1')
+
+    def test_log_barrier_failure_never_publishes_success_or_escapes_callback(self):
+        for admission_failure in (False, True):
+            with self.subTest(admission_failure=admission_failure), tempfile.TemporaryDirectory() as root:
+                node = self.annotation_recorder(root)
+                node.args.status_file = Path(root) / 'status.json'
+                node.control_queue = SimpleQueue()
+                node.sync_log = Mock()
+                error = OSError('injected log failure')
+                if admission_failure:
+                    node.sync_log.barrier.side_effect = error
+                else:
+                    barrier = Future()
+                    barrier.set_exception(error)
+                    node.sync_log.barrier.return_value = barrier
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    node.mark_status_writer = executor
+                    namespace['_write_command_status'](node, 'start', True, 'start-1', message='episode started')
+                    with self.assertRaises(OSError):
+                        node.mark_status_future.result(timeout=1)
+                namespace['process_control_commands'](node)
+                self.assertTrue(node.episode_invalid)
+                self.assertFalse(node.is_recording)
+                self.assertFalse(node.args.status_file.exists())
+                node.sync_log.close.assert_not_called()
+
+    def test_delayed_receipt_io_failure_is_fail_closed(self):
+        with tempfile.TemporaryDirectory() as root:
+            node = self.annotation_recorder(root)
+            node.args.status_file = Path(root) / 'status.json'
+            node.control_queue = SimpleQueue()
+            with ThreadPoolExecutor(max_workers=1) as executor, patch.dict(
+                    namespace, write_json_atomic=Mock(side_effect=OSError('full disk'))):
+                node.mark_status_writer = executor
+                namespace['_write_command_status'](node, 'start', True, 'start-1', message='episode started')
+                with self.assertRaises(OSError):
+                    node.mark_status_future.result(timeout=1)
+                namespace['process_control_commands'](node)
+            self.assertTrue(node.episode_invalid)
+            self.assertFalse(node.is_recording)
+
+    def test_shutdown_observes_failed_receipt_instead_of_saving_valid_episode(self):
+        with tempfile.TemporaryDirectory() as root:
+            node = self.annotation_recorder(root)
+            failed = Future()
+            failed.set_exception(OSError('injected receipt failure'))
+            node.mark_status_future = failed
+            node.save_current_episode = Mock()
+            node.discard_current_episode = Mock()
+            namespace['finish'](node)
+            self.assertTrue(node.episode_invalid)
+            node.save_current_episode.assert_not_called()
+            node.discard_current_episode.assert_called_once_with('shutdown:invalid_episode')
+
+    def test_invalidation_cannot_be_overwritten_by_slow_start_success(self):
+        with tempfile.TemporaryDirectory() as root:
+            node = self.annotation_recorder(root)
+            node.args.status_file = Path(root) / 'status.json'
+            node._write_command_status = lambda *a, **kw: namespace['_write_command_status'](node, *a, **kw)
+            writing, release = threading.Event(), threading.Event()
+            seen = []
+            def slow_write(path, value):
+                if value['success']:
+                    writing.set()
+                    if not release.wait(5):
+                        raise RuntimeError('test receipt was not released')
+                seen.append(value)
+                path.write_text(json.dumps(value))
+            with ThreadPoolExecutor(max_workers=1) as executor, patch.dict(namespace, write_json_atomic=slow_write):
+                node.mark_status_writer = executor
+                try:
+                    node._write_command_status('start', True, 'start-1', message='episode started')
+                    self.assertTrue(writing.wait(1))
+                    namespace['_invalidate_episode'](node, 'camera_failed', time.time())
+                    self.assertTrue(node.episode_invalid)
+                    self.assertFalse(node.mark_status_future.done())
+                finally:
+                    release.set()
+                node.mark_status_future.result(timeout=1)
+            final = json.loads(node.args.status_file.read_text())
+            self.assertEqual([value['success'] for value in seen], [True, False])
+            self.assertFalse(final['success'])
+            self.assertTrue(final['episode_invalid'])
+            self.assertEqual(final['request_id'], 'start-1')
 
     def test_resume_rejects_annotation_schema_change_before_opening_writer(self):
         with tempfile.TemporaryDirectory() as root:

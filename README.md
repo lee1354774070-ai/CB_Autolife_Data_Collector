@@ -68,7 +68,7 @@ export WITH_DEPTH=1
 
 原厂App能让机器人运动、夹爪支持位置控制，都不等于它会发布独立的身体/夹爪目标位置命令。
 非DAgger的底层 `joint` 接口仅保留给已核实命令话题的集成或链路调试，不作为常规数采配置。
-345原厂链路的实际话题对比见[验证记录](docs/validation/20261019_s3_345.md)，不替代DAgger独立验收。
+不同机器人需核实实际发布话题；原厂遥操作能运动不代表joint命令话题有消息。
 
 关节模式的 state/action 顺序固定为：左臂7维 → 右臂7维 → 左夹爪 → 右夹爪 →
 可选头部3维 → 可选上腰2维或完整腰腿4维。具体名称见 [robot_schema.py](robot_schema.py)。
@@ -117,6 +117,8 @@ EEF纠错训练需单独核实和标注来源。混合state/action、四元数�
 |---|---|---|
 | `COLLECT_FPS` | `30` | 数据集目标帧率，单位帧/秒；还用于检查参考帧间隔。**不会修改硬件相机帧率**，也不能靠改数值解决源流卡顿。 |
 | `IMAGE_SOURCE` | `shm` | `shm` 直接读共享内存；`ros` 启动 SHM→ROS 图像桥后订阅。普通使用优先保留 `shm`，不必增加图像 topic 传输。 |
+| `JPEG_DECODER` | `auto` | SHM录制默认优先使用NVIDIA nvJPEG；启动探针失败才回退OpenCV。`nvjpeg`强制GPU，不可用即拒绝启动；`opencv`强制CPU。ROS图像已在上游解码，`auto/opencv`不初始化CUDA，显式`nvjpeg`被拒绝。详见[使用与实测](docs/GPU_JPEG_zh.md)。 |
+| `JPEG_DEVICE` | `cuda:0` | JPEG解码使用的CUDA可见设备，不控制保存时的视频编码器。 |
 | `IMAGE_POLL_FPS` | 普通 `120`；DAgger `60` | SHM metadata轮询频率，不是录制帧率。新源时间戳才读入图像 FIFO；提高轮询率不能提高相机实际 FPS，反而会增加CPU开销。 |
 | `SYNC_REFERENCE_CAMERA` | 活跃的 `hand_left`，否则首个活跃相机 | 时间基准。可填 `hand_left`、`hand_right`、`rgbd_head_color`，开深度后也可选活跃的 `rgbd_head_depth`。换基准仍须匹配其他相机，不是忽略它们。 |
 | `MAX_SYNC_DELTA_SEC` | `0.03` 秒 | 非参考相机与参考帧允许的最大时间差，即默认30ms；也参与等待/动作新鲜度判断。关节插值跨度及action保持另有下列独立限制。 |
@@ -130,7 +132,10 @@ EEF纠错训练需单独核实和标注来源。混合state/action、四元数�
 | `MIN_CAMERAS` | 所选相机全部：RGB为3，带depth为4 | 启动时至少有多少路有效相机。不要为了绕过缺流而调低；可能改变实际录制 schema。DAgger不允许低于所选路数。 |
 | `START_HAND_PRODUCER` | 默认1；检测到手相机设备占用时自动0 | `0` 复用已运行视觉服务的手相机SHM；`1` 尝试启动本工具的手相机生产者。已有生产服务时建议显式0，避免争抢设备。不会自动启动原厂视觉服务。 |
 
-双手相机采用 **JPEG SHM→解码为BGR→按数据特征转换**，不回退到旧的直接BGR SHM路径。
+双手相机采用 **JPEG SHM→解码为RGB**：GPU直接输出RGB，OpenCV路径将BGR转为RGB；不回退到旧的直接BGR SHM路径。
+四种模式共用默认`JPEG_DECODER=auto`，原启动命令不变。日志输出`JPEG decoder: nvjpeg on cuda:0`才表示已选择GPU；
+`JPEG decoder: opencv (CPU startup fallback)`表示本次使用CPU。录制途中不切换后端，GPU解码失败使当前episode无效并停止录制器。
+要求固定旧解码行为时显式设置`JPEG_DECODER=opencv`；要求GPU必须可用时设置`JPEG_DECODER=nvjpeg`。
 源流、匹配或存储失败时不会静默跳帧继续生成“有效”数据，而是作废当前episode。
 
 例如，任务允许40ms容差时可显式设置以下参数；这不是所有机器都必须采用的配置：
@@ -151,9 +156,9 @@ export SYNC_IMAGE_BUFFER_SIZE=16
 
 | 参数 | 默认值 | 对应阶段 |
 |---|---:|---|
-| `STATE_READY_TIMEOUT_SEC` | 10秒 | 等待首个完整关节状态包；没有完整包，不启动可选相机生产者。已有SHM可被读取，尚不录制。 |
-| `CAMERA_WARMUP_SEC` | 10秒 | 统一启动器传给录制器的相机准备等待时间。直接运行Python的默认值不同，以该入口帮助为准。 |
-| `CAMERA_DETECTION_TIMEOUT_SEC` | 15秒 | 外层启动器等待相机/数据集初始化结果。提高相机warmup时，应同时给这个外层等待留足时间。 |
+| `STATE_READY_TIMEOUT_SEC` | 10秒 | 等待首个完整关节状态包；没有完整包，不初始化GPU JPEG解码器、不启动SHM轮询和可选相机生产者。ROS图像订阅可提前接收，尚不录制。 |
+| `CAMERA_WARMUP_SEC` | 10秒 | 关节就绪且JPEG后端选定后，开始计算相机准备等待时间。直接运行Python的默认值不同，以该入口帮助为准。 |
+| `CAMERA_DETECTION_TIMEOUT_SEC` | 默认SHM auto为45秒 | SHM选用`auto/nvjpeg`或启用视频加速时为45秒，其他情况15秒。外层等待包含GPU初始化、相机warmup及数据集创建；显式设置优先，不改变录制中的同步阈值。 |
 | `CONTROL_ACK_TIMEOUT_SEC` | 300秒 | 等待开始、标记、保存、丢弃等命令的真实回执；不是图像同步阈值。结果未知时先查日志，不盲目重复提交。正常退出会等待编码完成，不按此值强杀录制器。 |
 
 启动慢可增加准备等待时间；录制中 `unsynchronized_camera`、`stale_camera` 等错误
@@ -181,6 +186,11 @@ export SYNC_IMAGE_BUFFER_SIZE=16
 | 参数 | 默认值 | 功能及注意事项 |
 |---|---|---|
 | `COLLECT_VCODEC` | `h264` | RGB视频编码器。可用值取决于安装的LeRobot/编解码库；改编码器前先做短条测试。 |
+| `VIDEO_ACCELERATOR` | `cpu` | `cpu`保留原路径；`vaapi`使用Intel/兼容GPU；`nvenc`使用NVIDIA；`auto`依次探测NVENC、VAAPI，均失败才在启动时回退CPU。只加速保存RGB视频，不加速实时JPEG解码或深度。 |
+| `VIDEO_FFMPEG_BIN` | `ffmpeg` | GPU路径所用FFmpeg可执行文件，可指定绝对路径；CPU路径不需要这个命令。 |
+| `VIDEO_HW_DEVICE` | `/dev/dri/renderD128` | VAAPI渲染设备，当前用户需有访问权限；NVENC不使用此项。 |
+| `VIDEO_HW_QP` | `23` | GPU H.264量化参数，0～51，越小通常质量越高、文件越大；不等价于同数值CRF。 |
+| `VIDEO_ENCODING_TIMEOUT_SEC` | `600` 秒/路 | GPU编码子进程的最长运行时间，超时终止编码并作废当前episode；不影响之前保存的数据。不是采集同步阈值，也不是整个保存流程的总时限。 |
 | `VIDEO_CRF` | 未设置 | RGB质量参数，交由编码器默认配置处理；常见CRF编码器中数值越低质量越高、文件越大，范围取决于编码器。 |
 | `VIDEO_PRESET` | 未设置 | RGB编码速度/压缩率档位；支持的名称随编码器变化。 |
 | `VIDEO_GOP` | 未设置 | RGB关键帧间隔，单位帧；影响随机读取和压缩率。 |
@@ -189,12 +199,20 @@ export SYNC_IMAGE_BUFFER_SIZE=16
 | `DEPTH_MAX` | `10.0` 米 | 深度量化的物理距离上限，必须大于下限；应覆盖采集对象的实际距离。 |
 | `DEPTH_SHIFT` | `3.5` | 对数量化的shift参数，影响距离精度分布；不是将相机或深度值平移3.5米。 |
 | `DEPTH_USE_LOG` | `1` | 1使用对数深度量化，0关闭；仅在录制depth时有意义。 |
+| `DEPTH_ENCODER_THREADS` | `2` | 限制深度x265编码线程，范围1～64；不改变原有12位量化、深度单位和无损编码设置。 |
+| `BACKGROUND_SAVE` | `1` | 四种模式共用的持久化后台保存队列，最多两条待提交；暂存完成可开始下一条，只有提交完成才计为已保存。0改为同步保存；有未完成后台任务时禁止切换。F/Q会等待队列完成。 |
 | `BATCH_ENCODING_SIZE` | `1` | 事务保存要求保持1，不能通过增大它把多条episode批量积累后再保存。 |
 | `STREAMING_ENCODING` | `0` | 事务保存要求关闭，设1会被拒绝。 |
 | `ENCODER_QUEUE_MAXSIZE` | `30` | 传给LeRobot的编码队列容量；与图像FIFO、写图队列不是同一个队列，不能替代存储限额。 |
-| `ENCODER_THREADS` | 普通未设置；DAgger1 | 编码线程数，未设置时由LeRobot决定；不控制相机轮询线程数。 |
+| `ENCODER_THREADS` | 普通2；DAgger1 | 限制CPU视频编码及GPU路径的PNG解码线程；同步、后台保存均遵守。GPU路径的像素转换线程固定1。不控制相机轮询线程数。 |
 | `VIDEO_FILES_SIZE_IN_MB` | 未设置 | LeRobot视频分段大小选项，单位按库的MB接口处理。事务模式每条使用新文件，不能用它合并episode。 |
 | `DATA_FILES_SIZE_IN_MB` | 未设置 | LeRobot Parquet分段大小选项；同样不会把新episode追加写入已提交文件。 |
+
+GPU路径要求 `COLLECT_VCODEC=h264`，不同时设置 `VIDEO_CRF/VIDEO_PRESET`。
+默认GOP=2、B帧=0；保存前真实探测，保存后逐帧解码校验，再提交数据。
+四种模式均可使用，例如在原有启动参数前增加 `VIDEO_ACCELERATOR=vaapi`。
+**显式GPU不可用则启动失败；录制后的编码失败不会自动重试或切换CPU。**
+环境准备、完整命令和性能验证见[GPU视频编码](docs/GPU_ENCODING_zh.md)。
 
 ### 1.7 单人和子任务控制参数
 
@@ -290,6 +308,15 @@ DatasetWriter/resume接口、ROS、OpenCV、PyArrow和编码依赖；深度需�
 VR辅助、相机桥和备用生产者使用 `ROBOT_PY`；纯SHM键盘录制不启动这些辅助时，不要求额外robot_env。
 工具不自动安装或重启硬件服务。
 
+可一键新建独立的采集环境（已有Conda和ROS 2 Jazzy，不覆盖原环境）：
+
+```bash
+python3 scripts/setup_collector_env.py --name collector_gpu --backend nvjpeg
+```
+
+无NVIDIA GPU时使用`--backend cpu`；不传`--backend`则自动检测。
+支持`--clone lerobot`、`--dry-run`、`--check`和失败后的受控续装。
+详细命令见[环境一键部署](docs/ENVIRONMENT_SETUP_zh.md) / [English](docs/ENVIRONMENT_SETUP.md)。
 新机器人从零配置请看 [部署与 SSH 密钥登录指南](docs/NEW_ROBOT_DEPLOYMENT_zh.md)，
 包括电脑/机器人分步命令、独立采集环境、只读检查与首次人工录制。
 
@@ -539,6 +566,10 @@ task_name/
     meta/                   信息、任务、episode索引、统计、collector_schema.json
     data/                   Parquet
     videos/                 RGB / 可选depth
+    first_frame/            每条已保存episode的原始RGB首帧PNG
+      head_frame/head_episode_00000.png
+      left_frame/left_episode_00000.png
+      right_frame/right_episode_00000.png
     annotations/subtasks/   可选子任务侧文件
     annotations/dagger/     操作员确认的任务成功及自主/接管来源
     sync_log.jsonl          软件同步诊断
@@ -547,6 +578,43 @@ task_name/
   logs/                     每次启动独立数字序号，不覆盖旧日志
   .official_*               进程、FIFO、回执及锁
 ```
+
+四种模式保存episode时都会自动另存首帧，不需要增加参数。
+`head / left / right`分别对应`rgbd_head_color / hand_left / hand_right`。
+文件名采用五位补零的`episode_index`，从0开始，例如第二条是`head_episode_00001.png`；
+续录沿用整个数据集的序号，不会每次重启从0重新覆盖。序号超过五位时正常扩展。
+保存的是本条**第一条同步数据对应的原始RGB PNG**，不是保存时的实时画面，也不从有损MP4重新截取。
+仅导出已启用的上述RGB相机，不导出depth；单相机模式只生成对应位置的文件。
+首帧随数据一起提交：丢弃或保存失败不会发布本条首帧，已保存图片不变。
+旧数据续录后仅新增新episode的首帧，不自动补齐历史数据；Joint/EEF转换会保留已有首帧。
+
+<a id="first-frame-extraction"></a>
+### 为已采集的数据补提首帧
+
+先正常保存并退出采集器，在本机或机器人上进入Collector目录，用LeRobot环境运行：
+
+```bash
+conda activate lerobot
+# 指向含meta/、data/、videos/的dataset目录，不是其上一级任务目录。
+python extract_first_frames.py /path/to/task_name/dataset
+
+# 可选：只处理指定episode；索引从0开始，不重新编号。
+python extract_first_frames.py /path/to/task_name/dataset --episodes 0 3 12
+python extract_first_frames.py --help
+```
+
+- 支持当前Collector生成的 **LeRobot v3.0视频数据集**，四种模式均可，不要求EEF字段。
+- 根据episode metadata中的视频文件路径和起始时间定位，兼容一段视频包含多条episode的情况。
+- 输出仍是上述`first_frame/head_frame`、`left_frame`、`right_frame`下的PNG；只提取已录RGB，不提取depth。
+- 默认保留已有有效PNG，只补缺失文件。可重复运行，不覆盖录制时保存的原始首帧。
+- 已有PNG损坏、视频无法解码或时间索引异常时会报错停止，不覆盖坏文件；修复原因后重跑。
+- 单条提取失败会清理本次为该条新增的图片，已完成条目和原数据不变。强杀/掉电后可能只完成部分图片，重跑补齐。
+- 不修改Parquet、视频、meta或任务标注；不需要ROS、模型、GPU或在线机器人。
+- 运行中的采集/转换/提取、未完成的采集事务会阻止执行。先解决未完成事务，不要删除锁或journal绕过检查。
+
+终端逐条显示`Episode 00000: saved=3, existing=0`，最后汇总新增和已有图片数。
+**离线图片来自已保存视频解码，保留视频本身的压缩损失，不能还原压缩前的原始RGB。**
+工具依赖`av`、`pyarrow`、`Pillow`，已有LeRobot环境可使用；不支持旧v2布局或只有嵌入式图像的非视频数据。
 
 <a id="recovery"></a>
 ### 故障处理
@@ -592,10 +660,8 @@ joint保留已录关节/夹爪，eef仅14维，eef+gripper为16维，all不裁�
 
 - [新机器人部署与SSH密钥登录](docs/NEW_ROBOT_DEPLOYMENT_zh.md)
 - [中文实现](INSTRUCTION_zh.md) / [English design](INSTRUCTION.md)
-- [300测试与历史](ROBOT300_TESTING_zh.md)
-- [本次重构与345五组静止采集验证](docs/validation/20261019_refactor_345.md)
-- [345 Action来源与EEF实测](docs/validation/20261019_s3_345.md)
-- [S3历史采集记录](docs/validation/20261016_s3_collection.md)
+- [测试与现场验收](ROBOT300_TESTING_zh.md)
+- [当前验证范围](docs/VALIDATION.md)
 - [遥操作快照来源](teleop_snapshot/README.md)
 
 历史验证只适用于其版本、机器和配置，不代替当前机器的现场验收。
@@ -617,10 +683,10 @@ DAgger失败保存终端改为K、启动器Shift+K，手柄长按Y不变；启�
 默认 `BACKGROUND_SAVE=1`。B/S/最后一个子任务标记先把本条的图像、数值、标签完整暂存，再返回“后台保存中”；此时可开始下一条。只有后台事务落盘后才播报“已保存”并增加成功计数。普通、VR、子任务与DAgger使用同一保存队列。
 
 - 最多两条等待保存，满时拒绝新录制，不丢帧、不覆盖。当前条的丢弃只影响当前条，不取消已确认保存的队列。
-- RGB预检成功后使用H264 NVENC；不支持GPU或尺寸不匹配时在开始前回退CPU。深度始终保留12位无损HEVC，使用受限线程快速预设，量化参数和单位不变。
+- RGB保存遵守`VIDEO_ACCELERATOR`，默认CPU；只有`auto`在启动预检失败时可回退CPU，显式`nvenc/vaapi`失败则拒绝启动。后台任务保存实际编码配置，恢复时不随当前环境变量变化。深度保留12位量化和无损HEVC，线程受限，单位不变。
 - 编码子进程低优先级；四路编码并行共享同一组最多四个CPU，避免超低功耗核。CPU仍承担图像搬运、统计、深度与写盘；不承诺对遥操零影响，需现场验证。
 - F等待后台全部落盘后封口，保持服务；Q等待后台完成再退出。保存失败明确报错并保留 `.collector-queue`，重新运行同一数据集会按序恢复，已提交的条目不会重复保存。不要手工删除暂存目录或强杀编码进程。
 - 回滚：`BACKGROUND_SAVE=0` 使用原同步保存。存在待处理后台条目时拒绝回滚，先恢复并清空队列。
-- 离线性能回放：`python tools/benchmark_background_save.py --source /path/to/dataset --episode 32 --frames 300 --output /new/benchmark_directory`。输出仅用于诊断，不能混入训练数据；不发布ROS、不读取实时相机。
+- 后台保存回归：`python -B -m unittest discover -s tests -p 'test_background_saves.py'`，使用合成RGBD数据验证真实编码、队列恢复和历史文件保护。JPEG/视频性能测试分别见[GPU JPEG](docs/GPU_JPEG_zh.md)与[GPU视频编码](docs/GPU_ENCODING_zh.md)，不以单独编码耗时替代整套采集性能。
 
 340离线回放实测（1307帧、43.6秒、三路RGB+深度）：同步保存等待41.9秒，后台暂存确认2.7秒，最终落盘41.7秒；下一条模拟30Hz采集最大间隔38.7ms。深度1307帧逐像素一致，动作、状态、子任务标签一致。测试输出视频约127MB→190MB；这是吞吐与文件体积的折中，不代表已完成真机遥操验收。

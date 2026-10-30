@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import struct
 import os
+import stat
+import threading
 import time
 from dataclasses import dataclass
 
@@ -112,17 +114,38 @@ def _decode_shm2_metadata(raw: bytes) -> tuple[int, ...] | None:
     )
 
 
+def _decode_metadata(raw: bytes) -> tuple[int, ...] | None:
+    if raw.startswith(SHM2_MAGIC):
+        return _decode_shm2_metadata(raw)
+    if len(raw) < METADATA_SIZE:
+        return None
+    return struct.unpack(SHM_METADATA_FORMAT, raw[:METADATA_SIZE])
+
+
 def read_shm_metadata(spec: CameraSpec) -> tuple[int, ...] | None:
     try:
         with open(spec.meta_path, "rb") as stream:
             raw = stream.read(SHM2_METADATA_READ_SIZE)
-        if raw.startswith(SHM2_MAGIC):
-            return _decode_shm2_metadata(raw)
-        if len(raw) < METADATA_SIZE:
-            return None
-        return struct.unpack(SHM_METADATA_FORMAT, raw[:METADATA_SIZE])
+        return _decode_metadata(raw)
     except (FileNotFoundError, OSError, struct.error):
         return None
+
+
+def _frame_extent(metadata: tuple[int, ...] | None) -> tuple[int, int] | None:
+    if metadata is None or len(metadata) not in (6, 9):
+        return None
+    _, width, height, channels, pixel_format, buffer_size = metadata[:6]
+    data_offset = metadata[6] if len(metadata) > 6 else 0
+    if width <= 0 or height <= 0 or channels <= 0 or buffer_size <= 0 or data_offset < 0:
+        return None
+    if pixel_format == PIXEL_FORMAT_MJPEG:
+        expected_size = buffer_size
+    else:
+        bytes_per_pixel = 2 if pixel_format == PIXEL_FORMAT_DEPTH16 else 1
+        expected_size = width * height * channels * bytes_per_pixel
+    if expected_size <= 0 or buffer_size < expected_size:
+        return None
+    return data_offset, expected_size
 
 
 def read_shm_frame(
@@ -137,20 +160,10 @@ def read_shm_frame(
     """
 
     first = metadata if metadata is not None else read_shm_metadata(spec)
-    if first is None or len(first) not in (6, 9):
+    extent = _frame_extent(first)
+    if extent is None:
         return None
-    timestamp_ns, width, height, channels, pixel_format, buffer_size = first[:6]
-    data_offset = first[6] if len(first) > 6 else 0
-    if width <= 0 or height <= 0 or channels <= 0 or buffer_size <= 0 or data_offset < 0:
-        return None
-
-    if pixel_format == PIXEL_FORMAT_MJPEG:
-        expected_size = buffer_size
-    else:
-        bytes_per_pixel = 2 if pixel_format == PIXEL_FORMAT_DEPTH16 else 1
-        expected_size = width * height * channels * bytes_per_pixel
-    if expected_size <= 0 or buffer_size < expected_size:
-        return None
+    data_offset, expected_size = extent
     try:
         with open(spec.buffer_path, "rb") as stream:
             # Validate before allocating: a torn/corrupt header must not ask
@@ -167,7 +180,139 @@ def read_shm_frame(
     second = read_shm_metadata(spec)
     if second != first:
         return None
+    timestamp_ns, width, height, channels, pixel_format = first[:5]
     return ShmFrame(timestamp_ns, width, height, channels, pixel_format, expected_size, data)
+
+
+class _ReadOnlyRegion:
+    """One descriptor, rebound when a producer replaces its SHM inode."""
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.fd: int | None = None
+        self.identity: tuple[int, int] | None = None
+
+    def current(self) -> os.stat_result:
+        current = os.stat(self.path)
+        identity = (current.st_dev, current.st_ino)
+        if self.fd is None or self.identity != identity:
+            self.close()
+            # O_NONBLOCK also makes an accidentally configured FIFO fail our
+            # regular-file check without hanging the capture callback.
+            self.fd = os.open(self.path, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
+            opened = os.fstat(self.fd)
+            if not stat.S_ISREG(opened.st_mode):
+                self.close()
+                raise OSError("camera SHM must be a regular file")
+            self.identity = (opened.st_dev, opened.st_ino)
+            if self.identity != identity:
+                # Replacement between stat and open: retry next poll rather
+                # than combine this inode with metadata from another producer.
+                self.close()
+                raise OSError("camera SHM replaced while opening")
+            current = opened
+        return current
+
+    def is_current(self) -> bool:
+        current = os.stat(self.path)
+        return self.identity == (current.st_dev, current.st_ino)
+
+    def close(self) -> None:
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+        self.identity = None
+
+
+class ShmCameraReader:
+    """Reusable read-only SHM reader with at most two open descriptors.
+
+    Keep one reader per camera and call ``close`` when its capture worker exits
+    (or use a context manager). Metadata is freshly read on *every* poll; no
+    image or decoded-frame cache is kept. File replacement is checked on each
+    read, and both metadata generation and inode identity are checked after
+    copying an image. Missing/replaced/truncated files are retried on a later
+    call, without restarting a producer or returning stale cached pixels.
+
+    ``pread`` is intentional: unlike an mmap access, it cannot SIGBUS the
+    process if a producer truncates its file during restart. Like the legacy
+    functions, this depends on the producer's publication protocol: metadata
+    equality alone cannot detect bytes overwritten in an active slot *before*
+    the producer publishes its next generation. It is not JPEG repair and does
+    not hide decoder warnings or change synchronization tolerances.
+    """
+
+    def __init__(self, spec: CameraSpec) -> None:
+        self.spec = spec
+        self._metadata = _ReadOnlyRegion(spec.meta_path)
+        self._buffer = _ReadOnlyRegion(spec.buffer_path)
+        self._lock = threading.RLock()
+        self._closed = False
+        self._last_metadata: tuple[int, ...] | None = None
+        self._last_metadata_identity: tuple[int, int] | None = None
+
+    def read_metadata(self) -> tuple[int, ...] | None:
+        with self._lock:
+            if self._closed:
+                return None
+            try:
+                self._metadata.current()
+                raw = os.pread(self._metadata.fd, SHM2_METADATA_READ_SIZE, 0)
+                result = _decode_metadata(raw)
+                if not self._metadata.is_current():
+                    result = None
+            except (OSError, struct.error):
+                self._metadata.close()
+                result = None
+            self._last_metadata = result
+            self._last_metadata_identity = self._metadata.identity if result is not None else None
+            return result
+
+    def read_frame(self, metadata: tuple[int, ...] | None = None) -> ShmFrame | None:
+        with self._lock:
+            if self._closed:
+                return None
+            first = metadata if metadata is not None else self.read_metadata()
+            extent = _frame_extent(first)
+            if extent is None:
+                return None
+            # Callers normally pass the preceding read_metadata() result. Also
+            # support external metadata without accepting an unverified inode.
+            if first != self._last_metadata and self.read_metadata() != first:
+                return None
+            metadata_identity = self._last_metadata_identity
+            data_offset, expected_size = extent
+            try:
+                current = self._buffer.current()
+                if expected_size > current.st_size - data_offset:
+                    return None
+                data = os.pread(self._buffer.fd, expected_size, data_offset)
+                if len(data) != expected_size:
+                    return None
+                second = self.read_metadata()
+                if (second != first
+                        or self._last_metadata_identity != metadata_identity
+                        or not self._buffer.is_current()):
+                    return None
+            except OSError:
+                self._buffer.close()
+                return None
+            timestamp_ns, width, height, channels, pixel_format = first[:5]
+            return ShmFrame(timestamp_ns, width, height, channels, pixel_format, expected_size, data)
+
+    def close(self) -> None:
+        with self._lock:
+            self._metadata.close()
+            self._buffer.close()
+            self._last_metadata = None
+            self._last_metadata_identity = None
+            self._closed = True
+
+    def __enter__(self) -> "ShmCameraReader":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
 
 
 def frame_to_hwc(frame: ShmFrame, is_depth: bool, *, rgb: bool = False) -> np.ndarray:
@@ -194,7 +339,9 @@ def frame_to_hwc(frame: ShmFrame, is_depth: bool, *, rgb: bool = False) -> np.nd
                 f"MJPEG dimensions are {image.shape[1]}x{image.shape[0]}, "
                 f"metadata declares {frame.width}x{frame.height}"
             )
-        return np.ascontiguousarray(image[..., ::-1] if rgb else image)
+        # OpenCV's native color conversion avoids a slow NumPy negative-stride
+        # copy of every pixel; output values and contiguous RGB layout match.
+        return cv2.cvtColor(image, cv2.COLOR_BGR2RGB) if rgb else image
 
     if frame.pixel_format not in (PIXEL_FORMAT_BGR, PIXEL_FORMAT_RGB) or frame.channels != 3:
         raise ValueError(
@@ -204,7 +351,7 @@ def frame_to_hwc(frame: ShmFrame, is_depth: bool, *, rgb: bool = False) -> np.nd
     image = np.frombuffer(frame.data, dtype=np.uint8).reshape(frame.height, frame.width, 3)
     source_is_rgb = frame.pixel_format == PIXEL_FORMAT_RGB
     needs_swap = source_is_rgb != rgb
-    return np.ascontiguousarray(image[..., ::-1] if needs_swap else image)
+    return cv2.cvtColor(image, cv2.COLOR_BGR2RGB) if needs_swap else image
 
 
 def shm_timestamp_sec(timestamp_ns: int, received_sec: float | None = None) -> float:

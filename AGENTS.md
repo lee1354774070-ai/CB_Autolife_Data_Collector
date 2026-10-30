@@ -2,7 +2,11 @@
 
 ## 入口与目录
 
+- 唯一代码工作目录为 `/home/wayne-cb/Desktop/CB_Autolife_Data_Collector`，远端为同名单独仓库。不要回写 `Autolife_VLA_Tools` 或 `clean_table_VLA` 的副本；改其他目录需用户明确授权。
 - 统一入口 `start_lerobot_official_collect.sh`，`COLLECTOR_MODE=keyboard|vr|subtask|dagger`。
+- `background_saves.py`、`episode_storage.py` 共用事务提交和历史文件保护；暂存不等于保存成功。
+- `jpeg_decoding.py` 负责录制时JPEG解码；`video_encoding.py` 负责保存时RGB视频编码，两者参数互相独立。同步和后台保存必须共用编码选择及首帧导出逻辑。
+- `scripts/setup_collector_env.py` 仅部署/检查环境，不配置机器人服务、发送动作或自动开始录制。
 - `record_lerobot_official.py` 管理同步采集、FIFO回执和LeRobot数据保存。
 - `recorder_config.py` 集中参数校验；`launcher_help.py` 复用参数定义生成帮助，修改参数时同步核对环境变量映射。
 - `vr_collector_control.py`、`subtask_annotations.py` 管理单人按键、语音及子任务标记。

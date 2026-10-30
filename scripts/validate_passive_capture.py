@@ -77,6 +77,8 @@ def main():
     try:
         deadline = time.monotonic() + 15
         while not (node.state_buffer and node.all_requested_cameras_seen()):
+            if node.state_buffer:
+                node.start_image_capture()
             if time.monotonic() >= deadline:
                 raise RuntimeError('real telemetry or cameras not ready')
             executor.spin_once(timeout_sec=.02)

@@ -24,6 +24,25 @@ def write_compressed_image(image, fpath):
 
 def write_capture_image(image, fpath):
     path = Path(fpath)
+    # Normal capture is already uint8 RGB. Avoid the former NumPy -> PIL ->
+    # NumPy round trip (two full-frame copies) before OpenCV writes lossless PNG.
+    # Match LeRobot's CHW precedence and keep its conversion for float/depth.
+    rgb = None
+    if (isinstance(image, np.ndarray) and image.dtype == np.uint8
+            and image.ndim == 3 and image.shape[0] != 1 and image.shape[-1] != 1):
+        if image.shape[0] == 3:
+            rgb = image.transpose(1, 2, 0)
+        elif image.shape[-1] == 3:
+            rgb = image
+    elif isinstance(image, Image.Image) and image.mode == "RGB":
+        rgb = np.asarray(image)
+    if (rgb is not None and path.suffix.lower() == ".png"
+            and hasattr(cv2, "IMWRITE_PNG_FILTER")):
+        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        if not cv2.imwrite(str(path), bgr, [cv2.IMWRITE_PNG_COMPRESSION, 0,
+                          cv2.IMWRITE_PNG_FILTER, cv2.IMWRITE_PNG_FILTER_NONE]):
+            raise OSError(f"temporary image write failed: {path}")
+        return
     img = image if isinstance(image, Image.Image) else image_array_to_pil_image(image)
     if path.suffix.lower() == ".png" and img.mode == "RGB" and hasattr(cv2, "IMWRITE_PNG_FILTER"):
         # LeRobot stores RGB; OpenCV's file writer takes BGR. Filter NONE and

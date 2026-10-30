@@ -5,6 +5,7 @@ worker publishes, using EpisodeStore's existing journal. Ready jobs survive
 parent/worker crashes; a committed job id prevents duplicate publication.
 """
 import json
+import logging
 import os
 from pathlib import Path
 import shutil
@@ -18,37 +19,17 @@ from concurrent.futures import ThreadPoolExecutor
 from episode_storage import EpisodeStore, durable_json, sync_dir
 
 
-def probe_rgb_encoder(config, features):
-    """Codec presence alone does not prove the camera size/options can encode."""
-    import io
-    import av
-    import numpy as np
-    for feature in features.values():
-        if feature.get('dtype') != 'video' or feature.get('info', {}).get('is_depth_map'):
-            continue
-        shape = feature['shape']
-        height, width = (shape[1], shape[2]) if shape[0] == 3 else shape[:2]
-        output = av.open(io.BytesIO(), mode='w', format='matroska')
-        try:
-            stream = output.add_stream(config.vcodec, rate=30)
-            stream.width, stream.height, stream.pix_fmt = width, height, config.pix_fmt
-            stream.options = config.get_codec_options(encoder_threads=2, as_strings=True)
-            frame = av.VideoFrame.from_ndarray(np.zeros((height,width,3),np.uint8), format='rgb24')
-            for packet in stream.encode(frame):
-                output.mux(packet)
-            for packet in stream.encode():
-                output.mux(packet)
-        finally:
-            output.close()
-
-
 class BackgroundSaves:
     def __init__(self, store, options, limit=2, autostart=True):
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError('background queue limit must be a positive integer')
         self.store, self.options, self.limit = store, options, limit
         self._ready = threading.Event()
         if autostart:
             self._ready.set()
         self.root = store.root / '.collector-queue'
+        if self.root.is_symlink():
+            raise RuntimeError('background queue must not be a symlink')
         self.root.mkdir(exist_ok=True)
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='save-dispatch')
         self.jobs = []
@@ -57,13 +38,12 @@ class BackgroundSaves:
         self.worker_log = None
         self.completed = []
         self.reserved_bytes = 0
-        self.base_count = json.loads((store.root / 'meta/info.json').read_text())['total_episodes']
         for job in sorted(self.root.glob('*/job.json'), key=lambda p: json.loads(p.read_text())['episode_index']):
             spec = json.loads(job.read_text())
             marker = store.root / 'annotations/background' / (spec['job_id'] + '.json')
             if marker.exists():
                 # Publication is authoritative, including a crash before receipt.
-                shutil.rmtree(job.parent)
+                self._cleanup_committed(job.parent)
                 continue
             self._dispatch(job)
 
@@ -137,6 +117,15 @@ class BackgroundSaves:
     def start(self):
         self._ready.set()
 
+    @staticmethod
+    def _cleanup_committed(path):
+        # The durable marker, not raw-file cleanup, determines save success.
+        # Keep failed cleanup retryable on restart without duplicating a job.
+        try:
+            shutil.rmtree(path)
+        except OSError:
+            logging.warning('Episode committed; raw cleanup deferred: %s', path, exc_info=True)
+
     def _run(self, job):
         self._ready.wait()
         if self.error:
@@ -162,7 +151,7 @@ class BackgroundSaves:
             marker = self.store.root / 'annotations/background' / (job.parent.name + '.json')
             if not marker.exists():
                 raise RuntimeError('encoder receipt lacks durable publication marker')
-            shutil.rmtree(job.parent)
+            self._cleanup_committed(job.parent)
             return result
         except Exception as exc:
             self.error = f'{exc}; inspect {log}'
@@ -248,7 +237,8 @@ def encode_job(root, job, lock_fd):
     depth = DepthEncoderConfig(**options['depth']) if options['depth'] else None
     path = store.prepare()
     kwargs = dict(repo_id=options['repo_id'], root=path, rgb_encoder=rgb, depth_encoder=depth,
-                  encoder_threads=2, image_writer_threads=0, streaming_encoding=False)
+                  encoder_threads=options.get('encoder_threads', 2),
+                  image_writer_threads=0, streaming_encoding=False)
     if expected:
         ds = LeRobotDataset.resume(**kwargs)
     else:
@@ -287,9 +277,20 @@ def encode_job(root, job, lock_fd):
                 buffer[key] = np.asarray(buffer[key], dtype=feature['dtype'])
     ds.writer.episode_buffer = buffer
     started = time.monotonic()
-    # Child encoders inherit the same four-CPU affinity; depth and GPU RGB can overlap.
-    ds.save_episode(parallel_encoding=True)
+    from first_frames import stage_first_frames
+    from video_encoding import HardwareVideoEncoder, accelerated_rgb_encoding
+    encoder = HardwareVideoEncoder(**options['hardware_rgb']) if options.get('hardware_rgb') else None
+    stage_first_frames(ds, path, expected)
+    # The hardware adapter overrides this writer instance, so it must not be
+    # copied into LeRobot's multiprocessing encoder. Native CPU keeps parallelism.
+    with accelerated_rgb_encoding(ds, encoder) as encoding_receipt:
+        ds.save_episode(parallel_encoding=encoder is None)
     ds.finalize()
+    if encoding_receipt is not None:
+        encoding_receipt.update(episode_index=expected, frames=n, fps=info['fps'])
+        p = path / 'annotations/video_encoding' / f'episode_{expected:06d}.json'
+        p.parent.mkdir(parents=True, exist_ok=True)
+        durable_json(p, encoding_receipt)
     for group, value in [('subtasks', spec['annotation']), ('dagger', spec['outcome'])]:
         if value is not None:
             p = path / 'annotations' / group / f'episode_{expected:06d}.json'
@@ -317,6 +318,7 @@ def watch_status(path, pid):
     while True:
         try:
             status = json.loads(Path(path).read_text())
+            seen.intersection_update(result['job_id'] for result in status.get('completed', []))
             for result in status.get('completed', []):
                 if result['job_id'] not in seen:
                     seen.add(result['job_id'])

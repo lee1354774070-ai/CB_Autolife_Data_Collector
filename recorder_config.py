@@ -125,6 +125,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_IMAGE_POLL_FPS,
         help="Direct-SHM metadata polling frequency. This is the camera polling rate, not dataset FPS; new source timestamps are buffered once.",
     )
+    parser.add_argument('--jpeg-decoder', choices=('auto', 'nvjpeg', 'opencv'), default='auto',
+                        help='JPEG decoder: auto prefers NVIDIA nvJPEG and falls back to OpenCV only at startup; nvjpeg requires GPU initialization to succeed; opencv forces CPU. ROS Image is already decoded upstream. Raw RGB and depth are unchanged.')
+    parser.add_argument('--jpeg-device', default='cuda:0',
+                        help='CUDA device for nvJPEG, e.g. cuda:0. Requires compatible CUDA torch/torchvision and CUDA >= 11.6; does not select the video encoder.')
     parser.add_argument(
         "--duration", type=float, default=None,
         help="Optional automatic recording duration in seconds. Leave unset for keyboard/FIFO-controlled recording.",
@@ -268,7 +272,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--video-crf", type=float, default=None, help="Optional RGB video CRF/quality value.")
     parser.add_argument("--video-preset", default=None, help="Optional RGB video encoder preset.")
     parser.add_argument("--video-gop", type=int, default=None, help="Optional RGB video GOP/keyframe interval.")
+    parser.add_argument('--video-accelerator', choices=('cpu', 'auto', 'nvenc', 'vaapi'), default='cpu',
+                        help='Save-time RGB encoder. Hardware is verified with synthetic encode/readback before capture; auto may fall back only at startup.')
+    parser.add_argument('--video-ffmpeg-bin', default='ffmpeg', help='FFmpeg executable used only for hardware RGB encoding.')
+    parser.add_argument('--video-hw-device', default='/dev/dri/renderD128', help='VAAPI render device; ignored by NVENC.')
+    parser.add_argument('--video-hw-qp', type=int, default=23, help='Hardware H.264 constant QP [0,51], not equivalent to CPU CRF.')
+    parser.add_argument('--video-encoding-timeout-sec', type=float, default=600,
+                        help='Per-RGB-stream hardware encoding and full readback deadline, seconds. Failure invalidates, never retries on CPU.')
     parser.add_argument("--depth-vcodec", default="hevc", help="Depth video codec used by LeRobot 0.6; hevc is the default 12-bit-capable choice.")
+    parser.add_argument('--depth-encoder-threads', type=int, default=2,
+                        help='Bounded x265 worker pool for lossless HEVC depth saves in every mode. Quantization is unchanged.')
     parser.add_argument("--depth-min", type=float, default=0.05, help="Minimum physical depth in metres passed to the depth quantizer.")
     parser.add_argument("--depth-max", type=float, default=10.0, help="Maximum physical depth in metres passed to the depth quantizer.")
     parser.add_argument("--depth-shift", type=float, default=3.5, help="Logarithmic depth quantizer shift used by LeRobot; affects depth precision distribution.")
@@ -281,7 +294,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-encoding-size", type=int, default=1, help="Episodes per encoding batch; only 1 is supported by transactional saving.")
     parser.add_argument("--streaming-encoding", action="store_true", help="Legacy option: rejected because transactional episode saving requires non-streaming encoding.")
     parser.add_argument("--encoder-queue-maxsize", type=int, default=30, help="Maximum pending frame batches in the asynchronous encoder queue.")
-    parser.add_argument("--encoder-threads", type=int, default=None, help="Optional number of encoder worker threads; unset lets LeRobot choose.")
+    parser.add_argument("--encoder-threads", type=int, default=2, help="Bounded CPU encoding/PNG decode threads; default 2 preserves CPU for robot services.")
     parser.add_argument("--video-files-size-in-mb", type=int, default=None, help="Optional maximum size of each video file before LeRobot starts a new segment.")
     parser.add_argument("--data-files-size-in-mb", type=int, default=None, help="Optional maximum size of each Parquet data file before LeRobot starts a new segment.")
     parser.add_argument("--control-fifo", default=None, help="Optional named pipe receiving start/mark_subtask/save/discard/quit commands.")
@@ -305,6 +318,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = build_parser()
     show_requested_parameter_help(parser, argv)
     args = parser.parse_args(argv)
+    if not re.fullmatch(r'cuda(?::\d+)?', args.jpeg_device):
+        parser.error('--jpeg-device must be cuda or cuda:<index>')
+    if args.image_source != 'shm' and args.jpeg_decoder == 'nvjpeg':
+        parser.error('--jpeg-decoder nvjpeg requires --image-source shm; ROS Image is already decoded upstream')
     if args.with_eef_action and args.fallback_action_to_state:
         parser.error("EEF targets require genuine joint actions; disable --fallback-action-to-state")
     if args.streaming_encoding or args.batch_encoding_size != 1:
@@ -339,6 +356,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             parser.error(f"--{name.replace('_', '-')} must be positive")
     if args.video_crf is not None and (not math.isfinite(args.video_crf) or args.video_crf < 0):
         parser.error('--video-crf must be finite and nonnegative')
+    if not 1 <= args.depth_encoder_threads <= 64:
+        parser.error('--depth-encoder-threads must be in [1,64]')
+    if not 0 <= args.video_hw_qp <= 51:
+        parser.error('--video-hw-qp must be in [0,51]')
+    if not math.isfinite(args.video_encoding_timeout_sec) or args.video_encoding_timeout_sec <= 0:
+        parser.error('--video-encoding-timeout-sec must be finite and positive')
+    if args.video_accelerator != 'cpu':
+        if args.vcodec != 'h264':
+            parser.error('hardware RGB requires --vcodec=h264; depth has its own encoder')
+        if args.video_crf is not None or args.video_preset is not None:
+            parser.error('hardware RGB uses --video-hw-qp, not CPU --video-crf/--video-preset')
     if not 0 < args.max_frame_interval_error_ratio < 1:
         parser.error("--max-frame-interval-error-ratio must be between 0 and 1")
     if args.sync_image_buffer_size < 2 or args.sync_signal_buffer_size < 2:
