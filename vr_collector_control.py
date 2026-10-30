@@ -115,12 +115,13 @@ class VrSession:
 
     def __init__(self, submit, speak, *, start_delay=3.0, input_timeout=0.75,
                  subtask_mode=False, a_long_press_sec=1.0, log=print, feedback=None,
-                 reset_supported=True):
+                 reset_supported=True, subtask_b_rearm_sec=2.0):
         self.submit, self.speak, self.log = submit, speak, log
         self.feedback = feedback or (lambda event: None)
         self.reset_supported = reset_supported
         self.start_delay, self.input_timeout = start_delay, input_timeout
         self.subtask_mode = subtask_mode
+        self.subtask_b_rearm_sec = subtask_b_rearm_sec
         self.subtask_progress = {}
         self.buttons = ButtonGestures(a_long_press_sec=a_long_press_sec if subtask_mode else None)
         self.last_input = None
@@ -136,6 +137,8 @@ class VrSession:
         self.grips_released = False
         self.last_busy_notice = float("-inf")
         self.last_controls = None
+        self.subtask_b_locked = False
+        self.subtask_b_released_at = None
 
     def on_payload(self, payload, now):
         try:
@@ -144,16 +147,34 @@ class VrSession:
         except (ValueError, TypeError, KeyError, IndexError):
             self.grips_released = False
             self.buttons.reset()
+            self.subtask_b_released_at = None
             return
         if self.last_input is not None and now - self.last_input > self.input_timeout:
             self.buttons.reset()
+            self.subtask_b_released_at = None
         self.last_input = now
         self.grips_released = (not any(data[name]["gripActive"] for name in ("leftController", "rightController"))
                                if "leftController" in data else not any(data[h]["b"][1]["p"] for h in ("l", "r")))
         controls = (bool(grips), tuple(sorted(faces)))
-        if controls != self.last_controls:
+        controls_changed = controls != self.last_controls
+        if controls_changed:
             self.last_controls = controls
             self.log(f"[VR input] GL+GR={bool(grips)}; faces={sorted(faces)}")
+        if self.subtask_b_locked:
+            # A retry burst may outlast the ACK; require fresh, quiet input
+            # afterwards instead of allowing elapsed time or stale packets to rearm B.
+            if self.pending is not None or ("r", 5) in faces:
+                self.subtask_b_released_at = None
+            elif self.subtask_b_released_at is None:
+                self.subtask_b_released_at = now
+            elif now - self.subtask_b_released_at >= self.subtask_b_rearm_sec:
+                self.subtask_b_locked = False
+                self.log("[VR] B ready for the next subtask mark")
+            if ("r", 5) in faces:
+                self.buttons.reset()
+                if controls_changed:
+                    self.log(f"[VR] Repeated B ignored: wait for acknowledgement, then release B for {self.subtask_b_rearm_sec:g}s")
+                return
         command = self.buttons.update(grips, faces, now)
         if command:
             self.log(f"[VR] Button accepted: {command}")
@@ -179,6 +200,9 @@ class VrSession:
                 if now - self.last_busy_notice >= 2:
                     self.last_busy_notice = now
                     self.speak("操作处理中，请等待结果，不需要重复按键")
+            return
+        if self.subtask_b_locked and command in ("mark_subtask", "save"):
+            self.log(f"[VR] Repeated B ignored: wait for acknowledgement, then release B for {self.subtask_b_rearm_sec:g}s")
             return
         if self.state == "exiting":
             return
@@ -217,6 +241,9 @@ class VrSession:
         self._send(command)
 
     def _send(self, command):
+        if self.subtask_mode and command == "mark_subtask":
+            self.subtask_b_locked = True
+            self.subtask_b_released_at = None
         self.pending_command = command
         self.pending_started_at = time.monotonic()
         self.pending = self.submit(command)
@@ -341,6 +368,9 @@ class VrSession:
             self.state = "idle"
             self.speak("本批已封口，可以开始下一条")
         elif event == "mark_subtask":
+            if self.subtask_mode:
+                self.subtask_b_locked = True
+                self.subtask_b_released_at = None
             self.state = "recording"
             self.speak("下一步")
             self.feedback("mark")
@@ -455,6 +485,7 @@ def parse_args():
     parser.add_argument("--feedback-topic", default="/collector/feedback", help="Feedback events consumed by the collector VR web extension.")
     parser.add_argument("--motion-lock-file", type=Path, help="Recorder's shared motion lock, required for X reset.")
     parser.add_argument("--a-long-press-sec", type=float, default=1.0, help="Minimum B hold time (legacy option name) for early save in subtask mode; fires only on release.")
+    parser.add_argument("--subtask-b-rearm-sec", type=float, default=2.0, help="Continuous B release seconds after a subtask acknowledgement before another B mark or early save; finite and positive.")
     parser.add_argument("--check-config", action="store_true", help="Validate arguments without importing ROS or starting any process.")
     show_requested_parameter_help(parser)
     args = parser.parse_args()
@@ -464,6 +495,8 @@ def parse_args():
         parser.error("--command-timeout must be finite and positive")
     if not math.isfinite(args.a_long_press_sec) or not 0.2 <= args.a_long_press_sec <= 10:
         parser.error("--a-long-press-sec must be finite and between 0.2 and 10")
+    if not math.isfinite(args.subtask_b_rearm_sec) or args.subtask_b_rearm_sec <= 0:
+        parser.error("--subtask-b-rearm-sec must be finite and positive")
     return args
 
 
@@ -501,7 +534,8 @@ def main():
         return worker.submit(run_command, args.base_dir, command, command != "quit", args.command_timeout, cancel)
 
     session = VrSession(submit, speak, start_delay=args.start_delay, subtask_mode=args.subtask_mode,
-                        a_long_press_sec=args.a_long_press_sec, log=lambda text: print(text, flush=True),
+                        a_long_press_sec=args.a_long_press_sec, subtask_b_rearm_sec=args.subtask_b_rearm_sec,
+                        log=lambda text: print(text, flush=True),
                         reset_supported=not args.topic.startswith("/control_topic_"),
                         feedback=lambda event: feedback_pub.publish(String(data=json.dumps(feedback_packet(event)))))
     from vr_reset import GuardedReset
@@ -551,7 +585,7 @@ def main():
 
     # Accept either reliable or best-effort factory publishers, and reject stale
     # gestures using our own heartbeat instead of building a DDS backlog.
-    qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
+    qos = QoSProfile(depth=1 if args.subtask_mode else 10, reliability=ReliabilityPolicy.BEST_EFFORT)
     node.create_subscription(String, args.topic, lambda msg: session.on_payload(msg.data, time.monotonic()), qos)
     # Acknowledge a completed command promptly without reading files at 50 Hz.
     # The existing monitor checks external/keyboard receipts only at 10 Hz.
@@ -566,6 +600,7 @@ def main():
     if args.subtask_mode:
         print(f"[VR] While recording: short B=mark next subtask (last mark saves); "
               f"hold B >= {args.a_long_press_sec:g}s then release=save early", flush=True)
+        print(f"[VR] 防连按：标记确认后，B连续松开{args.subtask_b_rearm_sec:g}秒才能再次使用；期间重复点击/长按会忽略并重新计时，不必松GL+GR。", flush=True)
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):

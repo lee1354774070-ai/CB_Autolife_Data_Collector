@@ -1,6 +1,7 @@
 """VR gesture and acknowledgement tests without ROS, hardware, or sleeping."""
 
 import json
+import os
 import subprocess
 import unittest
 import tempfile
@@ -427,10 +428,21 @@ class LauncherHelpTest(unittest.TestCase):
     launcher = Path(__file__).resolve().parents[1] / 'start_lerobot_official_collect.sh'
 
     def test_vr_parameter_help_works_without_ros(self):
-        for name in ('VR_CONTROL', 'VR_SPEECH', 'VR_START_DELAY_SEC', 'SUBTASKS_JSON', 'VR_A_LONG_PRESS_SEC', 'VR_INPUT_TOPIC', 'VR_RESET_PREFIX'):
+        for name in ('VR_CONTROL', 'VR_SPEECH', 'VR_START_DELAY_SEC', 'SUBTASKS_JSON', 'VR_A_LONG_PRESS_SEC', 'VR_SUBTASK_B_REARM_SEC', 'VR_INPUT_TOPIC', 'VR_RESET_PREFIX'):
             result = subprocess.run(['bash', str(self.launcher), name, '--help'], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(name, result.stdout)
+
+    def test_bad_rearm_environment_is_rejected_before_creating_dataset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env = dict(os.environ, COLLECTOR_CAMERA_SESSION_ACTIVE='1', OUTPUT_BASE_DIR=directory,
+                       COLLECTOR_MODE='subtask', VR_CONTROL='1', SUBTASKS_JSON='["one","two"]',
+                       VR_SUBTASK_B_REARM_SEC='nan')
+            result = subprocess.run(['bash', str(self.launcher), 'test'], env=env,
+                                    capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('--subtask-b-rearm-sec must be finite and positive', result.stderr)
+            self.assertFalse((Path(directory) / 'test').exists())
 
 
 class SubtaskVrTest(unittest.TestCase):
@@ -473,6 +485,117 @@ class SubtaskVrTest(unittest.TestCase):
         self.session.tick(1.3)
         self.assertEqual(self.session.state, 'recording')
         self.assertEqual(self.speech, ['下一步'])
+
+    def confirm_first_mark(self):
+        self.session.state = 'recording'
+        self.tap(('r', 5), 1)
+        self.sent[0][1].set_result(self.receipt('mark_subtask', subtasks={
+            'enabled': True, 'confirmed': 1, 'total': 4}))
+        self.session.tick(1.3)
+
+    def released_b(self, start, duration=2.1, grips=True):
+        for i in range(round(duration * 10) + 1):
+            self.session.on_payload(payload(grips=grips), start + i / 10)
+
+    def test_configured_rearm_interval_controls_boundary_and_notice(self):
+        for interval in (0.5, 2.0, 3.5):
+            with self.subTest(interval=interval):
+                self.setUp()
+                self.session = VrSession(self.session.submit, self.speech.append, start_delay=0,
+                                         subtask_mode=True, subtask_b_rearm_sec=interval, log=self.logs.append)
+                self.confirm_first_mark()
+                self.session.command('a_short', 1.4)
+                self.assertIn(f'release B for {interval:g}s', self.logs[-1])
+                self.released_b(1.5, duration=interval - .1)
+                self.assertTrue(self.session.subtask_b_locked)
+                self.session.on_payload(payload(), 1.5 + interval)
+                self.assertFalse(self.session.subtask_b_locked)
+                self.tap(('r', 5), 1.6 + interval)
+                self.assertEqual([c for c, _ in self.sent], ['mark_subtask', 'mark_subtask'])
+
+    def test_repeated_b_after_ack_does_not_skip_and_requires_quiet_release(self):
+        self.confirm_first_mark()
+        # Old code accepts this as a second stage despite it being a retry burst.
+        for start in (1.4, 1.8, 2.2, 2.6, 3.0):
+            self.tap(('r', 5), start)
+        self.assertEqual([c for c, _ in self.sent], ['mark_subtask'])
+        self.released_b(3.3)
+        self.tap(('r', 5), 5.5)
+        self.assertEqual([c for c, _ in self.sent], ['mark_subtask', 'mark_subtask'])
+
+    def test_release_while_ack_pending_cannot_unlock_b(self):
+        self.session.state = 'recording'
+        self.tap(('r', 5), 1)
+        self.released_b(1.3, duration=4)
+        self.sent[0][1].set_result(self.receipt('mark_subtask'))
+        self.session.tick(5.4)
+        self.tap(('r', 5), 5.5)
+        self.assertEqual([c for c, _ in self.sent], ['mark_subtask'])
+        self.released_b(5.8)
+        self.tap(('r', 5), 8.0)
+        self.assertEqual(len(self.sent), 2)
+
+    def test_retry_held_across_ack_cannot_become_early_save(self):
+        self.session.state = 'recording'
+        self.tap(('r', 5), 1)
+        self.session.on_payload(payload(('r', 5)), 1.3)
+        self.sent[0][1].set_result(self.receipt('mark_subtask'))
+        self.session.tick(1.4)
+        for i in range(20):
+            self.session.on_payload(payload(('r', 5)), 1.5 + i / 10)
+        self.session.on_payload(payload(), 3.5)
+        self.assertEqual([c for c, _ in self.sent], ['mark_subtask'])
+        self.released_b(3.6)
+        for i in range(13):
+            self.session.on_payload(payload(('r', 5)), 5.8 + i / 10)
+        self.session.on_payload(payload(), 7.1)
+        self.assertEqual([c for c, _ in self.sent], ['mark_subtask', 'save'])
+
+    def test_bad_or_missing_input_cannot_count_as_b_released(self):
+        for kind in ('gap', 'malformed'):
+            with self.subTest(kind=kind):
+                self.setUp()
+                self.confirm_first_mark()
+                self.released_b(1.4, duration=1.5)
+                if kind == 'malformed':
+                    self.session.on_payload('{}', 3.0)
+                    self.released_b(3.1, duration=.5)
+                else:
+                    self.session.on_payload(payload(), 6.0)
+                self.tap(('r', 5), 6.1 if kind == 'gap' else 3.7)
+                self.assertEqual([c for c, _ in self.sent], ['mark_subtask'])
+
+    def test_keyboard_mark_receipt_locks_vr_retries_but_duplicate_receipt_does_not_extend(self):
+        status = self.receipt('mark_subtask')
+        self.session.accept_status(status)
+        self.tap(('r', 5), 1)
+        self.assertFalse(self.sent)
+        for i in range(22):
+            self.session.accept_status(status)
+            self.session.on_payload(payload(grips=False), 1.3 + i / 10)
+        self.tap(('r', 5), 3.5)
+        self.assertEqual([c for c, _ in self.sent], ['mark_subtask'])
+
+    def test_b_guard_does_not_block_discard(self):
+        self.confirm_first_mark()
+        self.tap(('l', 5), 1.4)
+        self.assertEqual([c for c, _ in self.sent], ['mark_subtask', 'discard'])
+
+    def test_final_mark_retries_do_not_save_again_or_block_next_start(self):
+        self.session.state = 'recording'
+        self.session.subtask_progress = {'confirmed': 3, 'total': 4}
+        self.tap(('r', 5), 1)
+        self.sent[0][1].set_result(self.receipt('save_queued'))
+        self.session.tick(1.3)
+        self.tap(('r', 5), 1.4)
+        self.tap(('r', 4), 1.8)
+        self.assertEqual([c for c, _ in self.sent], ['mark_subtask', 'start'])
+
+    def test_direct_retry_command_does_not_bypass_b_guard(self):
+        self.confirm_first_mark()
+        self.session.command('mark_subtask', 1.4)
+        self.session.command('a_long', 1.5)
+        self.assertEqual([c for c, _ in self.sent], ['mark_subtask'])
 
     def test_recording_long_b_only_saves_no_short_mark(self):
         self.session.state = 'recording'
@@ -525,6 +648,20 @@ class SubtaskVrTest(unittest.TestCase):
             gesture.update(True, {('r', 5)}, 1)
             gesture.update(True, {('r', 5)}, 1 + duration / 2)
             self.assertEqual(gesture.update(True, set(), 1 + duration), expected)
+
+    def test_rearm_cli_default_custom_and_invalid_values_without_ros(self):
+        from vr_collector_control import parse_args
+        common = ['vr_collector_control.py', '--base-dir', '/tmp/test', '--topic', '/test/input',
+                  '--tts-topic', '/test/tts', '--check-config']
+        for argv, expected in [(common, 2.0), (common + ['--subtask-b-rearm-sec', '1.5'], 1.5)]:
+            with patch('sys.argv', argv):
+                self.assertEqual(parse_args().subtask_b_rearm_sec, expected)
+        script = Path(__file__).resolve().parents[1] / 'vr_collector_control.py'
+        for value in ('nan', 'inf', '0', '-1'):
+            result = subprocess.run(['python3', str(script), *common[1:],
+                                     '--subtask-b-rearm-sec', value], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('--subtask-b-rearm-sec must be finite and positive', result.stderr)
 
     def test_bad_long_press_threshold_is_rejected_without_ros(self):
         script = Path(__file__).resolve().parents[1] / 'vr_collector_control.py'

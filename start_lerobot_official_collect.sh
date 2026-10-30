@@ -107,7 +107,8 @@ VR_ARGS=("${VR_SCRIPT}" --base-dir "${BASE_DIR}"
     --feedback-topic /collector/feedback
     --motion-lock-file "${MOTION_LOCK_FILE}"
     --start-delay "${VR_START_DELAY_SEC:-3}" --command-timeout "${CONTROL_ACK_TIMEOUT_SEC:-300}"
-    --a-long-press-sec "${VR_A_LONG_PRESS_SEC:-1.0}")
+    --a-long-press-sec "${VR_A_LONG_PRESS_SEC:-1.0}"
+    --subtask-b-rearm-sec "${VR_SUBTASK_B_REARM_SEC:-2.0}")
 if [ "${SUBTASK_COUNT}" -gt 0 ]; then
     VR_ARGS+=(--subtask-mode)
 fi
@@ -439,6 +440,7 @@ if [ "${VR_CONTROL}" = "1" ]; then
     echo "  VR controls       : hold GL+GR; A=start, B=save, Y=discard, X=reset only; terminal Q=exit"
     if [ "${SUBTASK_COUNT}" -gt 0 ]; then
         echo "  VR annotation     : short B=mark subtask, last mark saves; hold B >= ${VR_A_LONG_PRESS_SEC:-1.0}s then release=save early"
+        echo "  VR anti-repeat    : after acknowledgement, release B continuously for ${VR_SUBTASK_B_REARM_SEC:-2.0}s; retries restart this interval"
     fi
 fi
 

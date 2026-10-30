@@ -49,6 +49,7 @@ EXTRA = {
     'VR_CONTROL': (0, 'Legacy VR button switch. Prefer COLLECTOR_MODE. Explicit contradictory mode settings are rejected.'),
     'VR_START_DELAY_SEC': (3, 'VR start countdown, seconds in [0,30]. B/Y cancels it; lost input cancels it.'),
     'VR_A_LONG_PRESS_SEC': (1, 'Legacy variable name: B hold threshold in subtask mode, seconds in [0.2,10]. Release with GL+GR held to save early.'),
+    'VR_SUBTASK_B_REARM_SEC': (2, 'Subtask B anti-repeat: continuous release seconds after recorder acknowledgement; finite and positive. Retries restart the interval; no queued marks. Does not change terminal N or ordinary VR/DAgger buttons.'),
     'VR_SPEECH': (1, '0/1: use the existing robot TTS service. Does not change system volume.'),
     'VR_INPUT_TOPIC': ('/control_topic_<domain>_<robot>', 'Factory VR input. The reviewed V4 input is /openarmx_teleop_vr_306_v4/vr_input.'),
     'VR_RESET_PREFIX': ('/openarmx_teleop_vr_306_v4', 'Guarded reset/status service prefix for compatible V4 only. Factory X reset is NOT integrated; use the factory reset control.'),

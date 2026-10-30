@@ -25,6 +25,7 @@ from std_srvs.srv import SetBool, Trigger
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--subtasks', action='store_true', help='Test short-B marks, final autosave and long-B early save.')
+    parser.add_argument('--subtask-b-rearm-sec', type=float, default=2.0, help='Subtask B anti-repeat interval used by the helper.')
     parser.add_argument('--v4-input', action='store_true', help='Use actual V4 numeric face-button packets.')
     args = parser.parse_args()
     rclpy.init()
@@ -76,7 +77,8 @@ def main():
                                        '--start-delay', '0.2', '--command-timeout', '5',
                                        '--motion-lock-file', str(root / 'motion.lock'),
                                        '--reset-prefix', prefix + '/controller', '--feedback-topic', prefix + '/feedback']
-                                      + (['--subtask-mode', '--a-long-press-sec', '1'] if args.subtasks else []))
+                                      + (['--subtask-mode', '--a-long-press-sec', '1',
+                                          '--subtask-b-rearm-sec', str(args.subtask_b_rearm_sec)] if args.subtasks else []))
             confirmed = 0
 
             def packet(faces=(), grips=True):
@@ -149,10 +151,14 @@ def main():
             tap('r', 4)  # start
             if args.subtasks:
                 tap('r', 5)
+                tap('r', 5)  # retry after ACK must not skip a stage
+                assert received == ['start', 'mark_subtask'], received
+                pump(args.subtask_b_rearm_sec + .2)  # live neutral packets rearm B; no Grip release needed
                 tap('r', 5)
+                pump(args.subtask_b_rearm_sec + .2)
                 tap('r', 5)  # final mark -> save receipt
-                tap('r', 4)  # start again
-                pump(.1)
+                tap('r', 4)  # start again, without waiting for the B guard
+                pump(args.subtask_b_rearm_sec + .2)
                 pump(1.2, [('r', 5)])
                 pump(.6)  # long-B early save
             else:

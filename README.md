@@ -205,6 +205,7 @@ export SYNC_IMAGE_BUFFER_SIZE=16
 | `VR_START_DELAY_SEC` | `3` 秒 | A开始后的倒计时，范围0～30。B/Y可取消；DAgger不使用此倒计时。 |
 | `VR_SPEECH` | `1` | 1经机器人现有TTS服务播报，0静音；不修改系统音量，也不保证头显扬声器播放。 |
 | `VR_A_LONG_PRESS_SEC` | `1.0` 秒 | 历史参数名，实际是**子任务模式B键**的长按阈值，范围0.2～10秒；在松开时判定。普通VR不使用长按标注。 |
+| `VR_SUBTASK_B_REARM_SEC` | `2` | 子任务B防连按间隔（秒，有限正数）。标记确认后，B须连续松开该时长；期间重按会重新计时。仅影响子任务手柄B，不影响终端N、普通VR或DAgger。 |
 | `VR_INPUT_TOPIC` | `/control_topic_<domain>_<robot>` | 默认读取原厂手柄消息；300/domain0为 `/control_topic_0_300`。不能仅改为V4话题就认为整套控制兼容。 |
 | `VR_RESET_PREFIX` | `/openarmx_teleop_vr_306_v4` | 仅显式接入受保护V4复位服务时使用。**原厂模式X复位尚未接入**，设置这个变量不能自动补齐。 |
 | `MOTION_LOCK_FILE` | `/tmp/lerobot_robot_<domain>_<robot>.motion.lock` | 录制与受保护复位共用锁；同机器人各组件必须一致，不要为绕过冲突而换锁路径。 |
@@ -411,6 +412,9 @@ bash start_lerobot_official_collect.sh towel_subtask
 
 GL+GR+A开始；每完成一个子任务，GL+GR+**短按B并松开**。
 中间标记不暂停、不编码，继续下一动作；最后一次标记自动保存整条。
+**防连按：标记发出后，等待录制器确认，再保持B连续松开 `VR_SUBTASK_B_REARM_SEC` 秒（默认2秒），才可再次短按标记或长按提前保存。** 期间重复点击/长按会被丢弃并重新计时，不排队补执行；GL/GR无需松开，遥操和录制继续。信号中断不计入松键时间。第一次标记立即提交；A开始、Y丢弃、终端F/Q及普通VR保存不受这层保护影响。终端N仍直接标记，请勿混用或连按；此保护不能辨认相隔超过所设间隔的新按键是否是误操作；间隔越短，越容易放过卡顿时的重复按键，标记仍须在动作完成后执行。
+
+例如在原启动命令中加 `VR_SUBTASK_B_REARM_SEC=1.5`，改为连续松开B 1.5秒后允许下一次操作；下次启动生效。可运行 `bash start_lerobot_official_collect.sh VR_SUBTASK_B_REARM_SEC --help` 查看参数说明。
 GL+GR+**长按B达到阈值后松开**可提前保存；终端N标记、S提前保存。
 
 总任务为 `TASK_TEXT`。`subtask_index` 是本条计划局部序号，边界以录制器已接受帧为准，
