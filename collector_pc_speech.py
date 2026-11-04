@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Read-only collection speech stream for a terminal PC. No ROS/control imports."""
+"""Read-only NDJSON speech events for the management website's SSH backend.
+
+This process owns neither collection nor audio: stopping it only stops log
+following. No HTTP listener, ROS imports, camera access or control commands.
+"""
 from __future__ import annotations
 
 import argparse
@@ -9,7 +13,6 @@ import os
 from pathlib import Path
 import re
 import stat
-import sys
 import time
 
 RECEIPT = '[COLLECTOR RECEIPT] '
@@ -31,41 +34,46 @@ def emit_receipt(status):
 
 
 def receipt_text(value):
+    if not isinstance(value, dict):
+        return None
     event = value.get('event')
     names = {'start': '开始录制', 'mark_subtask': '子任务标记', 'save': '保存',
              'save_queued': '后台保存', 'discard': '丢弃', 'seal': '封口', 'ready': '初始化'}
-    if event not in names:
+    if not isinstance(event, str) or event not in names:
         return None
     if value.get('publication_uncertain'):
         return names[event] + '结果未确认，请检查采集终端'
     if value.get('success') is not True:
         return names[event] + '未完成，请检查采集终端'
+    if value.get('episode_invalid') and event in ('start', 'mark_subtask', 'save', 'save_queued'):
+        return '本条数据无效，请检查采集终端'
+    progress = value.get('subtasks') or {}
+    outcome = value.get('task_outcome') or {}
+    if not isinstance(progress, dict) or not isinstance(outcome, dict):
+        return '采集回执格式异常，请检查采集终端'
     if event == 'start':
         return '开始录制'
     if event == 'mark_subtask':
-        progress = value.get('subtasks') or {}
         done, total = progress.get('confirmed'), progress.get('total')
-        if isinstance(done, int) and isinstance(total, int) and 0 < done <= total:
+        if type(done) is int and type(total) is int and 0 < done <= total:
             return f'第{done}步已标记' + ('，全部标记完成' if done == total else '，下一步')
         return '子任务已标记'
     if event == 'save_queued':
-        progress = value.get('subtasks') or {}
         return ('后台保存中，标注未完成，可以开始下一条'
                 if progress.get('enabled') and not progress.get('complete')
                 else '后台保存中，可以开始下一条')
     if event == 'save':
-        if not isinstance(value.get('frames'), int) or value['frames'] <= 0:
+        if type(value.get('frames')) is not int or value['frames'] <= 0:
             return None
         index = value.get('episode_index')
-        text = f'第{index + 1}条已保存' if isinstance(index, int) and index >= 0 else '已保存'
-        progress = value.get('subtasks') or {}
+        text = f'第{index + 1}条已保存' if type(index) is int and index >= 0 else '已保存'
         if progress.get('enabled') and not progress.get('complete'):
             text += '，标注未完成'
-        outcome = value.get('task_outcome') or {}
         labels = {'autonomous_success': '模型自主成功', 'human_corrected_success': '人工纠错成功',
                   'failure': '任务失败数据已保留'}
-        if outcome.get('outcome') in labels:
-            text += '，' + labels[outcome['outcome']]
+        label = outcome.get('outcome')
+        if isinstance(label, str) and label in labels:
+            text += '，' + labels[label]
         return text
     return {'discard': '已丢弃', 'seal': '本批已封口，可以继续采集', 'ready': '采集工具已就绪'}[event]
 
@@ -84,7 +92,7 @@ class LogSpeech:
                 value = json.loads(line[len(RECEIPT):])
             except ValueError:
                 return None
-            return receipt_text(value) if isinstance(value, dict) else None
+            return receipt_text(value)
         match = re.search(r'\[SAVED BACKGROUND\] Episode (\d+) \|', line)
         if match:
             return f'第{int(match.group(1)) + 1}条已保存'
@@ -197,36 +205,53 @@ def packet(kind, **fields):
 
 
 def stream(base_dir=None, duration=None, *, emit=packet, stop=None, required_mode=None):
+    """Follow one verified session, never replay history or switch on reconnect.
+
+    seq covers every packet in this connection (including heartbeats). id is
+    the source log byte offset, so equal phrases remain separate speech events.
+    session_id binds the source mode, recorder PID and opened log identity.
+    """
     directory, path, mode, processes = find_session(base_dir)
     if required_mode is not None and mode != required_mode:
         raise RuntimeError('waiting for the selected VR log source')
     reader = LogTail(path)
     policy = LogSpeech(mode)
     identity = f'{reader.identity[0]}:{reader.identity[1]}'
-    emit('connected', base_dir=str(directory), source=str(path), mode=mode)
+    session_id = f'{mode}:{processes[0][0]}:{identity}'
+    sequence = 0
+
+    def notify(kind, **fields):
+        nonlocal sequence
+        sequence += 1
+        emit(kind, version=1, seq=sequence, session_id=session_id, **fields)
+
     started = heartbeat = time.monotonic()
     stopped_at = None
     try:
+        notify('connected', base_dir=str(directory), source=str(path), mode=mode)
         while stop is None or not stop.is_set():
             for offset, line in reader.read():
                 text = policy.parse(line)
                 if text:
-                    emit('speech', id=f'{identity}:{offset}', text=text)
+                    notify('speech', id=f'{identity}:{offset}', text=text)
             now = time.monotonic()
             if duration is not None and now - started >= duration:
-                emit('ended', reason='read_only_probe_finished')
+                notify('ended', reason='read_only_probe_finished')
                 return
             if now - heartbeat >= 2:
-                emit('heartbeat')
+                notify('heartbeat')
                 heartbeat = now
             alive = all(process_args(pid) == args for pid, args in processes)
             if not alive:
                 stopped_at = stopped_at or now
                 if now - stopped_at >= .5:
-                    emit('ended', reason='collector_or_vr_helper_exited',
+                    notify('ended', reason='collector_or_vr_helper_exited',
                            text='采集状态来源已退出，请以采集终端的最终结果为准')
                     return
-            time.sleep(.1)
+            if stop is None:
+                time.sleep(.1)
+            else:
+                stop.wait(.1)
     finally:
         reader.close()
 

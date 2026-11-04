@@ -189,7 +189,7 @@ class StorageBudget:
     free-space snapshot is discounted by every byte admitted since the query.
     Other processes can still exhaust the disk; write errors must be handled.
     """
-    def __init__(self, root, *, min_free_gb=2, max_temp_gb=8, max_seconds=600):
+    def __init__(self, root, *, min_free_gb=2, max_temp_gb=0, max_seconds=600):
         if (any(not math.isfinite(v) or v <= 0 for v in (min_free_gb, max_seconds))
                 or not math.isfinite(max_temp_gb) or max_temp_gb < 0):
             raise ValueError('storage limits must be finite; max_temp_gb may be zero, other limits must be positive')

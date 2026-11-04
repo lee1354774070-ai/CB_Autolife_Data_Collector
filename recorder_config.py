@@ -261,7 +261,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help='Maximum raw image MiB in unfinished write jobs; overflow invalidates the episode.')
     parser.add_argument('--min-free-disk-gb', type=float, default=2,
                         help='Minimum free GiB, in addition to one raw episode estimate reserved for saving.')
-    parser.add_argument('--max-episode-temp-gb', type=float, default=8,
+    parser.add_argument('--max-episode-temp-gb', type=float, default=0,
                         help='Maximum estimated raw-image-plus-overhead GiB per episode; 0 disables this limit only. Disk and duration guards remain active.')
     parser.add_argument('--max-episode-seconds', type=float, default=600,
                         help='Maximum wall duration after start, including waits. Exceeding it invalidates the episode.')

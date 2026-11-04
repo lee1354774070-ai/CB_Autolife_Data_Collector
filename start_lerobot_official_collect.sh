@@ -25,7 +25,7 @@ WITH_WAIST="${WITH_WAIST:-0}"
 WITH_EEF_STATE="${WITH_EEF_STATE:-0}"
 WITH_EEF_ACTION="${WITH_EEF_ACTION:-0}"
 for parameter in WITH_HEAD WITH_WAIST WITH_UPPER_WAIST WITH_EEF_STATE WITH_EEF_ACTION \
-    BACKGROUND_SAVE WITH_DEPTH CAMERA_ONLY FALLBACK_ACTION_TO_STATE STREAMING_ENCODING VR_SPEECH VR_DEBUG_INPUT PC_SPEECH_WEB DEPTH_USE_LOG START_HAND_PRODUCER; do
+    BACKGROUND_SAVE WITH_DEPTH CAMERA_ONLY FALLBACK_ACTION_TO_STATE STREAMING_ENCODING VR_SPEECH VR_DEBUG_INPUT DEPTH_USE_LOG START_HAND_PRODUCER; do
     if [[ -v "${parameter}" && ! "${!parameter}" =~ ^[01]$ ]]; then
         echo "ERROR: ${parameter} must be 0 or 1." >&2
         exit 2
@@ -166,27 +166,6 @@ send_control_and_report() {
         --wait \
         --timeout "${CONTROL_ACK_TIMEOUT_SEC:-300}" \
         "$1"
-}
-
-start_pc_speech_page() {
-    if [ "${PC_SPEECH_WEB:-1}" != "1" ]; then
-        return
-    fi
-    local ready="${LOG_PREFIX}.pc_speech.json"
-    python3 -u "${SCRIPT_DIR}/collector_speech_web.py" --base-dir "${BASE_DIR}" \
-        --ready-file "${ready}" --vr-control "${VR_CONTROL}" > "${LOG_PREFIX}.pc_speech.log" 2>&1 &
-    local speech_pid=$!
-    echo "pc_speech ${speech_pid} ${LOG_PREFIX}.pc_speech.log" >> "${PIDFILE}"
-    for _ in $(seq 1 40); do
-        [ -f "${ready}" ] && break
-        kill -0 "${speech_pid}" 2>/dev/null || break
-        sleep 0.05
-    done
-    if [ -f "${ready}" ]; then
-        python3 -c 'import json,sys; value=json.load(open(sys.argv[1])); print("电脑播报：在电脑浏览器打开以下链接，点击开启播报（无需下载）："); [print("  "+url) for url in value["urls"]]' "${ready}" || true
-    else
-        echo "WARNING: 电脑播报页未就绪，采集不受影响；详情 ${LOG_PREFIX}.pc_speech.log" >&2
-    fi
 }
 
 cleanup_session() {
@@ -367,7 +346,7 @@ RECORDER_ARGS=(
     --sync-image-buffer-size "${SYNC_IMAGE_BUFFER_SIZE:-16}"
     --sync-signal-buffer-size "${SYNC_SIGNAL_BUFFER_SIZE:-64}"
     --min-free-disk-gb "${MIN_FREE_DISK_GB:-2}"
-    --max-episode-temp-gb "${MAX_EPISODE_TEMP_GB:-8}"
+    --max-episode-temp-gb "${MAX_EPISODE_TEMP_GB:-0}"
     --max-episode-seconds "${MAX_EPISODE_SECONDS:-600}"
     --image-writer-max-pending "${IMAGE_WRITER_MAX_PENDING:-64}"
     --image-writer-max-mb "${IMAGE_WRITER_MAX_MB:-256}"
@@ -486,8 +465,6 @@ if [ "${VR_CONTROL}" = "1" ]; then
         echo "  VR anti-repeat    : after acknowledgement, release B continuously for ${VR_SUBTASK_B_REARM_SEC:-2.0}s; retries restart this interval"
     fi
 fi
-
-start_pc_speech_page
 
 echo "============================================================"
 echo "Interactive controls"

@@ -17,6 +17,7 @@
 | first_frames.py / extract_first_frames.py | 原始RGB首帧导出、历史数据离线补提 |
 | video_encoding.py | 同步/后台保存共用的硬件编码探针、完整读回与局部适配 |
 | vr_collector_control.py / vr_feedback.py / subtask_annotations.py | 手柄、反馈、子任务边界与回执 |
+| collector_pc_speech.py | 供管理后台经SSH读取的只读NDJSON事件流，不启动HTTP服务，不在机器人播放电脑语音 |
 | dagger/ / dagger_labels.py | 独立增量控制、权限、Thor接口、纠错mask和结果标签 |
 | convert_dataset.py | 独立state/action投影到新数据集 |
 | scripts/setup_collector_env.py | 不覆盖已有环境的CPU/GPU安装及合成检查 |

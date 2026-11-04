@@ -9,14 +9,124 @@ import io
 import json
 import os
 from pathlib import Path
+import select
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from collector_pc_speech import LogSpeech, LogTail, RECEIPT, emit_receipt, find_session, receipt_text
+from collector_pc_speech import LogSpeech, LogTail, RECEIPT, emit_receipt, find_session, receipt_text, stream
 
 
 class SpeechTest(unittest.TestCase):
+    def test_launcher_does_not_start_an_independent_speech_website(self):
+        root = Path(__file__).resolve().parents[1]
+        self.assertFalse((root / 'collector_speech_web.py').exists())
+        self.assertFalse((root / 'web/collector_speech/app.js').exists())
+        for name in ('start_lerobot_official_collect.sh', 'launcher_help.py'):
+            source = (root / name).read_text()
+            self.assertNotIn('PC_SPEECH_WEB', source)
+            self.assertNotIn('start_pc_speech_page', source)
+
+    def test_malformed_receipts_never_announce_a_successful_save(self):
+        for value in (None, [], {'event': []}, {'event': 'save', 'success': True, 'frames': True},
+                      {'event': 'save', 'success': True, 'frames': 5, 'episode_invalid': True},
+                      {'event': 'save', 'success': True, 'frames': 5, 'subtasks': ['bad']},
+                      {'event': 'save', 'success': True, 'frames': 5, 'task_outcome': 'bad'}):
+            with self.subTest(value=value):
+                text = LogSpeech('recorder').parse(RECEIPT + json.dumps(value))
+                self.assertNotIn('已保存', text or '')
+        self.assertEqual(receipt_text(dict(event='discard', success=True, episode_invalid=True)), '已丢弃')
+
+    def test_stream_binds_events_to_one_session_without_replaying_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'vr.log'
+            path.write_text('[VR speech] 旧消息\n')
+            command = ['python', 'record_lerobot_official.py']
+            events = []
+
+            def emit(kind, **fields):
+                events.append(dict(kind=kind, **fields))
+                if kind == 'connected':
+                    with path.open('a') as log:
+                        log.write('[VR speech] 下一步\n[VR speech] 下一步\n')
+
+            with patch('collector_pc_speech.find_session', return_value=(Path(tmp), path, 'vr', ((11, command),))), \
+                 patch('collector_pc_speech.process_args', return_value=command), \
+                 patch('collector_pc_speech.time.monotonic', side_effect=(0, 2.1, 3.1)), \
+                 patch('collector_pc_speech.time.sleep'):
+                stream(tmp, duration=3, emit=emit)
+            self.assertEqual([e['kind'] for e in events], ['connected', 'speech', 'speech', 'heartbeat', 'ended'])
+            self.assertEqual([e['seq'] for e in events], list(range(1, 6)))
+            self.assertEqual({e['version'] for e in events}, {1})
+            self.assertEqual(len({e['session_id'] for e in events}), 1)
+            self.assertTrue(events[0]['session_id'].startswith('vr:11:'))
+            self.assertEqual([e['text'] for e in events if e['kind'] == 'speech'], ['下一步', '下一步'])
+            self.assertNotEqual(events[1]['id'], events[2]['id'])
+
+    def test_stream_source_exit_never_attaches_to_another_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'log'
+            path.touch()
+            events = []
+            with patch('collector_pc_speech.find_session', return_value=(Path(tmp), path, 'recorder', ((11, ['original']),))) as discover, \
+                 patch('collector_pc_speech.process_args', return_value=['replacement']), \
+                 patch('collector_pc_speech.time.monotonic', side_effect=(0, .1, .7)), \
+                 patch('collector_pc_speech.time.sleep'):
+                stream(tmp, emit=lambda kind, **fields: events.append(dict(kind=kind, **fields)))
+            discover.assert_called_once()
+            self.assertEqual([e['kind'] for e in events], ['connected', 'ended'])
+            self.assertEqual(events[-1]['reason'], 'collector_or_vr_helper_exited')
+
+    def test_failed_connection_closes_log_reader(self):
+        reader = unittest.mock.Mock(identity=(1, 2))
+        with patch('collector_pc_speech.find_session', return_value=(Path('/unused'), Path('/unused/log'), 'vr', ((11, []),))), \
+             patch('collector_pc_speech.LogTail', return_value=reader):
+            with self.assertRaises(BrokenPipeError):
+                stream(emit=unittest.mock.Mock(side_effect=BrokenPipeError))
+        reader.close.assert_called_once()
+
+    def test_cli_reads_only_selected_live_fixture_and_leaves_it_running(self):
+        # A named stdin sleeper exercises real /proc discovery, not ROS or a
+        # real recorder. All files and processes belong to this temporary test.
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            fixture = base / 'record_lerobot_official.py'
+            fixture.write_text('import sys\nsys.stdin.read()\n')
+            log = base / 'recorder.log'
+            log.write_text('[SAVED BACKGROUND] Episode 98 | 3 frames\n')
+            producer = subprocess.Popen([sys.executable, '-B', str(fixture), '--status-file', str(base / 'status.json')],
+                                        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            reader = None
+            try:
+                (base / '.official_recording_pids').write_text(f'recorder {producer.pid} {log}\n')
+                reader = subprocess.Popen([sys.executable, '-B', str(root / 'collector_pc_speech.py'),
+                                           '--base-dir', tmp, '--duration', '.5'],
+                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                self.assertTrue(select.select([reader.stdout], [], [], 3)[0], 'speech reader did not connect')
+                first = json.loads(reader.stdout.readline())
+                self.assertEqual(first['kind'], 'connected')
+                self.assertEqual(first['base_dir'], tmp)
+                with log.open('a') as output:
+                    output.write(RECEIPT + json.dumps(dict(event='save_queued', success=True)) + '\n')
+                    output.write('[SAVED BACKGROUND] Episode 0 | 3 frames\n')
+                out, err = reader.communicate(timeout=3)
+                self.assertEqual(reader.returncode, 0, err)
+                events = [first] + [json.loads(line) for line in out.splitlines()]
+                self.assertEqual([item['seq'] for item in events], list(range(1, len(events) + 1)))
+                self.assertEqual([item['kind'] for item in events], ['connected', 'speech', 'speech', 'ended'])
+                self.assertIn('后台保存中', events[1]['text'])
+                self.assertEqual(events[2]['text'], '第1条已保存')
+                self.assertIsNone(producer.poll(), 'speech exit must not stop the producer')
+                self.assertFalse((base / 'status.json').exists(), 'speech must not write control receipts')
+            finally:
+                if reader is not None and reader.poll() is None:
+                    reader.kill()
+                    reader.communicate()
+                producer.communicate(input=b'', timeout=3)
+
     def test_repeated_marks_and_different_saves_are_never_text_deduplicated(self):
         parser = LogSpeech('vr')
         lines = ['[VR speech] 下一步'] * 8 + ['[VR speech] 第39条已保存', '[VR speech] 第40条已保存']

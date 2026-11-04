@@ -52,7 +52,6 @@ EXTRA = {
     'VR_START_DELAY_SEC': (3, 'VR start countdown, seconds in [0,30]. B/Y cancels it; lost input cancels it.'),
     'VR_A_LONG_PRESS_SEC': (1, 'Legacy variable name: B hold threshold in subtask mode, seconds in [0.2,10]. Release with GL+GR held to save early.'),
     'VR_SUBTASK_B_REARM_SEC': (2, 'Subtask B anti-repeat: continuous release seconds after recorder acknowledgement; finite and positive. Retries restart the interval; no queued marks. Does not change terminal N or ordinary VR/DAgger buttons.'),
-    'PC_SPEECH_WEB': (1, '0/1: collection-owned read-only browser speech page. Open the printed URL on the terminal PC and click enable; no download. Audio runs in the browser. Closing the page never stops collection.'),
     'VR_DEBUG_INPUT': (0, '0/1: raw Grip/face and command debug logs; default off. Collection receipts and errors always remain visible.'),
     'VR_SPEECH': (1, '0/1: use the existing robot TTS service. Does not change system volume.'),
     'VR_INPUT_TOPIC': ('/control_topic_<domain>_<robot>', 'Factory VR input. The reviewed V4 input is /openarmx_teleop_vr_306_v4/vr_input.'),

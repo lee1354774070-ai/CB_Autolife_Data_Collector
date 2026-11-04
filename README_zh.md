@@ -12,6 +12,7 @@
 - [可选GPU视频编码及性能验证](docs/GPU_ENCODING_zh.md)
 - [录制时GPU JPEG解码、像素差异与性能测试](docs/GPU_JPEG_zh.md)
 - [CPU/GPU采集环境一键部署](docs/ENVIRONMENT_SETUP_zh.md)
+- [管理网页电脑播报与只读事件接口](docs/PC_SPEECH_zh.md)
 - [四种模式使用的遥操作版本](README.md#modes)
 - [键盘数采](README.md#keyboard) / [原厂单人VR](README.md#vr) / [子任务数采](README.md#subtask)
 - [V4增量遥操作与DAgger](README.md#dagger)

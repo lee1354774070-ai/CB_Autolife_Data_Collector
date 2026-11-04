@@ -15,6 +15,7 @@ See [README](README.md) for usage and parameters, [中文](INSTRUCTION_zh.md) fo
 - first_frames.py stages original RGB frame zero; extract_first_frames.py backfills from v3 video offsets.
 - video_encoding.py shares startup hardware probes, full readback and writer-local adaptation across save modes.
 - VR/subtask modules own buttons, feedback, exclusive-end boundaries and request acknowledgements.
+- collector_pc_speech.py exposes a read-only NDJSON log stream over the management backend's SSH connection. It does not start an HTTP server or play audio on the robot.
 - dagger/ and dagger_labels.py own reviewed incremental control, authority, Thor integration and expert masks.
 - convert_dataset.py projects state/action independently into a new dataset.
 - scripts/setup_collector_env.py installs/checks an isolated environment without controlling hardware.
