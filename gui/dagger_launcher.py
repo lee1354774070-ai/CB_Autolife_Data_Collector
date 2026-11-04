@@ -106,7 +106,7 @@ class Launcher:
         root.bind('<FocusOut>', self.shortcut_cancel, add='+')
         body = tk.Frame(root, bg=BG, padx=24, pady=14)
         body.pack(fill='both', expand=True)
-        self.label(body, '云蝶  /  ROBOT 300', 11, BLUE).pack(anchor='w')
+        self.label(body, '云蝶  /  ROBOT ' + os.environ.get('ROBOT_ID', '未指定'), 11, BLUE).pack(anchor='w')
         self.label(body, 'DAgger 启动器', 25, INK, True).pack(anchor='w', pady=(8, 4))
         self.label(body, '全身复位可独立使用，按所选任务姿态执行；本轮启动后锁定目标', 11).pack(anchor='w')
         panel = tk.Frame(body, bg=CARD, padx=16, pady=10)

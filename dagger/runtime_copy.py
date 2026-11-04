@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import tempfile
 
-from .dependencies import validate
+from .dependencies import validate, BUNDLED_CONTROLLER, BUNDLED_RESET_ROOT, BUNDLED_RESET_HASHES
 
 
 def _hashes(root):
@@ -26,7 +26,11 @@ def prepare_copy(source_root: Path, cache_root: Path) -> Path:
     patch = Path(__file__).with_name("v4_controller.patch")
     reset_patch = Path(__file__).with_name('task_reset_loader.patch')
     source_hashes = _hashes(source)
-    identity = hashlib.sha256(json.dumps(source_hashes, sort_keys=True).encode() + patch.read_bytes() + reset_patch.read_bytes()).hexdigest()
+    bundled = source_hashes['openarmx_teleop_vr_306_v4/controller_node.py'] == BUNDLED_CONTROLLER
+    saved_pose_sources = (b''.join((BUNDLED_RESET_ROOT / name).read_bytes()
+                                  for name in BUNDLED_RESET_HASHES) if bundled else b'')
+    identity = hashlib.sha256(json.dumps(source_hashes, sort_keys=True).encode() + patch.read_bytes()
+                              + reset_patch.read_bytes() + saved_pose_sources).hexdigest()
     target = cache_root / identity[:20]
     if target.exists():
         manifest = json.loads((target / ".collector_copy.json").read_text())
@@ -38,8 +42,13 @@ def prepare_copy(source_root: Path, cache_root: Path) -> Path:
         stage = Path(temporary) / "v4"
         shutil.copytree(source, stage, ignore=shutil.ignore_patterns(
             ".*", "__pycache__", "*.pyc", "build", "install", "log", "logs"))
-        subprocess.run(["patch", "--batch", "--forward", "--fuzz=0", "-p1", "-i", str(patch)],
+        # Bundled snapshot already contains v4_controller.patch; never apply twice.
+        controller_patch = BUNDLED_RESET_ROOT / 'controller.patch' if bundled else patch
+        subprocess.run(["patch", "--batch", "--forward", "--fuzz=0", "-p1", "-i", str(controller_patch)],
                        cwd=stage, check=True, capture_output=True, text=True)
+        if bundled:
+            shutil.copy2(BUNDLED_RESET_ROOT / 'reset_pose_loader.py',
+                         stage / 'openarmx_teleop_vr_306_v4/reset_pose_loader.py')
         if (stage / 'openarmx_teleop_vr_306_v4/reset_pose_loader.py').is_file():
             subprocess.run(['patch', '--batch', '--forward', '--fuzz=0', '-p1', '-i', str(reset_patch)],
                            cwd=stage, check=True, capture_output=True, text=True)

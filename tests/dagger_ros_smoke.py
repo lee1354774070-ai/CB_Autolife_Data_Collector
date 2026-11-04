@@ -28,9 +28,10 @@ def check_controller_copy(root):
         runtime = prepare_copy(root, Path(directory))
         source = runtime / 'openarmx_teleop_vr_306_v4/controller_node.py'
         snapshot = Path(__file__).resolve().parents[1] / 'teleop_snapshot/openarmx_teleop_vr_306_v4'
-        from dagger.dependencies import CONTROL_CENTER_RESET_CONTROLLER, REVIEWED_ALTERNATES
+        from dagger.dependencies import CONTROL_CENTER_RESET_CONTROLLER, BUNDLED_CONTROLLER, REVIEWED_ALTERNATES
         original_controller = root / 'openarmx_teleop_vr_306_v4/openarmx_teleop_vr_306_v4/controller_node.py'
-        reset_variant = hashlib.sha256(original_controller.read_bytes()).hexdigest() == CONTROL_CENTER_RESET_CONTROLLER
+        reset_variant = hashlib.sha256(original_controller.read_bytes()).hexdigest() in {
+            CONTROL_CENTER_RESET_CONTROLLER, BUNDLED_CONTROLLER}
         expected_controller = snapshot / 'openarmx_teleop_vr_306_v4/controller_node.py'
         if reset_variant:
             expected_root = Path(directory) / 'expected'

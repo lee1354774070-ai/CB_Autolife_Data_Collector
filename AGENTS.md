@@ -14,7 +14,7 @@
 - `dagger/robot_profile.py`区分机器人编号和型号；不能恢复只允许300的判断，也不能用编号猜型号。
 - S2/S3共用main，ROBOT_TYPE只标记数据集；不在采集器中添加S2模型到S3的推理转换。旧S3预览工具已移除，生产DAgger仍须拒绝预览服务并校验控制接口。
 - `dagger/assets/` 为随版本发布的配置与网页；哈希在 `dependencies.py` 和 `SOURCE.json`。
-- `teleop_snapshot/` 为已打补丁的审查快照，不是待打补丁的运行依赖。
+- `teleop_snapshot/` 为已打DAgger补丁的审查快照，默认作为依赖来源；必须走哈希校验和私有运行副本，只补保存姿态适配，不重复应用权限补丁。显式外部依赖继续严格校验。
 - 300正式部署在 `/home/ubuntu/CB_Autolife_Data_Collector`；部署路径不等于修改硬件的授权。
 
 ## 环境和验证

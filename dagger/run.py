@@ -60,7 +60,7 @@ def environment(task: str, text: str | None, source: dict[str, str], *, reset_on
     fps = float(env.get("COLLECT_FPS", "30"))
     if not math.isfinite(fps) or fps <= 0:
         raise ValueError("COLLECT_FPS must be finite and positive")
-    env.setdefault("DAGGER_DEPENDENCY_ROOT", "/home/ubuntu/ros2_ws/src")
+    env.setdefault("DAGGER_DEPENDENCY_ROOT", str(ROOT / "teleop_snapshot"))
     env.setdefault("DAGGER_TOOLS_ROOT", str(ROOT.parent) if (ROOT.parent / "deploy").is_dir()
                    else "/home/ubuntu/Autolife_VLA_Tools")
     env.setdefault("DAGGER_ROS_SETUP", default_ros_setup())

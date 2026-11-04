@@ -32,15 +32,25 @@ ASSET_HASHES = {
 }
 # Reviewed source variants; accepting a controller also pins its new import.
 CONTROL_CENTER_RESET_CONTROLLER = "4db8de0ded806c546dfde83b2553dc3f3799c09a54e927ada9f1debd40c410eb"
+BUNDLED_CONTROLLER = "7b2445f4328826a77116ae30422d8dcdcec0d240b3caf7e09c9c291c74ea6d2d"
 RESET_POSE_LOADER = "openarmx_teleop_vr_306_v4/openarmx_teleop_vr_306_v4/reset_pose_loader.py"
 RESET_POSE_LOADER_HASH = "2403a92529ec1dff466a0c379ef803f99c5d23809ff7378559b57c8440f7d210"
+BUNDLED_RESET_ROOT = Path(__file__).resolve().parents[1] / "teleop_snapshot/control_center_reset_pose"
+BUNDLED_RESET_HASHES = {
+    "controller.patch": "ef333fc110c27fa40de2747fb8fde86fef586b225639d397f2098fc61e9c7bd7",
+    "reset_pose_loader.py": RESET_POSE_LOADER_HASH,
+}
 REVIEWED_ALTERNATES = {
     # Robot 300's calibrated neck defaults; DAgger uses its own stack.launch.py.
     "openarmx_teleop_vr_306_v4/launch/full_vr_teleop.launch.py": {
         "0f97ff7393027fc02ad9e911b2cebfb5f14fffcac32c896ccbe61f9e39375dc1",
     },
     "openarmx_teleop_vr_306_v4/openarmx_teleop_vr_306_v4/controller_node.py": {
-        CONTROL_CENTER_RESET_CONTROLLER,
+        CONTROL_CENTER_RESET_CONTROLLER, BUNDLED_CONTROLLER,
+    },
+    "openarmx_teleop_vr_306_v4/config/teleop.yaml": {
+        # Existing robot-340 local neck limit; portable defaults remain unchanged.
+        "cb7bf99463dd2dee82ec3d0a45651f8ef48a5e8560ba2ef3b9db23a9511d30ea",
     },
     # Robot 300's measured reset pose; only four reset joint arrays differ.
     "openarmx_teleop_vr_306_v4/config/controller.yaml": {
@@ -109,6 +119,13 @@ def validate(root: Path) -> None:
             if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() not in allowed:
                 raise RuntimeError(f"DAgger dependency changed or missing: {path}; inspect this build before running")
     controller = root / "openarmx_teleop_vr_306_v4/openarmx_teleop_vr_306_v4/controller_node.py"
+    if controller.is_file() and hashlib.sha256(controller.read_bytes()).hexdigest() == BUNDLED_CONTROLLER:
+        # The bundled controller already has DAgger hooks, but needs the saved-pose
+        # adapter in its private runtime copy, not in the shared teleop source.
+        for relative, expected in BUNDLED_RESET_HASHES.items():
+            path = BUNDLED_RESET_ROOT / relative
+            if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+                raise RuntimeError(f"DAgger dependency changed or missing: {path}; inspect this build before running")
     if controller.is_file() and hashlib.sha256(controller.read_bytes()).hexdigest() == CONTROL_CENTER_RESET_CONTROLLER:
         loader = root / RESET_POSE_LOADER
         if not loader.is_file() or hashlib.sha256(loader.read_bytes()).hexdigest() != RESET_POSE_LOADER_HASH:
@@ -118,7 +135,7 @@ def validate(root: Path) -> None:
 def validate_saved_reset(root: Path) -> None:
     validate(root)
     controller = root / "openarmx_teleop_vr_306_v4/openarmx_teleop_vr_306_v4/controller_node.py"
-    if hashlib.sha256(controller.read_bytes()).hexdigest() != CONTROL_CENTER_RESET_CONTROLLER:
+    if hashlib.sha256(controller.read_bytes()).hexdigest() not in {CONTROL_CENTER_RESET_CONTROLLER, BUNDLED_CONTROLLER}:
         raise RuntimeError('全身复位需要已审核的控制中心保存姿态版本；不会退回原厂复位')
 
 
