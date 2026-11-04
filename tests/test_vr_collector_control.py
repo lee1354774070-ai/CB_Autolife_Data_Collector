@@ -502,7 +502,7 @@ class SubtaskVrTest(unittest.TestCase):
             with self.subTest(interval=interval):
                 self.setUp()
                 self.session = VrSession(self.session.submit, self.speech.append, start_delay=0,
-                                         subtask_mode=True, subtask_b_rearm_sec=interval, log=self.logs.append)
+                                         subtask_mode=True, subtask_b_rearm_sec=interval, log=self.logs.append, debug_input=True)
                 self.confirm_first_mark()
                 self.session.command('a_short', 1.4)
                 self.assertIn(f'release B for {interval:g}s', self.logs[-1])
@@ -673,5 +673,29 @@ class SubtaskVrTest(unittest.TestCase):
             self.assertIn('--a-long-press-sec must', result.stderr)
 
 
-if __name__ == '__main__':
+
+
+class QuietInputTest(unittest.TestCase):
+    def test_input_noise_is_off_by_default_with_opt_in_debug(self):
+        for debug in (False, True):
+            logs = []
+            session = VrSession(lambda command: Future(), lambda text: None, log=logs.append, debug_input=debug)
+            for index in range(20):
+                session.on_payload(payload(grips=index % 2 == 0), index * .02)
+            self.assertEqual(any('[VR input]' in text for text in logs), debug)
+            session.accept_status(dict(event='start', success=True, request_id='start-1', wall_time=10))
+            self.assertTrue(any('[STARTED]' in text for text in logs))
+            session.accept_event(dict(event='episode_invalidated', reason='camera stalled', wall_time=11))
+            self.assertTrue(any('[EPISODE INVALID]' in text for text in logs))
+
+    def test_early_background_save_keeps_incomplete_annotation_warning(self):
+        spoken = []
+        session = VrSession(lambda command: Future(), spoken.append, log=lambda text: None)
+        session.accept_status(dict(event='save_queued', success=True, request_id='queued-1', wall_time=10,
+                                   subtasks={'enabled': True, 'confirmed': 2, 'total': 5, 'complete': False}))
+        self.assertIn('标注未完成', spoken[-1])
+        self.assertNotIn('已保存', spoken[-1])
+
+
+if __name__ == "__main__":
     unittest.main()

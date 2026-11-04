@@ -249,7 +249,7 @@ class RecorderStorageTest(unittest.TestCase):
 
     def test_nonfinite_limits_and_unsafe_encoding_modes_are_rejected(self):
         for option, value in (('--max-sync-delta-sec', 'nan'), ('--image-poll-fps', 'inf'),
-                              ('--max-episode-temp-gb', '0'), ('--min-free-disk-gb', '-1'),
+                              ('--max-episode-temp-gb', '-1'), ('--min-free-disk-gb', '-1'),
                               ('--max-episode-seconds', 'nan'), ('--depth-max', 'nan'),
                               ('--batch-encoding-size', '2'), ('--streaming-encoding', None)):
             argv = ['recorder', '--output-dir', '/unused', option] + ([value] if value else [])

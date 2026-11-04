@@ -48,3 +48,5 @@ ROS测试使用域211和本机发现；数据全部为独立临时目录中的�
 性能工具分别测量[SHM与CPU颜色转换](../tests/benchmark_shm_reader.py)、
 [JPEG解码](GPU_JPEG_zh.md)和[视频编码](GPU_ENCODING_zh.md)。
 它们不替代整机CPU、相机时序、VR延迟及任务完成率的现场测量。
+
+2026-11-04在340上的后续集成、兼容检查与CPU/GPU环境边界见[340集成验证](ROBOT340_INTEGRATION_zh.md)。

@@ -171,7 +171,7 @@ export SYNC_IMAGE_BUFFER_SIZE=16
 | 参数 | 默认值 | 作用 |
 |---|---:|---|
 | `MIN_FREE_DISK_GB` | 2 | 磁盘剩余空间底线；还会额外预留一份当前条目估算大小供编码使用。 |
-| `MAX_EPISODE_TEMP_GB` | 8 | 单条episode原始图像字节及开销的累计预算，不是整个数据集大小上限。 |
+| `MAX_EPISODE_TEMP_GB` | 8 | 单条episode原始图像字节及开销的累计预算，`0` 关闭此预算；正数启用上限。磁盘预留、写入队列和时长保护仍生效。 |
 | `MAX_EPISODE_SECONDS` | 600 | 单条开始后的最长持续时间，包含等待；**到限作废，不是到时自动保存**。可能先达到容量限制。 |
 | `IMAGE_WRITER_MAX_PENDING` | 64 | 所有相机共享的未完成写图任务数上限，不是每路图像FIFO容量。 |
 | `IMAGE_WRITER_MAX_MB` | 256 | 未完成写图任务所持原始图像的内存预算，不是进程总内存上限。 |
@@ -246,7 +246,7 @@ GPU路径要求 `COLLECT_VCODEC=h264`，不同时设置 `VIDEO_CRF/VIDEO_PRESET`
 | `DAGGER_SERVER_URL` | 统一入口无默认，必填 | Thor服务URL，例如 `http://192.168.8.224:8777`。IP/端口是部署示例，以当前服务为准；不支持旧SOMA/Outcome协议。 |
 | `DAGGER_TOKEN_FILE` | `/home/ubuntu/.config/autolife_hg_dagger/groot_server.token` | Thor认证token文件，须与服务匹配；不要把token写进URL或提交到Git。 |
 | `GROOT_REMOTE_TOKEN` | 未设置 | 兼容的环境变量认证入口，非空时预检和模型桥接均优先使用它而不是token文件。建议统一使用文件，避免Shell历史泄漏或旧环境变量覆盖凭据。 |
-| `DAGGER_DEPENDENCY_ROOT` | `/home/ubuntu/ros2_ws/src` | 包含已审核 `openarmx_teleop_vr_306_v4` 的目录。源文件须通过哈希检查，启动器在 `.runtime/` 副本中应用补丁，不改同事原代码。 |
+| `DAGGER_DEPENDENCY_ROOT` | 本仓库 `teleop_snapshot/` | 默认使用已审核打包快照；不重复应用DAgger权限补丁，仅在 `.runtime/` 私有副本中接入任务保存姿态。显式指定旧依赖目录仍需原有哈希校验，不改遥操源码。 |
 | `DAGGER_TOOLS_ROOT` | 集合仓库自动取根目录；独立库为 `/home/ubuntu/Autolife_VLA_Tools` | 保留旧Tools目录兼容入口；DAgger预检现在复用仓库内HTTP客户端，不再为读health要求安装整套Tools。 |
 | `DAGGER_WEB_PORT` | `8447` | V4扩展网页的HTTPS端口，1～65535。改变端口不能解决两套控制器争用关节的问题。 |
 | `DAGGER_GRIPPER_PHASE` | `auto` | 六个内置任务按精确文本匹配抓取/放置；自定义文本必须显式选 `pick`、`place` 或 `continuous`。需要更新后的Thor服务。 |
@@ -466,7 +466,7 @@ export WITH_HEAD=1 WITH_UPPER_WAIST=1 WITH_WAIST=0 WITH_DEPTH=0
 export WITH_EEF_STATE=0 WITH_EEF_ACTION=0
 export DAGGER_SERVER_URL=http://192.168.8.224:8777
 export DAGGER_TOKEN_FILE=/home/ubuntu/.config/autolife_hg_dagger/groot_server.token
-export DAGGER_DEPENDENCY_ROOT=/home/ubuntu/ros2_ws/src
+export DAGGER_DEPENDENCY_ROOT=/home/ubuntu/CB_Autolife_Data_Collector/teleop_snapshot
 export DAGGER_WEB_PORT=8447 OUTPUT_BASE_DIR=/home/ubuntu/nas/dagger
 export TASK_TEXT='Pick the laundry bag.'
 
@@ -690,3 +690,12 @@ DAgger失败保存终端改为K、启动器Shift+K，手柄长按Y不变；启�
 - 后台保存回归：`python -B -m unittest discover -s tests -p 'test_background_saves.py'`，使用合成RGBD数据验证真实编码、队列恢复和历史文件保护。JPEG/视频性能测试分别见[GPU JPEG](docs/GPU_JPEG_zh.md)与[GPU视频编码](docs/GPU_ENCODING_zh.md)，不以单独编码耗时替代整套采集性能。
 
 340离线回放实测（1307帧、43.6秒、三路RGB+深度）：同步保存等待41.9秒，后台暂存确认2.7秒，最终落盘41.7秒；下一条模拟30Hz采集最大间隔38.7ms。深度1307帧逐像素一致，动作、状态、子任务标签一致。测试输出视频约127MB→190MB；这是吞吐与文件体积的折中，不代表已完成真机遥操验收。
+
+
+## 电脑端采集语音
+
+采集启动时自动显示“电脑播报”网页链接，在电脑浏览器打开并点击“开启播报”即可，无需下载脚本或安装程序。普通/单人/子任务/DAgger共用录制入口；按实际采集确认播报，不使用OCR、不限制子任务数量，后台排队与保存成功分别提示。`VR_SPEECH=0`仅关闭机器人喇叭，电脑仍可播报；`PC_SPEECH_WEB=0`可关闭网页服务。使用及现场验收见[电脑端播报说明](docs/PC_SPEECH_zh.md)。
+
+手柄原始输入、按键接受和ACK耗时默认不再刷屏，保留采集确认和异常。排查时可临时设置`VR_DEBUG_INPUT=1`。变更下次启动生效，不自动重启当前采集。
+
+340集成改动、上游保留范围和本轮软件验证见[340集成验证](docs/ROBOT340_INTEGRATION_zh.md)。

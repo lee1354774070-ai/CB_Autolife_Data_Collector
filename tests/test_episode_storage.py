@@ -277,6 +277,29 @@ class SyncLogTest(unittest.TestCase):
 
 
 class BudgetTest(unittest.TestCase):
+    def test_zero_disables_only_episode_budget(self):
+        with tempfile.TemporaryDirectory() as root:
+            budget = StorageBudget(root, min_free_gb=.01, max_temp_gb=0, max_seconds=1)
+            try:
+                budget.start()
+                self.assertIsNone(budget.maximum)
+                budget.bytes = 9 * 1024**3
+                budget._snapshot = (time.monotonic(), 100 * 1024**3, budget.bytes, None)
+                budget.check()
+                budget._snapshot = (time.monotonic(), 1, budget.bytes, None)
+                with self.assertRaisesRegex(StorageLimitError, 'reserve_low'):
+                    budget.check()
+                budget.started -= 2
+                with self.assertRaisesRegex(StorageLimitError, 'duration_limit'):
+                    budget.check()
+            finally:
+                budget.close()
+
+    def test_episode_budget_rejects_negative_and_nonfinite(self):
+        for value in (-1, float('nan'), float('inf')):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                StorageBudget('.', max_temp_gb=value)
+
     def test_disk_limits_duration_and_stale_monitor(self):
         with tempfile.TemporaryDirectory() as root:
             budget = StorageBudget(root, min_free_gb=.01, max_temp_gb=.02, max_seconds=1)

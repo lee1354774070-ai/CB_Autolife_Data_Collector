@@ -25,7 +25,7 @@ WITH_WAIST="${WITH_WAIST:-0}"
 WITH_EEF_STATE="${WITH_EEF_STATE:-0}"
 WITH_EEF_ACTION="${WITH_EEF_ACTION:-0}"
 for parameter in WITH_HEAD WITH_WAIST WITH_UPPER_WAIST WITH_EEF_STATE WITH_EEF_ACTION \
-    BACKGROUND_SAVE WITH_DEPTH CAMERA_ONLY FALLBACK_ACTION_TO_STATE STREAMING_ENCODING VR_SPEECH DEPTH_USE_LOG START_HAND_PRODUCER; do
+    BACKGROUND_SAVE WITH_DEPTH CAMERA_ONLY FALLBACK_ACTION_TO_STATE STREAMING_ENCODING VR_SPEECH VR_DEBUG_INPUT PC_SPEECH_WEB DEPTH_USE_LOG START_HAND_PRODUCER; do
     if [[ -v "${parameter}" && ! "${!parameter}" =~ ^[01]$ ]]; then
         echo "ERROR: ${parameter} must be 0 or 1." >&2
         exit 2
@@ -46,10 +46,6 @@ case "${ACTION_MODE:-status_target}" in
 esac
 VR_CONTROL="${VR_CONTROL:-}"
 VR_SPEECH="${VR_SPEECH:-1}"
-if [[ ! "${VR_SPEECH}" =~ ^[01]$ ]]; then
-    echo "ERROR: VR_SPEECH must be 0 or 1." >&2
-    exit 2
-fi
 if [ "${WITH_UPPER_WAIST}" = "1" ] && [ "${WITH_WAIST}" = "1" ]; then
     echo "ERROR: WITH_UPPER_WAIST and WITH_WAIST cannot both be 1." >&2
     exit 2
@@ -64,6 +60,13 @@ read -r COLLECTOR_MODE VR_CONTROL SUBTASK_COUNT <<< "${MODE_CONFIG}"
 printf 'AutoLife Collector | mode=%s | %s\n' "${COLLECTOR_MODE}" "${SCRIPT_DIR}"
 if [ "${COLLECTOR_MODE}" = "dagger" ]; then
     exec python3 "${SCRIPT_DIR}/dagger/run.py" "$@"
+fi
+# Factory VR modes read controller targets from the continuous status stream.
+if [[ "${COLLECTOR_MODE}" = "vr" || "${COLLECTOR_MODE}" = "subtask" ]]; then
+    if [[ "${ACTION_MODE:-status_target}" != "status_target" ]]; then
+        echo "WARNING: factory ${COLLECTOR_MODE} collection uses ACTION_MODE=status_target; overriding ${ACTION_MODE}." >&2
+    fi
+    export ACTION_MODE=status_target
 fi
 TASK_NAME="${1:-mango_pick}"
 if [[ "${TASK_NAME}" = "." || "${TASK_NAME}" = ".." || "${TASK_NAME}" = */* || "${TASK_NAME}" = -* || "${TASK_NAME}" = *$'\n'* ]]; then
@@ -115,6 +118,9 @@ fi
 if [ "${VR_SPEECH}" = "0" ]; then
     VR_ARGS+=(--no-speech)
 fi
+if [ "${VR_DEBUG_INPUT:-0}" = "1" ]; then
+    VR_ARGS+=(--debug-input)
+fi
 if [ "${VR_CONTROL}" = "1" ]; then
     python3 "${VR_ARGS[@]}" --check-config
 fi
@@ -160,6 +166,27 @@ send_control_and_report() {
         --wait \
         --timeout "${CONTROL_ACK_TIMEOUT_SEC:-300}" \
         "$1"
+}
+
+start_pc_speech_page() {
+    if [ "${PC_SPEECH_WEB:-1}" != "1" ]; then
+        return
+    fi
+    local ready="${LOG_PREFIX}.pc_speech.json"
+    python3 -u "${SCRIPT_DIR}/collector_speech_web.py" --base-dir "${BASE_DIR}" \
+        --ready-file "${ready}" --vr-control "${VR_CONTROL}" > "${LOG_PREFIX}.pc_speech.log" 2>&1 &
+    local speech_pid=$!
+    echo "pc_speech ${speech_pid} ${LOG_PREFIX}.pc_speech.log" >> "${PIDFILE}"
+    for _ in $(seq 1 40); do
+        [ -f "${ready}" ] && break
+        kill -0 "${speech_pid}" 2>/dev/null || break
+        sleep 0.05
+    done
+    if [ -f "${ready}" ]; then
+        python3 -c 'import json,sys; value=json.load(open(sys.argv[1])); print("电脑播报：在电脑浏览器打开以下链接，点击开启播报（无需下载）："); [print("  "+url) for url in value["urls"]]' "${ready}" || true
+    else
+        echo "WARNING: 电脑播报页未就绪，采集不受影响；详情 ${LOG_PREFIX}.pc_speech.log" >&2
+    fi
 }
 
 cleanup_session() {
@@ -459,6 +486,8 @@ if [ "${VR_CONTROL}" = "1" ]; then
         echo "  VR anti-repeat    : after acknowledgement, release B continuously for ${VR_SUBTASK_B_REARM_SEC:-2.0}s; retries restart this interval"
     fi
 fi
+
+start_pc_speech_page
 
 echo "============================================================"
 echo "Interactive controls"

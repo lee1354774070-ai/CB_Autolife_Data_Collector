@@ -10,6 +10,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class LauncherLifecycleTest(unittest.TestCase):
+    def test_vr_speech_is_validated_before_creating_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env = dict(os.environ, VR_SPEECH='invalid', OUTPUT_BASE_DIR=directory,
+                       COLLECTOR_CAMERA_SESSION_ACTIVE='1')
+            result = subprocess.run(['bash', str(ROOT / 'start_lerobot_official_collect.sh'), 'test'],
+                                    env=env, capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('VR_SPEECH must be 0 or 1', result.stderr)
+            self.assertFalse((Path(directory) / 'test').exists())
+
     def test_cleanup_retries_quit_when_startup_lost_first_request(self):
         source = (ROOT / 'start_lerobot_official_collect.sh').read_text()
         cleanup = source[source.index('cleanup_session() {'):source.index('on_interrupt() {')]
@@ -86,6 +96,7 @@ wait
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 env = dict(os.environ, COLLECTOR_CAMERA_SESSION_ACTIVE='1', OUTPUT_BASE_DIR=directory, COLLECTOR_MODE='keyboard',
                            VR_CONTROL='0', SUBTASKS_JSON='[]')
+                env.pop('VR_SPEECH', None)
                 result = subprocess.run(['bash', str(ROOT / 'start_lerobot_official_collect.sh'), 'test'],
                                         env=env, capture_output=True, text=True, timeout=5)
                 self.assertNotEqual(result.returncode, 0)

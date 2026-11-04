@@ -115,8 +115,9 @@ class VrSession:
 
     def __init__(self, submit, speak, *, start_delay=3.0, input_timeout=0.75,
                  subtask_mode=False, a_long_press_sec=1.0, log=print, feedback=None,
-                 reset_supported=True, subtask_b_rearm_sec=2.0):
+                 reset_supported=True, subtask_b_rearm_sec=2.0, debug_input=False):
         self.submit, self.speak, self.log = submit, speak, log
+        self.debug_log = log if debug_input else (lambda text: None)
         self.feedback = feedback or (lambda event: None)
         self.reset_supported = reset_supported
         self.start_delay, self.input_timeout = start_delay, input_timeout
@@ -159,7 +160,7 @@ class VrSession:
         controls_changed = controls != self.last_controls
         if controls_changed:
             self.last_controls = controls
-            self.log(f"[VR input] GL+GR={bool(grips)}; faces={sorted(faces)}")
+            self.debug_log(f"[VR input] GL+GR={bool(grips)}; faces={sorted(faces)}")
         if self.subtask_b_locked:
             # A retry burst may outlast the ACK; require fresh, quiet input
             # afterwards instead of allowing elapsed time or stale packets to rearm B.
@@ -169,15 +170,15 @@ class VrSession:
                 self.subtask_b_released_at = now
             elif now - self.subtask_b_released_at >= self.subtask_b_rearm_sec:
                 self.subtask_b_locked = False
-                self.log("[VR] B ready for the next subtask mark")
+                self.debug_log("[VR] B ready for the next subtask mark")
             if ("r", 5) in faces:
                 self.buttons.reset()
                 if controls_changed:
-                    self.log(f"[VR] Repeated B ignored: wait for acknowledgement, then release B for {self.subtask_b_rearm_sec:g}s")
+                    self.debug_log(f"[VR] Repeated B ignored: wait for acknowledgement, then release B for {self.subtask_b_rearm_sec:g}s")
                 return
         command = self.buttons.update(grips, faces, now)
         if command:
-            self.log(f"[VR] Button accepted: {command}")
+            self.debug_log(f"[VR] Button accepted: {command}")
             self.command(command, now)
 
     def command(self, command, now):
@@ -196,13 +197,13 @@ class VrSession:
                 self.quit_after_pending = True
                 self.speak("等待当前操作完成后退出")
             else:
-                self.log(f"[VR] Command ignored: {self.pending_command} awaiting recorder acknowledgement")
+                self.debug_log(f"[VR] Command ignored: {self.pending_command} awaiting recorder acknowledgement")
                 if now - self.last_busy_notice >= 2:
                     self.last_busy_notice = now
                     self.speak("操作处理中，请等待结果，不需要重复按键")
             return
         if self.subtask_b_locked and command in ("mark_subtask", "save"):
-            self.log(f"[VR] Repeated B ignored: wait for acknowledgement, then release B for {self.subtask_b_rearm_sec:g}s")
+            self.debug_log(f"[VR] Repeated B ignored: wait for acknowledgement, then release B for {self.subtask_b_rearm_sec:g}s")
             return
         if self.state == "exiting":
             return
@@ -247,7 +248,7 @@ class VrSession:
         self.pending_command = command
         self.pending_started_at = time.monotonic()
         self.pending = self.submit(command)
-        self.log(f"[VR] Submitted: {command}; " + ("requesting recorder shutdown" if command == "quit" else "awaiting recorder result"))
+        self.debug_log(f"[VR] Submitted: {command}; " + ("requesting recorder shutdown" if command == "quit" else "awaiting recorder result"))
         final_mark = command == "mark_subtask" and (
             self.subtask_progress.get("total", 0) > 0
             and self.subtask_progress.get("confirmed", 0) + 1 == self.subtask_progress["total"]
@@ -281,7 +282,7 @@ class VrSession:
                     self.speak("复位完成")
                     self.feedback("reset")
                 else:
-                    self.log(f"[VR] Recorder acknowledgement latency: {(time.monotonic() - self.pending_started_at) * 1000:.1f} ms ({command})")
+                    self.debug_log(f"[VR] Recorder acknowledgement latency: {(time.monotonic() - self.pending_started_at) * 1000:.1f} ms ({command})")
                     self.accept_status(status)
             except (OSError, RuntimeError, TimeoutError) as exc:
                 self.state = "unknown"
@@ -308,7 +309,7 @@ class VrSession:
             self._send("start")
         elif remaining != self.countdown:
             self.countdown = remaining
-            self.log(f"[VR] Countdown: {remaining}")
+            self.debug_log(f"[VR] Countdown: {remaining}")
             self.speak({3: "三", 2: "二", 1: "一"}.get(remaining, str(remaining)))
             self.feedback("countdown")
 
@@ -363,7 +364,9 @@ class VrSession:
                 self.speak(f"保存成功，共{status.get('total_saved_episodes', 0)}条，本条{status.get('frames', 0)}帧，可以开始下一次采集")
         elif event == "save_queued":
             self.state = "idle"
-            self.speak("后台保存中，可以开始下一条")
+            self.speak("后台保存中，标注未完成，可以开始下一条"
+                       if subtasks.get("enabled") and not subtasks.get("complete")
+                       else "后台保存中，可以开始下一条")
         elif event == "seal":
             self.state = "idle"
             self.speak("本批已封口，可以开始下一条")
@@ -479,6 +482,7 @@ def parse_args():
     parser.add_argument("--tts-topic", required=True, help="Existing robot TTS String topic, normally /topic_tts_0_<robot-id>.")
     parser.add_argument("--start-delay", type=float, default=3, help="Countdown seconds before sending start; 0 disables countdown.")
     parser.add_argument("--command-timeout", type=float, default=300, help="Maximum seconds waiting for a real recorder acknowledgement.")
+    parser.add_argument("--debug-input", action="store_true", help="Print raw Grip/face input and command diagnostics; off by default.")
     parser.add_argument("--no-speech", action="store_true", help="Do not publish TTS messages; keep terminal status output.")
     parser.add_argument("--subtask-mode", action="store_true", help="A starts; while recording short B marks a subtask, long B saves.")
     parser.add_argument("--reset-prefix", default="/openarmx_teleop_vr_306_v4", help="Inspected V4 controller namespace for guarded reset and status. No direct vendor-reset fallback.")
@@ -535,7 +539,7 @@ def main():
 
     session = VrSession(submit, speak, start_delay=args.start_delay, subtask_mode=args.subtask_mode,
                         a_long_press_sec=args.a_long_press_sec, subtask_b_rearm_sec=args.subtask_b_rearm_sec,
-                        log=lambda text: print(text, flush=True),
+                        log=lambda text: print(text, flush=True), debug_input=args.debug_input,
                         reset_supported=not args.topic.startswith("/control_topic_"),
                         feedback=lambda event: feedback_pub.publish(String(data=json.dumps(feedback_packet(event)))))
     from vr_reset import GuardedReset

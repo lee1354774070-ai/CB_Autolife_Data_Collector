@@ -3,3 +3,12 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .runtime/
+
+# Local deployment backups and generated collection artifacts, never release sources.
+*.bak
+*.bak_*
+/artifacts/
+/datasets/
+/nas/
+/nas14/
+/tools/pc_speech_*_test.zip

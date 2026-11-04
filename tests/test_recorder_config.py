@@ -17,11 +17,21 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RecorderConfigTest(unittest.TestCase):
+    def test_episode_budget_zero_disables_only_that_limit(self):
+        args = parse_args(['--output-dir', '/unused', '--max-episode-temp-gb', '0'])
+        self.assertEqual(args.max_episode_temp_gb, 0)
+        self.assertEqual(args.min_free_disk_gb, 2)
+        self.assertEqual(args.max_episode_seconds, 600)
+        for value in ('-1', 'nan', 'inf'):
+            with self.subTest(value=value), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                parse_args(['--output-dir', '/unused', '--max-episode-temp-gb', value])
+
     def test_preserves_default_schema_and_sync_limits(self):
         args = parse_args(['--output-dir', '/unused'])
         self.assertEqual((args.fps, args.sync_image_buffer_size, args.max_sync_delta_sec), (30, 16, .03))
         self.assertEqual(list(args.cameras), ['rgbd_head_color', 'hand_left', 'hand_right'])
         self.assertEqual(args.action_mode, 'status_target')
+        self.assertEqual(args.max_episode_temp_gb, 8)
         self.assertEqual(args.jpeg_decoder, 'auto')
         self.assertEqual(args.jpeg_device, 'cuda:0')
         self.assertFalse(args.with_head or args.with_waist or args.with_upper_waist or args.with_depth)
@@ -64,6 +74,7 @@ class RecorderConfigTest(unittest.TestCase):
 
     def test_all_help_entries_resolve_and_single_help_is_scoped(self):
         self.assertGreater(len(parameters()), 75)
+        self.assertEqual(parameters()['MAX_EPISODE_TEMP_GB'][0], 8)
         self.assertEqual(parameters()['JPEG_DECODER'][0], 'auto')
         self.assertIn('nvjpeg', parameters()['JPEG_DECODER'][1])
         self.assertEqual(parse_args(['--output-dir', '/unused', '--jpeg-decoder', 'nvjpeg']).jpeg_decoder, 'nvjpeg')

@@ -30,6 +30,8 @@ class EnvironmentSetupTest(unittest.TestCase):
         self.stack.enter_context(patch.object(setup.platform, 'system', return_value='Linux'))
         self.stack.enter_context(patch.object(setup.platform, 'machine', return_value='x86_64'))
         self.stack.enter_context(patch.object(setup, 'conda_executable', return_value=self.base / 'bin/conda'))
+        # Installer logic must not depend on the host /tmp filesystem capacity.
+        self.stack.enter_context(patch.object(setup.shutil, 'disk_usage', return_value=Mock(free=100 * 1024**3)))
         self.output = self.stack.enter_context(patch.object(setup.subprocess, 'check_output', return_value=str(self.base)))
         self.calls = []
         self.runner = self.stack.enter_context(patch.object(setup, 'run', side_effect=self.command))

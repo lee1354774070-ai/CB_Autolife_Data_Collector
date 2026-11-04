@@ -42,6 +42,7 @@ from queue import Empty, SimpleQueue
 from typing import Any
 
 from recorder_config import TOPIC_NODE_ID, parse_args
+from collector_pc_speech import emit_receipt
 
 # Help must work from the system interpreter without ROS/ML imports or devices.
 if __name__ == "__main__" and any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
@@ -816,6 +817,7 @@ class OfficialLeRobotRecorder(Node):
                         result = dict(payload, success=False, recording=False, episode_invalid=True,
                                       message=self.episode_invalid_reason or 'episode invalidated during start')
                     write_json_atomic(status_path, result)
+                    emit_receipt(result)
                 self.mark_status_future = self.mark_status_writer.submit(persist)
             except Exception as exc:
                 # Admission can fail before submit (e.g. a full log queue).
@@ -828,6 +830,7 @@ class OfficialLeRobotRecorder(Node):
         else:
             try:
                 write_json_atomic(status_path, payload)
+                emit_receipt(payload)
             except OSError as exc:
                 # Do not undo a committed save or crash on a full status mount.
                 # The client must see an unknown result, never a false success.
@@ -1091,9 +1094,11 @@ class OfficialLeRobotRecorder(Node):
             f"max delta: {self.args.max_sync_delta_sec * 1000:.1f} ms"
         )
         self.get_logger().info(f"dataset root: {self.args.output_dir}")
+        episode_budget = (f'{self.args.max_episode_temp_gb:g} GiB' if self.args.max_episode_temp_gb
+                          else 'unlimited (disk reserve remains active)')
         self.get_logger().info(
             f"storage guards: free>={self.args.min_free_disk_gb:g} GiB + encoding reserve, "
-            f"episode<={self.args.max_episode_temp_gb:g} GiB/{self.args.max_episode_seconds:g} s, "
+            f"episode budget={episode_budget}, duration<={self.args.max_episode_seconds:g} s, "
             f"image queue<={self.args.image_writer_max_pending} jobs/{self.args.image_writer_max_mb:g} MiB"
         )
         self.get_logger().info("waiting for 'start' command to begin episode recording")

@@ -45,6 +45,28 @@ class CollectorModeTest(unittest.TestCase):
                     self.assertEqual(args, ["run", "--", "bash", str(launcher), "camera_test"])
                     self.assertNotIn("recorder PID", result.stdout)
 
+    def test_factory_action_override_preserves_keyboard_and_dagger_joint(self):
+        # Run the real dispatch prefix; stub only the downstream entrypoints.
+        source = self.launcher.read_text()
+        prefix = source[:source.index('TASK_NAME="${1:-mango_pick}"')]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher = root / self.launcher.name
+            launcher.write_text(prefix + '\nprintf "ACTION_RESULT=%s" "${ACTION_MODE:-status_target}"\n')
+            import shutil
+            for name in ('collector_modes.py', 'subtask_annotations.py'):
+                shutil.copy2(self.launcher.parent / name, root / name)
+            (root / 'dagger').mkdir()
+            (root / 'dagger/run.py').write_text('import os; print("ACTION_RESULT=" + os.environ["ACTION_MODE"])')
+            for mode in ('keyboard', 'vr', 'subtask', 'dagger'):
+                env = dict(os.environ, COLLECTOR_CAMERA_SESSION_ACTIVE='1', COLLECTOR_MODE=mode,
+                           ACTION_MODE='joint', VR_CONTROL='', WITH_HEAD='0', WITH_WAIST='0',
+                           WITH_UPPER_WAIST='0', SUBTASKS_JSON='["one"]' if mode == 'subtask' else '[]')
+                result = subprocess.run(['bash', str(launcher), 'test'], env=env,
+                                        text=True, capture_output=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('ACTION_RESULT=' + ('status_target' if mode in ('vr', 'subtask') else 'joint'), result.stdout)
+
     def test_legacy_commands_keep_their_existing_behavior(self):
         for mode, vr, plan, expected in [
             ("", "", (), ("keyboard", False)),

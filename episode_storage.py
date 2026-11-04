@@ -190,11 +190,12 @@ class StorageBudget:
     Other processes can still exhaust the disk; write errors must be handled.
     """
     def __init__(self, root, *, min_free_gb=2, max_temp_gb=8, max_seconds=600):
-        if any(not math.isfinite(v) or v <= 0 for v in (min_free_gb, max_temp_gb, max_seconds)):
-            raise ValueError('storage limits must be finite and positive')
+        if (any(not math.isfinite(v) or v <= 0 for v in (min_free_gb, max_seconds))
+                or not math.isfinite(max_temp_gb) or max_temp_gb < 0):
+            raise ValueError('storage limits must be finite; max_temp_gb may be zero, other limits must be positive')
         self.root = Path(root)
         self.minimum = int(min_free_gb * GIB)
-        self.maximum = int(max_temp_gb * GIB)
+        self.maximum = int(max_temp_gb * GIB) if max_temp_gb else None
         self.max_seconds = max_seconds
         self.bytes = 0
         self.extra_reserve = 0
@@ -223,7 +224,7 @@ class StorageBudget:
         now = time.monotonic()
         if not saving and self.started is not None and now - self.started >= self.max_seconds:
             raise StorageLimitError('episode_duration_limit')
-        if self.bytes + additional > self.maximum:
+        if self.maximum is not None and self.bytes + additional > self.maximum:
             raise StorageLimitError('episode_temp_limit')
         snapshot = self._snapshot
         if snapshot is None or now - snapshot[0] > 2:

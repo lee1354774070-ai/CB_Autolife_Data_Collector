@@ -262,7 +262,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--min-free-disk-gb', type=float, default=2,
                         help='Minimum free GiB, in addition to one raw episode estimate reserved for saving.')
     parser.add_argument('--max-episode-temp-gb', type=float, default=8,
-                        help='Maximum raw-image-plus-overhead GiB admitted per episode; reaching it invalidates, never drops frames.')
+                        help='Maximum estimated raw-image-plus-overhead GiB per episode; 0 disables this limit only. Disk and duration guards remain active.')
     parser.add_argument('--max-episode-seconds', type=float, default=600,
                         help='Maximum wall duration after start, including waits. Exceeding it invalidates the episode.')
     parser.add_argument('--background-save', action=argparse.BooleanOptionalAction,
@@ -329,8 +329,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.image_writer_threads < 0 or args.image_writer_max_pending < 1:
         parser.error('image writer threads must be nonnegative and queue capacity positive')
     if any(not math.isfinite(v) or v <= 0 for v in (
-            args.image_writer_max_mb, args.min_free_disk_gb, args.max_episode_temp_gb, args.max_episode_seconds)):
+            args.image_writer_max_mb, args.min_free_disk_gb, args.max_episode_seconds)):
         parser.error('storage/memory/duration limits must be finite and positive')
+    if not math.isfinite(args.max_episode_temp_gb) or args.max_episode_temp_gb < 0:
+        parser.error('--max-episode-temp-gb must be finite and nonnegative (0 disables the episode budget only)')
     args.subtasks = args.subtasks_json
     if args.dagger and (args.action_mode != "joint" or args.fallback_action_to_state or args.subtasks):
         parser.error("DAgger requires --action-mode joint, no state fallback, and no subtask plan")
