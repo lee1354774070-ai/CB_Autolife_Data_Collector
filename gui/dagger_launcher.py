@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tkinter as tk
 from tkinter import messagebox, ttk
-BASE = Path('/home/ubuntu/CB_Autolife_Data_Collector')
+BASE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dagger.inference_options import TASKS, PHASES, selected_phase
 from dagger.task_reset import pose_choices, task_pose
@@ -82,7 +82,7 @@ class Launcher:
         self.stopping = False
         self.reset_only = False
         self.active_root = DATA_ROOT
-        self.checkpoint = ''
+        self.checkpoint = os.environ.get('DAGGER_EXPECTED_CHECKPOINT', '')
         self.task = ''
         self.count_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix='dataset-counts')
         self.count_future = None
@@ -113,7 +113,7 @@ class Launcher:
         panel.pack(fill='x', pady=10)
         self.label(panel, '任务指令', 11, MUTED).pack(anchor='w')
         self.instruction = ttk.Combobox(panel, font=('Sans', 12), values=[task[1] for task in TASKS])
-        self.instruction.insert(0, 'Pick the laundry bag.')
+        self.instruction.insert(0, os.environ.get('TASK_TEXT', 'Pick the laundry bag.'))
         self.instruction.pack(fill='x', ipady=3, pady=(4, 8))
         self.label(panel, '复位姿态（自动匹配已知任务；自定义任务请明确选择）', 10).pack(anchor='w')
         try:
@@ -121,16 +121,19 @@ class Launcher:
         except (OSError, ValueError, KeyError):
             reset_choices = []
         self.reset_pose = ttk.Combobox(panel, state='readonly', values=['按任务配置'] + reset_choices)
-        self.reset_pose.set('按任务配置')
+        self.reset_pose.set(os.environ.get('DAGGER_RESET_POSE') or '按任务配置')
         self.reset_pose.pack(fill='x', pady=(4, 8))
         model_row = tk.Frame(panel, bg=CARD)
         model_row.pack(fill='x', pady=(0, 8))
         self.phase = ttk.Combobox(model_row, state='readonly', values=list(PHASES), width=26)
-        self.phase.set(next(iter(PHASES)))
+        self.phase.set(next((label for label, value in PHASES.items()
+                             if value == os.environ.get('DAGGER_GRIPPER_PHASE', 'auto')), next(iter(PHASES))))
         self.phase.pack(side='left')
         self.button(model_row, '选择 checkpoint…', self.choose_checkpoint).pack(side='right')
         self.model_status = self.label(panel, '模型：未核实，点击选择 checkpoint 刷新；自定义任务需选夹爪阶段', 10)
         self.model_status.pack(anchor='w', pady=(0, 8))
+        if self.checkpoint:
+            self.model_status.configure(text='预选模型：' + self.checkpoint + '（启动时校验；可点击切换）')
         self.label(panel, '备注（选填；名称自动以 _dagger 结尾）', 11).pack(anchor='w')
         self.remark = tk.Entry(panel, font=('Sans', 12), bg=BG, fg=INK, insertbackground=INK, relief='flat')
         self.remark.pack(fill='x', ipady=3, pady=(4, 8))
@@ -138,11 +141,17 @@ class Launcher:
         options.pack(fill='x')
         (self.options, self.option_widgets) = ({}, [])
         for (key, label) in [('WITH_HEAD', '录制头部'), ('WITH_UPPER_WAIST', '录制上腰'), ('WITH_DEPTH', '录制深度')]:
-            value = tk.BooleanVar(value=True)
+            value = tk.BooleanVar(value=os.environ.get(key, '1') == '1')
             self.options[key] = value
             check = tk.Checkbutton(options, text=label, variable=value, bg=CARD, fg=INK, selectcolor=BG, activebackground=CARD, activeforeground=INK, font=('Sans', 11))
             check.pack(side='left', padx=(0, 14))
             self.option_widgets.append(check)
+        self.publish = tk.BooleanVar(value=os.environ.get('DAGGER_PUBLISH', '0') == '1')
+        publish_check = tk.Checkbutton(panel, text='允许真机控制（开始推理 / 全身复位后运动）',
+            variable=self.publish, bg=CARD, fg=INK, selectcolor=BG,
+            activebackground=CARD, activeforeground=INK, font=('Sans', 11))
+        publish_check.pack(anchor='w', pady=(4, 0))
+        self.option_widgets.append(publish_check)
         self.schema_hint = self.label(panel, '', 10)
         self.schema_hint.pack(anchor='w', pady=(6, 0))
         for value in self.options.values():
@@ -184,7 +193,15 @@ class Launcher:
         self.count_label.pack(anchor='w', pady=(8, 0))
         self.label(body, 'A开始 · Grip接管 · B成功 · X复位 · Y短按丢弃/长按1秒失败保存', 11).pack(anchor='w', pady=(12, 8))
         self.label(body, 'Shift+A 开始 / Shift+B 成功保存 / F 封口 / Q 退出 / Shift+K 失败保存 / Shift+Y 丢弃 / Shift+X 复位', 10).pack(anchor='w')
-        self.label(body, '数据位置由 OUTPUT_BASE_DIR 指定', 10).pack(anchor='w', pady=(12, 0))
+        self.label(body, '数据：' + str(DATA_ROOT), 10).pack(anchor='w', pady=(12, 0))
+        backend = 'V5 / S3' if os.environ.get('DAGGER_TELEOP_BACKEND') == 'v5' else 'V4 / S2'
+        self.mode_hint = self.label(body, '', 10)
+        self.mode_hint.pack(anchor='w')
+        def update_mode(*_):
+            output = '真机模式（按键后运动）' if self.publish.get() else '只读模式（不下发动作）'
+            self.mode_hint.configure(text=backend + ' · ' + output + ' · VR端口 ' + os.environ.get('DAGGER_WEB_PORT', '8447'))
+        self.publish.trace_add('write', update_mode)
+        update_mode()
         root.after(400, self.poll)
 
     def shortcut_press(self, event):
@@ -239,6 +256,9 @@ class Launcher:
     def start(self, reset_only=False):
         if self.process and self.process.poll() is None:
             return
+        if reset_only and not self.publish.get():
+            self.detail.configure(text='全身复位会产生运动，请先勾选“允许真机控制”。')
+            return
         instruction = self.instruction.get().strip()
         if not instruction and not reset_only:
             self.detail.configure(text='请填写任务指令。')
@@ -263,7 +283,7 @@ class Launcher:
         self.log_path = LOGS / (task + '.log')
         try:
             with self.log_path.open('w') as output:
-                self.process = subprocess.Popen([os.environ.get('DAGGER_ROS_PY', '/usr/bin/python3'), '/home/ubuntu/CB_Autolife_Data_Collector/dagger/run.py', task, instruction, '--reset-only' if reset_only else '--serve'], stdout=output, stderr=subprocess.STDOUT, start_new_session=True, env={**reset_env, 'DAGGER_BACKEND': 'owned', 'OUTPUT_BASE_DIR': str(active_root), 'DAGGER_GRIPPER_PHASE': PHASES[self.phase.get()], 'DAGGER_EXPECTED_CHECKPOINT': self.checkpoint, **{key: str(int(value.get())) for (key, value) in self.options.items()}})
+                self.process = subprocess.Popen([os.environ.get('DAGGER_ROS_PY', '/usr/bin/python3'), str(BASE / 'dagger/run.py'), task, instruction, '--reset-only' if reset_only else '--serve'], stdout=output, stderr=subprocess.STDOUT, start_new_session=True, env={**reset_env, 'DAGGER_PUBLISH': str(int(self.publish.get())), 'DAGGER_BACKEND': 'owned', 'OUTPUT_BASE_DIR': str(active_root), 'DAGGER_GRIPPER_PHASE': PHASES[self.phase.get()], 'DAGGER_EXPECTED_CHECKPOINT': self.checkpoint, **{key: str(int(value.get())) for (key, value) in self.options.items()}})
         except OSError as exc:
             self.status.configure(text='●  启动失败', fg='#ffb09a')
             self.detail.configure(text=str(exc))

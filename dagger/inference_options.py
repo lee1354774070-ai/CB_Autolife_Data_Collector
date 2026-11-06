@@ -47,16 +47,17 @@ def validate_selection(health, task, phase="auto", checkpoint=""):
 def checkpoint_request(action="list", checkpoint="", server_url="http://192.168.8.224:8777"):
     # This dedicated SSH key can run only the fixed checkpoint helper on Thor.
     url = urlsplit(server_url)
-    if (url.scheme, url.hostname, url.port or 80) != ("http", "192.168.8.224", 8777):
-        raise ValueError("模型切换接口仅配置了 Thor 192.168.8.224:8777；不会修改其他服务")
+    if (url.scheme, url.hostname) != ("http", "192.168.8.224") or (url.port or 80) not in (8777, 8783) or url.path not in ('', '/') or url.query or url.fragment or url.username or url.password:
+        raise ValueError("模型切换仅配置了 Thor 8777（S2）/8783（S3）；不会修改其他服务")
+    s3 = url.port == 8783
     if action not in ("list", "switch"):
         raise ValueError("Invalid checkpoint operation")
     result = subprocess.run([
         "ssh", "-T", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
         "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=8",
         "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
-        "-i", str(Path.home() / ".ssh/id_ed25519_collector_checkpoint"),
-        "wayne@192.168.8.224", "checkpoint-control"],
+        "-i", str(Path.home() / (".ssh/id_ed25519_collector_s3_checkpoint" if s3 else ".ssh/id_ed25519_collector_checkpoint")),
+        "wayne@192.168.8.224", "s3-checkpoint-control" if s3 else "checkpoint-control"],
         input=json.dumps({"action": action, "checkpoint": checkpoint}),
         text=True, capture_output=True, timeout=7350 if action == "switch" else 20)
     try:

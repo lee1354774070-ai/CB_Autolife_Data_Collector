@@ -29,7 +29,7 @@ class CheckpointDialog:
         self.refresh.pack(side="left")
         self.apply = ttk.Button(buttons, text="应用所选模型", command=lambda: self.run("switch"))
         self.apply.pack(side="left", padx=10)
-        self.status = ttk.Label(body, text="模型来自 Thor/models；任务文本不会因切换模型自动改写。", wraplength=670)
+        self.status = ttk.Label(body, text="列表仅检查模型接口兼容；请选对应机器人和任务的模型，任务文字不会自动改写。", wraplength=670)
         self.status.pack(anchor="w")
         self.window.after(100, self.poll)
         self.run("list")

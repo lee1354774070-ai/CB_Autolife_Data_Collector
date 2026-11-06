@@ -1,0 +1,8 @@
+{
+  "source": "/home/wayne/s3_binary330_candidate_20261106",
+  "files": {
+    "checkpoint_loading.py": "ee299d48177d6c4dccb2d9c2647f54534bdb4c45df678a0ce84dc3e054119104",
+    "execution_server.py": "a17d6d63843f757912ab6fc2fce92bfcc2971bd2949e0381307d4ae461a5fe88",
+    "submission_receipts.py": "5fb88a0cf275264fa9f9ee54f2227c40f43d9dd73c067e6e856b8fb3c4e389b8"
+  }
+}

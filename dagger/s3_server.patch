@@ -1,0 +1,21 @@
+--- a/execution_server.py
++++ b/execution_server.py
+@@ -5,7 +5,7 @@
+ from functools import wraps
+ import os
+ from pathlib import Path
+-from check_checkpoint import CHECKPOINT, validate_checkpoint
++from dagger.s3_checkpoint_control import validate_model
+ 
+ 
+ def native_session_factory(factory, gripper_mode):
+@@ -41,7 +41,8 @@
+     p.add_argument('--gripper-mode', choices=('continuous', 'binary330'), default='continuous')
+     a = p.parse_args()
+     model = a.model_dir.resolve(strict=True)
+-    validate_checkpoint(model)
++    validate_model(model)
++    CHECKPOINT = model.name
+     print('CHECKPOINT_OK ' + CHECKPOINT, flush=True)
+     if a.check_only:
+         return

@@ -30,14 +30,15 @@ def request(endpoint, payload=None):
         return json.load(response)
 
 
-def model_path(name):
+def model_path(name, *, models=None, reference=None):
     if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}', name):
         raise ValueError('Invalid checkpoint name')
-    path = MODELS / name
-    if path.is_symlink() or not path.is_dir() or path.resolve().parent != MODELS.resolve():
+    models = MODELS if models is None else models
+    path = models / name
+    if path.is_symlink() or not path.is_dir() or path.resolve().parent != models.resolve():
         raise ValueError('Select a checkpoint directory directly under Thor/models')
     contract = json.loads((path / 'groot_deployment_contract.json').read_text())
-    reference = json.loads((MODELS / 'baseline/groot_deployment_contract.json').read_text())
+    reference = json.loads(((models / 'baseline' if reference is None else reference) / 'groot_deployment_contract.json').read_text())
     for key in ('policy_type', 'model_version', 'state_feature_names', 'action_feature_names',
                 'image_features', 'chunk_size', 'n_action_steps'):
         if key not in reference or contract.get(key) != reference[key]:
