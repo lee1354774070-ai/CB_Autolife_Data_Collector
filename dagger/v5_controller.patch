@@ -1,0 +1,632 @@
+--- a/openarmx_teleop_vr_306_v4/controller_node.py
++++ b/openarmx_teleop_vr_306_v4/controller_node.py
+@@ -46,6 +46,7 @@
+     parse_joint_feedback,
+ )
+ from .teleop_core import forward_reach_to_waist_pitch, vr_input_is_fresh
++from .reset_pose_loader import load_quick_reset_targets
+ from .waist_follow_state import waist_reanchor_x, waist_reset_reference, held_waist_assist
+ from .trajectory_limiter import TrajectoryLimiter, bounded_target_by_feedback
+ from .teleop_smoother import ArmTargetSmoother
+@@ -143,7 +144,7 @@
+ RESET_TRACKED_JOINT_NAMES = ARM_JOINT_NAMES + NECK_JOINT_NAMES
+ ENABLE_TRACKED_JOINT_NAMES = ARM_JOINT_NAMES + WAIST_JOINT_NAMES
+ # X+A also stands up; Y+B holds height. Both require physical completion.
+-RESET_REQUIRED_JOINT_NAMES = RESET_TRACKED_JOINT_NAMES + list(BODY_HEIGHT_JOINT_NAMES)
++RESET_REQUIRED_JOINT_NAMES = RESET_TRACKED_JOINT_NAMES + list(BODY_HEIGHT_JOINT_NAMES) + WAIST_JOINT_NAMES[1:2]
+ 
+ 
+ def enable_vendor_pid_loop(shared_memory_glob):
+@@ -289,6 +290,18 @@
+         self._ik_thread = None
+         self._sync_session_acquired = False
+         self._sync_session_future = None
++        self._authority_heartbeat_required = bool(self.get_parameter('authority_heartbeat_topic').value)
++        self._authority_heartbeat_time = 0.0
++        self._follow_authority_required = bool(self.get_parameter('follow_authority_topic').value)
++        self._follow_authority_mode = ''
++        self._follow_authority_time = 0.0
++        self._collector_authority_epoch = -1
++        self._collector_revoked_epoch = -1
++        self._collector_body_origin_epoch = -1
++        self._collector_gripper_origin_epoch = -1
++        self._collector_session_id = ''
++        self._collector_output_pub = self.create_publisher(
++            String, '/collector_dagger/controller_output', reliable_latest_qos())
+         self._waist_follow_enabled = bool(
+             self.get_parameter('allow_waist_in_ik').value
+         )
+@@ -472,6 +485,13 @@
+                 String, self._full_reset_topic, 10
+             )
+ 
++        if self._authority_heartbeat_required:
++            self.create_subscription(String, str(self.get_parameter('authority_heartbeat_topic').value),
++                                     self._on_authority_heartbeat, reliable_latest_qos())
++        if self._follow_authority_required:
++            self.create_subscription(
++                String, str(self.get_parameter('follow_authority_topic').value),
++                self._on_follow_authority, reliable_latest_qos())
+         self.create_subscription(
+             String, feedback_topic, self._on_feedback, reliable_latest_qos()
+         )
+@@ -571,6 +591,13 @@
+             daemon=True,
+         )
+         self._ik_thread.start()
++        # DDS graph discovery must not run while holding the 100 Hz control
++        # lock. Expired/missing snapshots still fail closed at the same guard.
++        self._output_guard_snapshot = (0.0, 'graph check pending', 'graph check pending')
++        self._output_guard_stop = threading.Event()
++        self._output_guard_thread = threading.Thread(
++            target=self._refresh_output_guard, name='collector-dds-guard', daemon=True)
++        self._output_guard_thread.start()
+         self.get_logger().info(
+             f'independent arm controller ready: suffix={self._suffix}, '
+             f'dry_run={self._dry_run}, mode={self._output_control_mode}, '
+@@ -644,6 +671,9 @@
+             'body_height_hold_command_lead_deg': 2.0,
+             'body_height_motion_command_lead_deg': 6.0,
+             'body_height_command_lead_slew_deg_sec': 60.0,
++            'authority_heartbeat_topic': '',
++            'authority_heartbeat_timeout_sec': 1.0,
++            'follow_authority_topic': '',
+             'head_follow_enabled': False,
+             # Navigation teleoperation can make enable/reset a deliberate
+             # head-lock boundary. Standalone teleoperation keeps its legacy
+@@ -1038,7 +1068,7 @@
+         self._target_time = 0.0
+         self._target_source = 'fresh_session_measured_hold'
+         self._last_ik = None
+-        if self._waist_follow_enabled and self._waist_follow_profile == 'forward_pitch_only':
++        if self._waist_follow_active() and self._waist_follow_profile == 'forward_pitch_only':
+             waist = np.asarray(groups['leg_waist'], dtype=float)
+             if self._waist_follow_neutral_pitch_deg is None:
+                 self._waist_follow_neutral_pitch_deg = float(waist[2])
+@@ -1340,6 +1370,12 @@
+         }
+ 
+     def _heartbeat_guard_error(self, now, *, require_fresh=False):
++        if getattr(self, '_authority_heartbeat_required', False):
++            age = now - self._authority_heartbeat_time
++            if self._authority_heartbeat_time <= 0 or not 0 <= age <= float(
++                    self.get_parameter('authority_heartbeat_timeout_sec').value):
++                return 'HG-DAgger supervisor heartbeat missing or expired'
++            return ''
+         if not bool(self.get_parameter('require_teleop_heartbeat').value):
+             return ''
+         timeout = max(
+@@ -1425,7 +1461,7 @@
+             # Snapshot the exact torso convention used by the arm IK. Physical
+             # FK below remains truthful; the mapper gets a separate reference.
+             mapping_groups = feedback.as_dict()
+-            if self._waist_follow_enabled and self._waist_follow_profile == 'forward_pitch_only':
++            if self._waist_follow_active() and self._waist_follow_profile == 'forward_pitch_only':
+                 neutral = self._waist_follow_neutral_pitch_deg
+                 if (self._body_height_active and self._body_height_joint_targets is not None
+                         and now-self._body_height_command_time <= float(self.get_parameter(
+@@ -1488,6 +1524,10 @@
+                 self._reason = f'target rejected: {exc}'
+             return
+         with self._lock:
++            if (not self._follow_authority_allowed(for_arm=True)
++                    or not self._collector_target_allowed(envelope, policy_only=False)):
++                return  # Reject old clutch state before it mutates the controller.
++
+             if self._state == 'FAULT' and not self._hardware_enabled:
+                 return
+             if self._reset_active:
+@@ -1626,6 +1666,11 @@
+             with self._lock:
+                 self._reason = 'target rejected: joint feedback is stale'
+             return
++        with self._lock:
++            envelope = json.loads(message_data)
++            if (not self._follow_authority_allowed(for_arm=True)
++                    or not self._collector_target_allowed(envelope, policy_only=False)):
++                return
+         ticket = None
+         targets = {}
+         payload = None
+@@ -1667,7 +1712,7 @@
+                     if side not in self._grip_release_held
+                     or side in reanchor_sides
+                 }
+-                waist_follow_enabled = self._waist_follow_enabled
++                waist_follow_enabled = self._waist_follow_active()
+                 waist_follow_profile = self._waist_follow_profile
+                 waist_neutral_pitch = self._waist_follow_neutral_pitch_deg
+                 waist_locked_yaw = self._waist_follow_locked_yaw_deg
+@@ -1821,6 +1866,9 @@
+             if not self._latest_target_mailbox.is_latest(sequence):
+                 self._latest_target_mailbox.discard_inflight()
+                 return
++            if (not self._follow_authority_allowed(for_arm=True)
++                    or not self._collector_target_allowed(payload, policy_only=False)):
++                return
+             if self._reset_active or self._enable_pending or self._estop_latched:
+                 self._reason = 'stale IK result discarded after a controller state change'
+                 return
+@@ -1885,7 +1933,7 @@
+                 if not self._grip_ik.commit(ticket, result.q):
+                     return
+                 self._ik_kinematics.commit_retarget_state()
+-                if waist_pitch_target is not None and self._waist_follow_enabled:
++                if waist_pitch_target is not None and self._waist_follow_active():
+                     # Rejected/late solves may not mutate the waist reference.
+                     self._waist_follow_neutral_pitch_deg = waist_neutral_pitch
+                     self._waist_follow_locked_yaw_deg = waist_locked_yaw
+@@ -1893,6 +1941,7 @@
+                     self._waist_follow_extension_m = forward_extension
+                     self._waist_follow_pitch_target_deg = waist_pitch_target
+                 self._target_groups = accepted_groups
++                self._collector_body_origin_epoch = int(payload.get('authority_epoch', -1))
+                 self._velocity_active_sides = set(targets)
+                 self._target_time = received_at
+                 self._target_source = 'cartesian_ik'
+@@ -1919,8 +1968,9 @@
+             if any(side not in ('left', 'right') for side in sides):
+                 raise ValueError('release_hold sides must contain only left/right')
+             sides = list(dict.fromkeys(sides))
++            barrier = payload.get('source') == 'hg_dagger_authority_barrier'
+             state = payload.get('clutch_state')
+-            if not isinstance(state, dict) or any(state.get(side) is not False for side in sides):
++            if not barrier and (not isinstance(state, dict) or any(state.get(side) is not False for side in sides)):
+                 raise ValueError('release_hold requires a complete sequenced released state')
+         except Exception as exc:
+             with self._lock:
+@@ -1929,6 +1979,16 @@
+ 
+         now = time.monotonic()
+         with self._lock:
++            if self._follow_authority_required:
++                release_epoch = payload.get('authority_epoch')
++                if (type(release_epoch) is not int
++                        or release_epoch < self._collector_authority_epoch):
++                    return  # A delayed release cannot interrupt a newer clutch.
++
++            if self._follow_authority_required and self._follow_authority_mode == 'POLICY_ACTIVE':
++                # Fence queued policy targets immediately, even if the newer
++                # authority-state message is delivered after this hold.
++                self._collector_revoked_epoch = self._collector_authority_epoch
+             if self._feedback is None or self._limiter is None:
+                 self._reason = 'release hold rejected: joint feedback is unavailable'
+                 return
+@@ -1937,6 +1997,10 @@
+                 self._reason = 'release hold rejected: joint feedback is stale'
+                 return
+             if self._reset_active or self._enable_pending or self._estop_latched:
++                return
++            if barrier:
++                self._latest_target_mailbox.reset()
++                self._hold_sides_locked(sides, now)
+                 return
+             if payload.get('clutch_session') != self._clutch_session:
+                 return
+@@ -1977,7 +2041,7 @@
+                 )
+         if (
+             {'left', 'right'}.issubset(self._grip_release_held)
+-            and self._waist_follow_enabled
++            and self._waist_follow_active()
+             and self._waist_follow_profile == 'forward_pitch_only'
+             and self._waist_follow_neutral_pitch_deg is not None
+         ):
+@@ -2055,6 +2119,9 @@
+             if not allowed:
+                 raise ValueError('no gripper target')
+             with self._lock:
++                if not self._collector_target_allowed(payload, policy_only=False):
++                    return
++                self._collector_gripper_origin_epoch = int(payload.get('authority_epoch', -1))
+                 for side in ('left', 'right'):
+                     key = f'{side}_gripper_target_joints_position'
+                     if key in allowed:
+@@ -2096,6 +2163,9 @@
+             payload = json.loads(message.data)
+             if not isinstance(payload, dict):
+                 raise ValueError('joint target must be a JSON object')
++            with self._lock:
++                if not self._collector_target_allowed(payload, policy_only=True):
++                    return
+             base = feedback.as_dict() if base_groups is None else base_groups
+             groups = {
+                 key: np.asarray(value, dtype=float).copy()
+@@ -2122,8 +2192,12 @@
+             self._reason = f'joint target rejected: {exc}'
+             return
+         with self._lock:
++            if (not self._collector_target_allowed(payload, policy_only=True)
++                    or self._reset_active or self._enable_pending or self._estop_latched):
++                return
+             self._grip_ik.reset()
+             self._latest_target_mailbox.reset()
++            self._collector_body_origin_epoch = int(payload.get('authority_epoch', -1))
+             self._target_groups = clamped
+             self._target_velocity_estimate = self._target_velocity_estimator.reset(
+                 self._group_vector(clamped), now
+@@ -2204,7 +2278,7 @@
+             # Hold the measured pose, while retaining a separate neutral for
+             # the next height/Grip session. Do not count assist twice.
+             return np.asarray(self._body_height_watchdog_hold, dtype=float).copy()
+-        if (not stale and self._waist_follow_enabled
++        if (not stale and self._waist_follow_active()
+                 and self._waist_follow_profile == 'forward_pitch_only'
+                 and self._waist_follow_pitch_target_deg is not None
+                 and self._waist_follow_neutral_pitch_deg is not None):
+@@ -2283,7 +2357,7 @@
+             ).copy()
+             waist_assist_delta = 0.0
+             if (
+-                self._waist_follow_enabled
++                self._waist_follow_active()
+                 and self._waist_follow_profile == 'forward_pitch_only'
+                 and self._waist_follow_neutral_pitch_deg is not None
+                 and self._waist_follow_pitch_target_deg is not None
+@@ -2511,7 +2585,7 @@
+                 return
+             if request_id == self._task_head_cancelled_id:
+                 return
+-            if (self._head_follow_enabled or self._reset_active or self._enable_pending
++            if (self._head_follow_active() or self._reset_active or self._enable_pending
+                     or self._estop_latched or not self._hardware_enabled):
+                 self._task_head_cancelled_id = request_id
+                 self._task_head_cancel_reason = (
+@@ -2555,6 +2629,61 @@
+             self._task_head_target_time = now
+             self._task_head_request_id = request_id
+ 
++    def _on_authority_heartbeat(self, message):
++        if message.data == 'hg_dagger_alive':
++            self._authority_heartbeat_time = time.monotonic()
++
++    def _follow_authority_allowed(self, *, for_arm=False):
++        if not getattr(self, '_follow_authority_required', False):
++            return True
++        modes = ('EXPERT_READY', 'EXPERT_ACTIVE') if for_arm else ('EXPERT_ACTIVE',)
++        return (self._follow_authority_mode in modes
++                and 0 <= time.monotonic() - self._follow_authority_time <= 0.5)
++
++    def _collector_target_allowed(self, payload, *, policy_only):
++        if not self._follow_authority_required:
++            return True
++        if (not policy_only and self._follow_authority_mode in ('DISARMED', 'LAUNCHER')
++                and getattr(self, '_collector_reset_pending', False)
++                and payload.get('source') == 'hg_dagger_full_reset'):
++            return 0 <= time.monotonic() - self._follow_authority_time <= 0.5
++        modes = ('POLICY_ACTIVE',) if policy_only else ('POLICY_ACTIVE', 'EXPERT_ACTIVE', 'EXPERT_READY')
++        return (self._follow_authority_mode in modes
++                and 0 <= time.monotonic() - self._follow_authority_time <= 0.5
++                and payload.get('authority_epoch') == self._collector_authority_epoch
++                and self._collector_authority_epoch > self._collector_revoked_epoch)
++
++    def _head_follow_active(self):
++        return self._head_follow_enabled and self._follow_authority_allowed()
++
++    def _waist_follow_active(self):
++        return self._waist_follow_enabled and self._follow_authority_allowed()
++
++    def _on_follow_authority(self, message):
++        try:
++            payload = json.loads(message.data)
++            mode = 'LAUNCHER' if payload.get('launcher_control_active', False) else str(payload['mode'])
++        except (ValueError, TypeError, KeyError):
++            return
++        with self._lock:
++            was_active = self._follow_authority_allowed()
++            from dagger.controller_handoff import apply_authority
++            if not apply_authority(self, payload, mode):
++                return
++            self._follow_authority_mode = mode
++            self._follow_authority_time = time.monotonic()
++            active = self._follow_authority_allowed()
++            if active != was_active:
++                self._head_target = None
++                self._head_target_time = 0.0
++                self._waist_follow_anchor_x = {'left': None, 'right': None}
++                self._waist_follow_extension_m = 0.0
++                if self._feedback is not None:
++                    waist = self._feedback.leg_waist
++                    self._waist_follow_neutral_pitch_deg = float(waist[2])
++                    self._waist_follow_locked_yaw_deg = float(waist[3])
++                    self._waist_follow_pitch_target_deg = float(waist[2])
++
+     def _on_head_target(self, message):
+         """Accept a separately-clocked neck target from live WebXR head pose."""
+         now = time.monotonic()
+@@ -2571,7 +2700,7 @@
+             return
+         with self._lock:
+             if (
+-                not self._head_follow_enabled
++                not self._head_follow_active()
+                 or not self._hardware_enabled
+                 or self._reset_active
+                 or self._enable_pending
+@@ -2667,6 +2796,17 @@
+                 del entries[:-512]
+         try:
+             publisher.publish(String(data=payload))
++            # Separate audit channel; vendor command JSON remains unchanged.
++            # This is proof of publication, never proof of physical completion.
++            if topic in (self._output_topic, self._gripper_output_topic):
++                gripper = topic == self._gripper_output_topic
++                epoch = (self._collector_gripper_origin_epoch if gripper
++                         else self._collector_body_origin_epoch)
++                self._collector_output_pub.publish(String(data=json.dumps({
++                    'gripper': gripper, 'command': json.loads(payload),
++                    'timestamp_ns': time.time_ns(), 'origin_authority_epoch': epoch,
++                    'session_id': self._collector_session_id,
++                }, separators=(',', ':'))))
+         except Exception:
+             with self._lock:
+                 entries = self._recent_owned_commands.get(topic, [])
+@@ -2999,41 +3139,15 @@
+             key: np.asarray(value, dtype=float).copy()
+             for key, value in measured_groups.items()
+         }
+-        left = np.asarray(
+-            self.get_parameter('quick_reset_left_arm_joints').value,
+-            dtype=float,
+-        ).reshape(-1)
+-        right = np.asarray(
+-            self.get_parameter('quick_reset_right_arm_joints').value,
+-            dtype=float,
+-        ).reshape(-1)
+-        # X+A and the automatic post-enable reset share the same complete
+-        # vendor reset pose.  In particular, X+A must also return the neck to
+-        # the configured system default instead of preserving an arbitrary
+-        # head-follow target from the previous session.
+-        neck = np.asarray(
+-            self.get_parameter('quick_reset_neck_joints').value,
+-            dtype=float,
+-        ).reshape(-1)
+-        if left.size != 7 or right.size != 7 or neck.size != 3:
+-            return 'quick reset configuration has an invalid joint count'
+-        if not (
+-            np.all(np.isfinite(left))
+-            and np.all(np.isfinite(right))
+-            and np.all(np.isfinite(neck))
+-        ):
+-            return 'quick reset configuration contains NaN or Inf'
+-        groups['left_arm'] = left
+-        groups['right_arm'] = right
+-        groups['neck'] = neck
+-        # X+A restores the configured waist posture while preserving ankle and
+-        # knee, so it does not initiate a standing/squatting height command.
+-        # The separate held-gripper reset continues to preserve body posture.
+-        if source == 'quick_reset':
+-            waist = np.asarray(self.get_parameter('quick_reset_waist_joints').value, dtype=float).reshape(-1)
+-            if waist.size != 2 or not np.all(np.isfinite(waist)):
+-                return 'quick reset waist configuration must contain two finite angles'
+-            groups['leg_waist'][2:4] = waist_reset_reference(waist, groups['leg_waist'])
++        try:
++            saved = load_quick_reset_targets(self._suffix.rsplit('_', 1)[-1])
++        except (OSError, ValueError) as exc:
++            return f'task reset pose is unavailable: {exc}'
++        for key, count in (('leg_waist', 4), ('left_arm', 7), ('right_arm', 7), ('neck', 3)):
++            values = np.asarray(saved[key], dtype=float).reshape(-1)
++            if values.size != count or not np.all(np.isfinite(values)):
++                return f'task reset configuration has invalid {key}'
++            groups[key] = values
+         guard_error, q = self._configuration_guard_error(
+             groups,
+             'quick reset target',
+@@ -3106,7 +3220,7 @@
+         self._target_time = now
+         self._target_source = str(source)
+         if (
+-            self._waist_follow_enabled
++            self._waist_follow_active()
+             and self._waist_follow_profile == 'forward_pitch_only'
+         ):
+             # Rebase assistance to the reset goal so the first post-reset frame cannot
+@@ -4106,8 +4220,24 @@
+             self._joint_clear_error_pub is not None,
+         )
+ 
++    def _refresh_output_guard(self):
++        while not self._output_guard_stop.is_set():
++            try:
++                normal = self._query_hardware_output_guard_error(False)
++                prepare = self._query_hardware_output_guard_error(True)
++                self._output_guard_snapshot = (time.monotonic(), normal, prepare)
++            except Exception:
++                pass  # Preserve old timestamp: failed reads are not readiness.
++            self._output_guard_stop.wait(0.2)
++
++    def _hardware_output_guard_error(self, require_prepare=False):
++        checked, normal, prepare = getattr(self, '_output_guard_snapshot', (0., '', ''))
++        if time.monotonic() - checked > 0.6:
++            return 'DDS output-guard snapshot unavailable or stale'
++        return prepare if require_prepare else normal
++
+     @_vr345_callback_timing
+-    def _hardware_output_guard_error(self, require_prepare=False):
++    def _query_hardware_output_guard_error(self, require_prepare=False):
+         active_publisher = (
+             self._velocity_pub
+             if self._output_control_mode == 'velocity'
+@@ -4194,7 +4324,7 @@
+                 0.1, float(self._body_height_command_lead_deg)
+             )
+             waist_assist_output_active = _waist_assist_window_active(
+-                self._waist_follow_enabled, self._waist_follow_profile,
++                self._waist_follow_active(), self._waist_follow_profile,
+                 self._waist_follow_neutral_pitch_deg, self._waist_follow_pitch_target_deg,
+                 self._target_source, self._grip_release_held,
+                 None if feedback is None else feedback.leg_waist[2],
+@@ -4267,7 +4397,7 @@
+             body_height_output_lead = max(0.1, float(self._body_height_command_lead_deg))
+             desired = self._group_vector(target_groups)
+             head_target_fresh = (
+-                self._head_follow_enabled
++                self._head_follow_active()
+                 and not self._reset_active
+                 and not self._enable_pending
+                 and self._head_target is not None
+@@ -4276,7 +4406,8 @@
+                 )
+             )
+             task_head_fresh = (
+-                not self._head_follow_enabled and not self._reset_active
++                self._follow_authority_allowed() and
++                not self._head_follow_active() and not self._reset_active
+                 and not self._enable_pending
+                 and self._task_head_target is not None
+                 and now - self._task_head_target_time <= 0.6
+@@ -4292,6 +4423,10 @@
+                 pass
+             elif head_target_fresh:
+                 desired[18:21] = head_command
++            elif (self._follow_authority_required
++                  and not self._follow_authority_allowed()
++                  and self._target_source == 'joint_space'):
++                pass  # Policy owns all commanded joints, including the neck.
+             else:
+                 # Do not chase a stale headset sample.  Holding measured neck
+                 # feedback is independent from the arm target watchdog.
+@@ -4353,7 +4488,7 @@
+                 if (
+                     not body_height_output_active
+                     and
+-                    self._waist_follow_enabled
++                    self._waist_follow_active()
+                     and self._waist_follow_profile == 'forward_pitch_only'
+                     and self._waist_follow_neutral_pitch_deg is not None
+                 ):
+@@ -4583,7 +4718,7 @@
+                         )
+                     if (enabled and not target_stale and
+                             not body_height_output_active and
+-                            self._waist_follow_enabled and
++                            self._waist_follow_active() and
+                             self._waist_follow_profile == 'forward_pitch_only' and
+                             self._target_source == 'cartesian_ik'):
+                         if self._waist_assist_limiter is None:
+@@ -4612,7 +4747,9 @@
+                         # Reset the private motion history across every control
+                         # boundary so stale momentum cannot leak into a regrip.
+                         self._waist_assist_limiter = None
+-                    if (enabled and not target_stale and bool(self.get_parameter(
++                    if (enabled and not target_stale and not self._reset_active
++                            and self._target_source == 'cartesian_ik'
++                            and bool(self.get_parameter(
+                             'teleop_reference_smoothing_enabled').value)):
+                         command_vector[4:18] = self._arm_smoother.step(
+                             current_vector[4:18], command_vector[4:18],
+@@ -5155,6 +5292,18 @@
+                 for side in ('left', 'right')
+             },
+             'grip_release_held_sides': sorted(self._grip_release_held),
++            'follow_authority_allowed': self._follow_authority_allowed(),
++            'collector_heartbeat_ready': (
++                self._authority_heartbeat_required
++                and not self._heartbeat_guard_error(now)),
++            'collector_startup_guard_error': (
++                self._active_command_guard_error(now)
++                or self._hardware_output_guard_error(require_prepare=False)
++                or ('guarded SYNC service unavailable' if bool(self.get_parameter(
++                    'require_sync_session_service').value) and not
++                    self._sync_session_client.service_is_ready() else '')
++                or ('fresh joint feedback required' if self._feedback is None or
++                    feedback_age > float(self.get_parameter('feedback_timeout_sec').value) else '')),
+             'teleop_heartbeat_required': bool(
+                 self.get_parameter('require_teleop_heartbeat').value
+             ),
+@@ -5180,6 +5329,10 @@
+         self._status_pub.publish(String(data=json.dumps(payload, separators=(',', ':'))))
+ 
+     def destroy_node(self):
++        graph_stop = getattr(self, '_output_guard_stop', None)
++        if graph_stop is not None:
++            graph_stop.set()
++            self._output_guard_thread.join(timeout=0.3)
+         mailbox = getattr(self, '_latest_target_mailbox', None)
+         if mailbox is not None:
+             mailbox.close()
+@@ -5189,6 +5342,12 @@
+         # SPEED mode must never outlive this process's watchdog.  Publish a
+         # short burst so DDS teardown cannot leave the last non-zero sample in
+         # the vendor motor worker.
++        # A disabled/preflight controller must not become a command source
++        # merely because it is exiting. Lease release already holds the robot.
++        owns_output = (getattr(self, '_hardware_enabled', False)
++                       or getattr(self, '_sync_session_acquired', False))
++        if getattr(self, '_dry_run', True) or not owns_output:
++            return super().destroy_node()
+         if getattr(self, '_output_control_mode', 'position') == 'velocity':
+             try:
+                 with self._lock:
+@@ -5225,22 +5384,28 @@
+ 
+ 
+ def main(args=None):
+-    rclpy.init(args=args)
+-    node = IndependentArmController()
++    import signal
++    from rclpy.signals import SignalHandlerOptions
++    # Default ROS SIGINT handling shuts the context before destroy_node can
++    # publish the final hold/lease release. Keep it alive until cleanup ends.
++    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
++    stopping = threading.Event()
++    previous = {sig: signal.signal(sig, lambda *_: stopping.set())
++                for sig in (signal.SIGINT, signal.SIGTERM)}
+     try:
+-        rclpy.spin(node)
+-    except KeyboardInterrupt:
+-        pass
++        node = IndependentArmController()
++        try:
++            while rclpy.ok() and not stopping.is_set():
++                rclpy.spin_once(node, timeout_sec=0.05)
++        finally:
++            node.destroy_node()
+     finally:
+-        try:
+-            node.destroy_node()
+-        except KeyboardInterrupt:
+-            pass
+         try:
+             if rclpy.ok():
+                 rclpy.shutdown()
+-        except KeyboardInterrupt:
+-            pass
++        finally:
++            for sig, handler in previous.items():
++                signal.signal(sig, handler)
+ 
+ 
+ if __name__ == '__main__':
+--- a/openarmx_teleop_vr_306_v4/gripper_aperture.py
++++ b/openarmx_teleop_vr_306_v4/gripper_aperture.py
+@@ -5,7 +5,8 @@
+ from pathlib import Path
+ 
+ STATE_PATH = Path.home() / '.config/openarmx_vr/gripper_aperture.json'
+-DM_STATE_PATH = Path.home() / '.config/openarmx_vr/gripper_345_dm_type1.json'
++ROBOT_ID = int(os.environ['ROBOT_ID'])
++DM_STATE_PATH = Path.home() / f'.config/openarmx_vr/gripper_{ROBOT_ID}_dm_type1.json'
+ 
+ 
+ def checked_closure(value):
+@@ -26,8 +27,8 @@
+     if not path.exists():
+         return 90.0
+     data = json.loads(path.read_text())
+-    if data.get('robot_id') != 345 or data.get('hardware') != 'dm_type1':
+-        raise ValueError('夹爪设置不是345 DM Type1配置')
++    if data.get('robot_id') != ROBOT_ID or data.get('hardware') != 'dm_type1':
++        raise ValueError(f'夹爪设置不属于{ROBOT_ID} DM Type1')
+     return checked_closure(data['closed_percent'])
+ 
+ 
+@@ -35,7 +36,7 @@
+     value = checked_closure(value)
+     path.parent.mkdir(parents=True, exist_ok=True)
+     tmp = path.with_suffix('.tmp')
+-    tmp.write_text(json.dumps({'robot_id': 345, 'hardware': 'dm_type1', 'closed_percent': value}))
++    tmp.write_text(json.dumps({'robot_id': ROBOT_ID, 'hardware': 'dm_type1', 'closed_percent': value}))
+     os.replace(tmp, path)
+ 
+ 

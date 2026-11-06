@@ -13,11 +13,11 @@ TASKS = (
     ("放入烘干机", "Put the laundry bag into the dryer.", "place"),
 )
 PHASES = {"自动（仅已知任务）": "auto", "抓取：实测闭合后锁持": "pick",
-          "放置：预测张开后释放": "place", "连续：保留原限速保护": "continuous"}
+          "放置：预测张开后释放": "place", "连续：保留原限速保护": "continuous", "S3二值夹爪（服务端）": "binary330"}
 
 
 def selected_phase(task, phase="auto"):
-    if phase not in ("auto", "pick", "place", "continuous"):
+    if phase not in ("auto", "pick", "place", "continuous", "binary330"):
         raise ValueError("夹爪阶段无效")
     if phase != "auto":
         return phase

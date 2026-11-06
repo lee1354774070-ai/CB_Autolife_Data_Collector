@@ -16,6 +16,7 @@ from launch.events import Shutdown
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dagger.dependencies import ASSETS, interpreter_environment
 from dagger.robot_profile import resolve_robot
+from dagger.v5_runtime import controller_parameters as v5_parameters
 
 
 def generate_launch_description():
@@ -77,6 +78,7 @@ def generate_launch_description():
         "input_body_height_topic": "/hg_dagger/disabled/body_height_command",
         "input_head_target_topic": "/hg_dagger/disabled/head_target",
         **robot.controller_params(vr, os.environ),
+        **v5_parameters(vr, os.environ),
     }, remaps={"__node": "independent_arm_controller_306_v4",
                f"{prefix}/set_hardware_enabled": "/hg_dagger/controller/set_hardware_enabled"})
     mapper = process([python, runtime, "mapper"],

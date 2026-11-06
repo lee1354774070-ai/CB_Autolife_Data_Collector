@@ -16,12 +16,15 @@ def _hashes(root):
             and not any(part.startswith(".") or part == "__pycache__" for part in path.relative_to(root).parts)}
 
 
-def prepare_copy(source_root: Path, cache_root: Path) -> Path:
+def prepare_copy(source_root: Path, cache_root: Path, *, env=None) -> Path:
     """Copy, patch and publish atomically. Existing copies are never overwritten."""
+    from .v5_runtime import selected, prepare_copy as prepare_v5
+    if selected(env):
+        return prepare_v5(cache_root, env)
     source_root, cache_root = source_root.resolve(), cache_root.resolve()
     if source_root == cache_root or source_root in cache_root.parents:
         raise ValueError("Runtime cache must be outside the colleague's source tree")
-    validate(source_root)
+    validate(source_root, env=env)
     source = source_root / "openarmx_teleop_vr_306_v4"
     patch = Path(__file__).with_name("v4_controller.patch")
     reset_patch = Path(__file__).with_name('task_reset_loader.patch')

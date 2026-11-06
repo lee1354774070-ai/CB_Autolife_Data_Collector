@@ -111,7 +111,15 @@ def interpreter_environment(executable: str, environ: dict[str, str]) -> dict[st
     return {"LD_LIBRARY_PATH": os.pathsep.join([library, *inherited])}
 
 
-def validate(root: Path) -> None:
+def validate(root: Path, *, env=None) -> None:
+    from .v5_runtime import selected, validate as validate_v5
+    if selected(env):
+        validate_v5(env)
+        for relative, expected in ASSET_HASHES.items():
+            path = ASSETS / relative
+            if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+                raise RuntimeError(f'DAgger asset changed or missing: {path}')
+        return
     for directory, manifest in ((ASSETS, ASSET_HASHES), (root, HASHES)):
         for relative, expected in manifest.items():
             path = directory / relative
@@ -132,8 +140,11 @@ def validate(root: Path) -> None:
             raise RuntimeError(f"DAgger dependency changed or missing: {loader}; inspect this build before running")
 
 
-def validate_saved_reset(root: Path) -> None:
-    validate(root)
+def validate_saved_reset(root: Path, *, env=None) -> None:
+    validate(root, env=env)
+    from .v5_runtime import selected
+    if selected(env):
+        return  # V5's checked copy always installs the task-snapshot reset loader.
     controller = root / "openarmx_teleop_vr_306_v4/openarmx_teleop_vr_306_v4/controller_node.py"
     if hashlib.sha256(controller.read_bytes()).hexdigest() not in {CONTROL_CENTER_RESET_CONTROLLER, BUNDLED_CONTROLLER}:
         raise RuntimeError('全身复位需要已审核的控制中心保存姿态版本；不会退回原厂复位')
@@ -144,6 +155,7 @@ def conflicting_processes(proc: Path = Path("/proc")) -> list[int]:
     result = []
     signatures = ("hg_dagger_supervisor", "hg_dagger_groot_bridge", "vr_mapper_node",
                   "openarmx_306_v4_mapper", "openarmx_teleop_vr_306_v4.controller_node",
+                  "openarmx_306_v5_mapper", "openarmx_teleop_vr_306_v5.controller_node",
                   "autolife_hg_dagger_mzj_300.vr_web_bridge", "groot_n1_7/robot_deploy.py")
     for path in proc.glob("[0-9]*/cmdline"):
         try:

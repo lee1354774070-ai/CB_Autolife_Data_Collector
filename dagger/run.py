@@ -60,6 +60,12 @@ def environment(task: str, text: str | None, source: dict[str, str], *, reset_on
     fps = float(env.get("COLLECT_FPS", "30"))
     if not math.isfinite(fps) or fps <= 0:
         raise ValueError("COLLECT_FPS must be finite and positive")
+    from dagger.v5_runtime import selected
+    if selected(env):
+        if robot.model != 's3_v3_1':
+            raise ValueError('V5 requires s3_v3_1; keep S2 on the default V4 backend')
+        env.setdefault('DAGGER_VR_PY', '/home/ubuntu/ros2_ws/venvs/openarmx_v5_mink/bin/python')
+        env.setdefault('DAGGER_WEB_PY', '/home/ubuntu/miniconda3/envs/robot_env/bin/python')
     env.setdefault("DAGGER_DEPENDENCY_ROOT", str(ROOT / "teleop_snapshot"))
     env.setdefault("DAGGER_TOOLS_ROOT", str(ROOT.parent) if (ROOT.parent / "deploy").is_dir()
                    else "/home/ubuntu/Autolife_VLA_Tools")
@@ -175,12 +181,12 @@ def main():
         env = environment(args.task_name, args.task_text, os.environ, reset_only=args.reset_only)
         robot = resolve_robot(env)
         dependency = Path(env["DAGGER_DEPENDENCY_ROOT"])
-        validate(dependency)
+        validate(dependency, env=env)
         from dagger.task_reset import task_pose
         reset_pose = task_pose(env)
         print('INFO  本轮复位姿态：' + reset_pose['pose_name'], flush=True)
         if args.reset_only:
-            validate_saved_reset(dependency)
+            validate_saved_reset(dependency, env=env)
             if not args.check and env['DAGGER_PUBLISH'] != '1':
                 raise ValueError('复位会运动，必须设置 DAGGER_PUBLISH=1；只读验证请用 --check')
         robot.validate_description(dependency / "openarmx_teleop_vr_306_v4", env)
@@ -228,8 +234,8 @@ def main():
     command_worker = None
     try:
         env["DAGGER_V4_RUNTIME_ROOT"] = str(prepare_copy(
-            Path(env["DAGGER_DEPENDENCY_ROOT"]), ROOT / ".runtime"))
-        print(f"V4 runtime COPY: {env['DAGGER_V4_RUNTIME_ROOT']}; colleague source unchanged.", flush=True)
+            Path(env["DAGGER_DEPENDENCY_ROOT"]), ROOT / ".runtime", env=env))
+        print(f"{env.get('DAGGER_TELEOP_BACKEND', 'v4').upper()} runtime COPY: {env['DAGGER_V4_RUNTIME_ROOT']}; colleague source unchanged.", flush=True)
         if not args.reset_only:
             if env.get("COLLECTOR_CAMERA_SESSION_ACTIVE") != "1":
                 cameras.acquire()

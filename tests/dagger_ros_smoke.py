@@ -24,6 +24,12 @@ from unittest.mock import Mock, patch
 def check_controller_copy(root):
     """Execute patched entrypoints, without importing the motor/IK backend."""
     from dagger.runtime_copy import prepare_copy
+    from dagger.v5_runtime import selected
+    if selected():
+        runtime = prepare_copy(root, Path(__file__).resolve().parents[1] / '.runtime')
+        sys.path.insert(0, str(runtime))
+        print('V5_PINNED_RUNTIME_PASS; native controller covered by v5_controller_smoke.py')
+        return
     with tempfile.TemporaryDirectory(prefix="dagger_controller_copy_") as directory:
         runtime = prepare_copy(root, Path(directory))
         source = runtime / 'openarmx_teleop_vr_306_v4/controller_node.py'
@@ -202,7 +208,7 @@ def main():
                                                      "frames": 60, "expert_frames": 25}))
                     temporary.replace(base / ".official_recording_status.json")
 
-        worker = threading.Thread(target=recorder)
+        worker = threading.Thread(target=recorder, daemon=True)
         worker.start()
         rclpy.init(args=["--ros-args", "-p", f"trace_root:={base / 'trace'}",
                         "-p", f"rgb_collector_fifo:={fifo}", "-p", f"rgbd_collector_fifo:={fifo}"])
@@ -224,9 +230,11 @@ def main():
             mapper._publish_grippers({'left': 0., 'right': 0.}, time.monotonic(), force=True)
             mapper._publish_grippers({'left': 1., 'right': 1.}, time.monotonic(), force=True)
             full_trigger = json.loads(mapper._gripper_pub.publisher.publish.call_args.args[0].data)
-            assert full_trigger['left_gripper_target_joints_position'] == [360.]
-            assert full_trigger['right_gripper_target_joints_position'] == [360.]
-            print('REAL_V4_MAPPER_WRAPPER_PASS fast_trigger=360 hardware_publishers=0')
+            from dagger.v5_runtime import selected
+            closed = (10. + 3.5 * float(mapper.get_parameter('gripper_closed_percent').value)) if selected() else 360.
+            assert full_trigger['left_gripper_target_joints_position'] == [closed]
+            assert full_trigger['right_gripper_target_joints_position'] == [closed]
+            print(f'REAL_MAPPER_WRAPPER_PASS fast_trigger={closed} hardware_publishers=0')
         finally:
             mapper.destroy_node()
         node = CollectorDaggerSupervisor()
@@ -341,10 +349,10 @@ def main():
                 node._publish_expert_gripper_locked(time.monotonic_ns())
                 time.sleep(.035)
             command = json.loads(node._selected_gripper_pub.publish.call_args.args[0].data)
-            assert command['left_gripper_target_joints_position'] == [360.]
-            assert command['right_gripper_target_joints_position'] == [360.]
+            assert command['left_gripper_target_joints_position'] == [closed]
+            assert command['right_gripper_target_joints_position'] == [closed]
             assert node._expert_gripper_pickup_pending == [False, False]
-            print('DAGGER_FAST_TRIGGER_PICKUP_PASS target=360 feedback_360_accepted=true')
+            print(f'DAGGER_FAST_TRIGGER_PICKUP_PASS target={closed} feedback_360_accepted=true')
             vr(gripActive=True)
             assert node._machine.authority_epoch == epoch, "Held Grip retriggered takeover"
             vr(gripActive=False, yButton=False)
