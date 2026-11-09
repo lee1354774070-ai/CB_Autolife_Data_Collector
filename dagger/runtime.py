@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 import signal
 import sys
@@ -98,6 +99,8 @@ def main():
             client = RemoteClient(os.environ["DAGGER_SERVER_URL"], token, 10.)
             health = client.request("/health")
             robot.validate_health(health)
+            from dagger.v5_runtime import validate_server_head_limit
+            validate_server_head_limit(health)
             from dagger.inference_options import validate_selection
             validate_selection(health, os.environ['TASK_TEXT'], os.environ.get('DAGGER_GRIPPER_PHASE', 'auto'),
                                os.environ.get('DAGGER_EXPECTED_CHECKPOINT', ''))
@@ -112,6 +115,18 @@ def main():
             topics = command_publishers(robot.suffix)
             counts = Counter()
             joint_status = {}
+            robot_feedback = {}
+            def receive_robot_feedback(message):
+                try:
+                    value = json.loads(message.data)
+                    if (isinstance(value, dict) and isinstance(value.get('timestamp'), (int, float))
+                            and value['timestamp'] != robot_feedback.get('timestamp')):
+                        robot_feedback.clear()
+                        robot_feedback.update(value, _received_at=time.monotonic())
+                except (ValueError, TypeError):
+                    pass
+            node.create_subscription(String, robot.joint_topic,
+                                     receive_robot_feedback, qos_profile_sensor_data)
             def receive_joint_status(message):
                 joint_status.clear()
                 try:
@@ -146,17 +161,23 @@ def main():
                                for topic in topics}
                     return command_conflicts(current, counts, suffix=robot.suffix), joint_status
                 try:
-                    repair_idle_conflicts(conflicts, joint_status, robot, recheck=recheck)
-                except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+                    repair_idle_conflicts(conflicts, joint_status, robot, recheck=recheck, robot_feedback=robot_feedback)
+                except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError) as exc:
                     raise SystemExit("FAIL  启动自检修复中止：" + str(exc)) from None
                 counts.clear()
-                deadline = time.monotonic() + 4.0
-                while time.monotonic() < deadline:
+                print('INFO  自检修复：旧控制接口退出后立即继续（超时15秒）', flush=True)
+                quiet_since = time.monotonic()
+                deadline = quiet_since + 15.0
+                while True:
                     rclpy.spin_once(node, timeout_sec=.1)
-                publishers = {topic: [info.node_namespace.rstrip('/') + '/' + info.node_name
-                                      for info in node.get_publishers_info_by_topic(topic)]
-                              for topic in topics}
-                conflicts = command_conflicts(publishers, counts, suffix=robot.suffix)
+                    publishers = {topic: [info.node_namespace.rstrip('/') + '/' + info.node_name
+                                          for info in node.get_publishers_info_by_topic(topic)]
+                                  for topic in topics}
+                    conflicts = command_conflicts(publishers, counts, suffix=robot.suffix)
+                    if conflicts['active_commands'] or time.monotonic() >= deadline:
+                        break
+                    if not conflicts['unknown_publishers'] and time.monotonic() - quiet_since >= 1.0:
+                        break
             if any(conflicts.values()):
                 raise SystemExit(f"FAIL  控制接口被占用，不启动第二套控制器：{conflicts}")
             lease = node.create_client(SetBool, robot.lease_service)

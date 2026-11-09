@@ -1,4 +1,6 @@
-# DAgger 使用说明（300机器人）
+# DAgger 使用说明（S2 / 300机器人，V4）
+
+本页对应 `main` 的 S2 路径。S3 / V5 请看 [S3专用接入说明](docs/DAGGER_V5_S3_zh.md)，不要套用本页的模型或复位姿态。
 
 适用：桌面“云蝶DAgger启动器”，正式代码 `/home/ubuntu/CB_Autolife_Data_Collector`。
 其他机器人必须核验控制依赖、模型兼容性和本机复位姿态，不能直接套用300的姿态库。

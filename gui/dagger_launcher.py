@@ -63,9 +63,12 @@ def describe_state(state):
     if background.get('error'):
         lines.append('后台保存失败，暂存数据保留：' + background['error'])
     notice = state.get('notice', {})
-    error = background.get('error') or trial.get('invalid_reason') or state.get('gripper_tracking_warning') or state.get('failure_reason')
+    control_error = (state.get('controller_reason') or state.get('failure_reason')) if mode == 'ESTOP' else None
+    error = control_error or background.get('error') or trial.get('invalid_reason') or state.get('gripper_tracking_warning') or state.get('failure_reason')
     if error:
         lines.append('异常：' + str(error))
+    if control_error and trial.get('invalid_reason'):
+        lines.append('录制失效：' + str(trial['invalid_reason']))
     if notice.get('text'):
         lines.append(str(notice['text']))
     if mode == 'EXPERT_ACTIVE':
@@ -146,12 +149,6 @@ class Launcher:
             check = tk.Checkbutton(options, text=label, variable=value, bg=CARD, fg=INK, selectcolor=BG, activebackground=CARD, activeforeground=INK, font=('Sans', 11))
             check.pack(side='left', padx=(0, 14))
             self.option_widgets.append(check)
-        self.publish = tk.BooleanVar(value=os.environ.get('DAGGER_PUBLISH', '0') == '1')
-        publish_check = tk.Checkbutton(panel, text='允许真机控制（开始推理 / 全身复位后运动）',
-            variable=self.publish, bg=CARD, fg=INK, selectcolor=BG,
-            activebackground=CARD, activeforeground=INK, font=('Sans', 11))
-        publish_check.pack(anchor='w', pady=(4, 0))
-        self.option_widgets.append(publish_check)
         self.schema_hint = self.label(panel, '', 10)
         self.schema_hint.pack(anchor='w', pady=(6, 0))
         for value in self.options.values():
@@ -197,11 +194,8 @@ class Launcher:
         backend = 'V5 / S3' if os.environ.get('DAGGER_TELEOP_BACKEND') == 'v5' else 'V4 / S2'
         self.mode_hint = self.label(body, '', 10)
         self.mode_hint.pack(anchor='w')
-        def update_mode(*_):
-            output = '真机模式（按键后运动）' if self.publish.get() else '只读模式（不下发动作）'
-            self.mode_hint.configure(text=backend + ' · ' + output + ' · VR端口 ' + os.environ.get('DAGGER_WEB_PORT', '8447'))
-        self.publish.trace_add('write', update_mode)
-        update_mode()
+        self.mode_hint.configure(text=backend + ' · 真机模式：启动后待命，按A开始 · VR端口 '
+                                 + os.environ.get('DAGGER_WEB_PORT', '8447'))
         root.after(400, self.poll)
 
     def shortcut_press(self, event):
@@ -256,9 +250,6 @@ class Launcher:
     def start(self, reset_only=False):
         if self.process and self.process.poll() is None:
             return
-        if reset_only and not self.publish.get():
-            self.detail.configure(text='全身复位会产生运动，请先勾选“允许真机控制”。')
-            return
         instruction = self.instruction.get().strip()
         if not instruction and not reset_only:
             self.detail.configure(text='请填写任务指令。')
@@ -283,7 +274,7 @@ class Launcher:
         self.log_path = LOGS / (task + '.log')
         try:
             with self.log_path.open('w') as output:
-                self.process = subprocess.Popen([os.environ.get('DAGGER_ROS_PY', '/usr/bin/python3'), str(BASE / 'dagger/run.py'), task, instruction, '--reset-only' if reset_only else '--serve'], stdout=output, stderr=subprocess.STDOUT, start_new_session=True, env={**reset_env, 'DAGGER_PUBLISH': str(int(self.publish.get())), 'DAGGER_BACKEND': 'owned', 'OUTPUT_BASE_DIR': str(active_root), 'DAGGER_GRIPPER_PHASE': PHASES[self.phase.get()], 'DAGGER_EXPECTED_CHECKPOINT': self.checkpoint, **{key: str(int(value.get())) for (key, value) in self.options.items()}})
+                self.process = subprocess.Popen([os.environ.get('DAGGER_ROS_PY', '/usr/bin/python3'), str(BASE / 'dagger/run.py'), task, instruction, '--reset-only' if reset_only else '--serve'], stdout=output, stderr=subprocess.STDOUT, start_new_session=True, env={**reset_env, 'DAGGER_PUBLISH': '1', 'DAGGER_BACKEND': 'owned', 'OUTPUT_BASE_DIR': str(active_root), 'DAGGER_GRIPPER_PHASE': PHASES[self.phase.get()], 'DAGGER_EXPECTED_CHECKPOINT': self.checkpoint, **{key: str(int(value.get())) for (key, value) in self.options.items()}})
         except OSError as exc:
             self.status.configure(text='●  启动失败', fg='#ffb09a')
             self.detail.configure(text=str(exc))

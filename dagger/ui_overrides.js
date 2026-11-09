@@ -27,15 +27,17 @@ hgDaggerVisualState = function (status) {
   const invalid = status?.trial?.invalid_reason;
   const notice = status?.notice;
   const mode = String(status?.mode || 'DISARMED');
+  const controlError = mode === 'ESTOP' && (status?.controller_reason || status?.failure_reason);
   return {
-    key: String(invalid || notice?.token || mode) + ':' + String(status?.background_saves?.pending ?? '') + ':' + String(status?.background_saves?.completed?.at(-1)?.job_id ?? '') + ':' + String(status?.background_saves?.error ?? ''),
-    label: invalid ? `本条失效：${invalid}；Y 丢弃，X 仅全身复位（先保存或丢弃当前条）。`
+    key: String(controlError || '') + ':' + String(invalid || notice?.token || mode) + ':' + String(status?.background_saves?.pending ?? '') + ':' + String(status?.background_saves?.completed?.at(-1)?.job_id ?? '') + ':' + String(status?.background_saves?.error ?? ''),
+    label: controlError ? `控制停止：${controlError}${invalid ? '；本条录制失效：' + invalid : ''}`
+      : invalid ? `本条失效：${invalid}；Y 丢弃，X 仅全身复位（先保存或丢弃当前条）。`
       : [notice?.text || HG_DAGGER_MODE_LABELS[mode] || mode,
           status?.background_saves?.error ? '后台保存失败，暂存数据保留' :
           status?.background_saves?.pending ? `后台保存中：${status.background_saves.pending}条（尚未落盘）` :
           status?.background_saves?.completed?.length ? `最近已保存：第${status.background_saves.completed.at(-1).episode_index + 1}条` : ''].filter(Boolean).join(' · '),
-    color: invalid || status?.background_saves?.error || notice?.level === 'error' ? '#FF6B6B' : '#7DFFCF',
-    notice: Boolean(invalid || notice?.text)
+    color: controlError || invalid || status?.background_saves?.error || notice?.level === 'error' ? '#FF6B6B' : '#7DFFCF',
+    notice: Boolean(controlError || invalid || notice?.text)
   };
 };
 
@@ -81,4 +83,115 @@ finishHardwareEnableHold = function (event) {
   cancelDeferredHardwareEnable('VR 待命，按 A 开始推理和录制。');
   setStatus('进入 VR 后保持待命；按 A 开始。');
   void enterVr();
+};
+
+// Hardware enable is shared by model and expert; it never proves takeover.
+const collectorRenderHardwareControl = renderHardwareControl;
+renderHardwareControl = function () {
+  collectorRenderHardwareControl();
+  const card = document.getElementById('hardwareControl');
+  const label = document.getElementById('hardwareStatusLabel');
+  const detail = document.getElementById('hardwareStatusDetail');
+  const start = document.getElementById('startVrButton');
+  if (start) {
+    start.disabled = Boolean(state.xrSession);
+    start.textContent = state.xrSession ? '已进入 VR' : '进入 VR（不启动、不停止当前任务）';
+  }
+  if (!card || !label || !detail) return;
+  const hg = state.teleop.status?.hg_dagger;
+  if (!hg) return;
+  card.classList.remove('is-off', 'is-busy', 'is-on', 'is-error');
+  const linked = state.websocket?.readyState === WebSocket.OPEN;
+  const tracked = linked && vrInputIsFresh();
+  const failed = hg.mode === 'ESTOP' || hg.trial?.invalid_reason;
+  card.classList.add(failed ? 'is-error' : hg.mode === 'EXPERT_ACTIVE' && tracked ? 'is-on' : 'is-off');
+  label.textContent = HG_DAGGER_MODE_LABELS[hg.mode] || hg.mode;
+  const connection = !linked ? '手柄数据未连接：请刷新本页；当前不能接管。'
+    : !state.xrSession ? '尚未进入沉浸式 VR：点下方“进入 VR”后才能接管。'
+    : !tracked ? '等待手柄定位：保持头显佩戴并唤醒手柄；当前不能接管。'
+    : '手柄数据正常：按住 Grip 接管，Trigger 控制夹爪。';
+  detail.textContent = [connection, hg.notice?.text].filter(Boolean).join(' · ');
+};
+
+// Center the head view and fit its actual frame inside a fixed viewing area.
+const collectorPanelLayout = panelLayout;
+panelLayout = function (id) {
+  if (id !== 'rgbd_head_color') return collectorPanelLayout(id);
+  const camera = state.image.states.get(id);
+  const width = Number(camera?.canvas?.width || camera?.config?.width || 640);
+  const height = Number(camera?.canvas?.height || camera?.config?.height || 480);
+  const ratio = width > 0 && height > 0 ? width / height : 4 / 3;
+  const fittedWidth = Math.min(1.8, 1.1 * ratio);
+  return {x: 0, y: 0.08, width: fittedWidth, height: fittedWidth / ratio};
+};
+const collectorCameraPanel = updateCameraPanel;
+updateCameraPanel = function (id) {
+  collectorCameraPanel(id);
+  if (id !== 'rgbd_head_color') return;
+  const camera = state.image.states.get(id), panel = state.image.panels.get(id);
+  if (!camera || !panel) return;
+  const layout = panelLayout(id);
+  const size = `${layout.width}:${layout.height}`;
+  if (panel.collectorSize !== size) {
+    panel.collectorSize = size;
+    panel.panel.setAttribute('position', `${layout.x} ${layout.y} 0`);
+    panel.screen.setAttribute('width', layout.width);
+    panel.screen.setAttribute('height', layout.height);
+    const border = panel.panel.querySelector('a-plane');
+    if (border) {
+      border.setAttribute('width', layout.width + 0.04);
+      border.setAttribute('height', layout.height + 0.04);
+    }
+    panel.label.setAttribute('position', `0 ${layout.height / 2 + 0.06} 0`);
+    panel.meta.setAttribute('position', `0 ${-layout.height / 2 - 0.06} 0`);
+  }
+  const text = camera.status?.last_error ? 'VIDEO ERROR' :
+    Number(camera.clientFps || 0) > 0 ? `${Number(camera.clientFps).toFixed(0)} FPS` : 'WAITING FOR VIDEO';
+  panel.meta.setAttribute('value', text);
+};
+
+// Reuse the existing one-second camera report; no extra control-path polling.
+reportCameraClientStatus = async function () {
+  const now = performance.now(), cameras = {};
+  state.image.states.forEach((camera, id) => {
+    cameras[id] = {
+      mode: state.image.mode, transport: camera.transportMode,
+      client_fps: Number(camera.clientFps.toFixed(1)),
+      decoded_frames: camera.decodedFrameCount, drawn_frames: camera.drawnFrameCount,
+      video_age_ms: camera.lastVideoFrameAt > 0 ? Math.round(now - camera.lastVideoFrameAt) : null,
+      fallback_reason: camera.fallbackReason
+    };
+  });
+  try {
+    await fetch('/api/camera/client-status', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, cache: 'no-store', keepalive: true,
+      body: JSON.stringify({page: 'dagger-20261107-centered-rgb', client_id: state.clientInstanceId,
+        cameras, xr_active: Boolean(state.xrSession), feedback: state.collectorFeedback || null})});
+  } catch (_) { /* Diagnostics cannot interrupt control. */ }
+};
+
+
+// Native XR sessionstart requests passthrough and otherwise stops JPEG polling.
+// DAgger keeps the central head-RGB panel visible while in XR.
+const collectorSetCameraMode = setCameraMode;
+setCameraMode = function (mode) {
+  return collectorSetCameraMode(state.xrSession && state.image.enabled ? 'rgbd' : mode);
+};
+const collectorCanvasTexture = applyCanvasTexture;
+applyCanvasTexture = function (id) {
+  collectorCanvasTexture(id);
+  const camera = state.image.states.get(id);
+  if (!camera || !camera.transportMode.startsWith('latest-jpeg')
+      || camera.collectorDrawnSeq === camera.drawnFrameSeq) return;
+  camera.collectorDrawnSeq = camera.drawnFrameSeq;
+  const now = performance.now();
+  camera.lastVideoFrameAt = now;
+  camera.decodedFrameCount += 1; camera.drawnFrameCount += 1;
+  camera.fpsWindowFrames += 1;
+  if (!camera.fpsWindowStartedAt) camera.fpsWindowStartedAt = now;
+  if (now - camera.fpsWindowStartedAt >= 1000) {
+    camera.clientFps = 1000 * camera.fpsWindowFrames / (now - camera.fpsWindowStartedAt);
+    camera.fpsWindowStartedAt = now; camera.fpsWindowFrames = 0;
+    updateCameraPanel(id);
+  }
 };

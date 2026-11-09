@@ -19,6 +19,7 @@ import signal
 import subprocess
 import sys
 import termios
+import tempfile
 import threading
 import time
 import tty
@@ -145,7 +146,7 @@ def wait_recorder(child, base, started, stop, timeout=90):
     raise RuntimeError("Timed out waiting for this recorder instance's ready acknowledgement")
 
 
-def main():
+def _run_main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("task_name")
     parser.add_argument("task_text", nargs="?")
@@ -298,6 +299,27 @@ def main():
             command_worker.join(timeout=12)
         for lock in locks:
             lock.close()
+
+
+def main():
+    if '--check' in sys.argv or os.environ.get('DAGGER_BACKEND') == 'attach':
+        return _run_main()
+    from dagger.startup_repair import restore_dashboard
+    with tempfile.TemporaryDirectory(prefix='collector-dashboard-') as directory:
+        receipt = Path(directory) / 'restore.json'
+        previous = os.environ.get('DAGGER_DASHBOARD_RECEIPT')
+        os.environ['DAGGER_DASHBOARD_RECEIPT'] = str(receipt)
+        try:
+            return _run_main()
+        finally:
+            try:
+                restore_dashboard(receipt)
+            except Exception as exc:
+                print('FAIL  原厂dashboard恢复未确认：' + str(exc), flush=True)
+            if previous is None:
+                os.environ.pop('DAGGER_DASHBOARD_RECEIPT', None)
+            else:
+                os.environ['DAGGER_DASHBOARD_RECEIPT'] = previous
 
 
 if __name__ == "__main__":

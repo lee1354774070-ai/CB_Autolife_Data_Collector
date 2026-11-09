@@ -90,6 +90,18 @@ def main():
                     self._feedback_clients.discard(client)
             return response
 
+        async def _api_config(self, request):
+            response = await super()._api_config(request)
+            if os.environ.get('COLLECTOR_WEB_MODE', 'dagger') == 'dagger':
+                config = json.loads(response.text)
+                config['vr_images']['default_mode'] = 'rgbd'
+                for camera in config['vr_images']['cameras']:
+                    camera['name'] = 'Head RGB'
+                    if not config['network']['webrtc_enabled']:
+                        camera['transport'] = 'latest-jpeg'
+                return web.json_response(config)
+            return response
+
         async def _index(self, request):
             return web.Response(
                 text=self._index_body,

@@ -1,7 +1,18 @@
 # 云蝶 AutoLife 数据采集器
 
-> **S2 / S3 共用 `main` 和同一套采集实现**，新S3数据集设置 `ROBOT_TYPE=autolife_s3`。
-> 无需S3专用推理预览或模型转换工具；EEF采集与转换继续保留。DAgger需另行核对机器人型号、控制接口并完成现场验收。
+> **本分支是 `s3-v5-dagger-340`：S3 / V5 DAgger 适配版。**
+> S2 DAgger 和 S2/S3 常规采集继续使用 [`main`](https://github.com/lee1354774070-ai/CB_Autolife_Data_Collector/tree/main)。本次发布不更新 `main`。
+
+| 机器人与用途 | 分支 | 控制路径 / 说明 |
+|---|---|---|
+| S2：普通、单人、子任务、DAgger | `main` | 常规采集沿用原厂输入；DAgger 沿用 V4。[S2/300操作说明](DAGGER_GUIDE_zh.md) |
+| S3：普通、单人、子任务 | `main` | 与 S2 共用采集实现，设置 `ROBOT_TYPE=autolife_s3`；不需要 V5 |
+| S3：V5 DAgger | `s3-v5-dagger-340` | 显式设置 `DAGGER_TELEOP_BACKEND=v5`、`DAGGER_ROBOT_PROFILE=s3_v3_1`。[S3/V5操作与验收说明](docs/DAGGER_V5_S3_zh.md) |
+
+V5 是可选后端，未选择时仍为 V4；S2 配置不能加载 S3 的 V5 运行副本。
+S3 分支基于 Lee 的 `5f38de9`，保留已有采集实现，不把 S2 的模型、复位姿态或配置自动套到 S3。
+340 是本次验证机器，其他 S3 须各自核验型号、SDK、模型和任务复位姿态，不能仅改 IP 就视为验收通过。
+最新验证及未解决项见 [S3发布状态](docs/DAGGER_V5_S3_zh.md#release-status)。
 
 统一入口：`start_lerobot_official_collect.sh`。支持键盘、单人 VR、子任务标注和 DAgger，
 输出官方 `LeRobotDataset`。本文先解释参数，再给出各模式的完整用法。
@@ -64,7 +75,7 @@ export WITH_DEPTH=1
 **Action 来源约定：**
 
 - **常规数采 `keyboard / vr / subtask`：`ACTION_MODE=status_target`。** 默认无需填写。手臂/头/腰取状态包中的控制目标；由于状态包没有独立夹爪目标，两维夹爪取实测位置。
-- **DAgger：`ACTION_MODE=joint`。** 启动器自动设置，显式设置为 `status_target` 会报错。使用修改后的V4控制器实际发布的目标位置，经 `/hg_dagger/collector/arm_action` 和 `/hg_dagger/collector/gripper_action` 写入，并保留控制来源、时间戳和训练mask；不回退为实测state。
+- **DAgger：`ACTION_MODE=joint`。** 启动器自动设置，显式设置为 `status_target` 会报错。使用所选V4/V5控制器实际发布的目标位置，经 `/hg_dagger/collector/arm_action` 和 `/hg_dagger/collector/gripper_action` 写入，并保留控制来源、时间戳和训练mask；不回退为实测state。
 
 原厂App能让机器人运动、夹爪支持位置控制，都不等于它会发布独立的身体/夹爪目标位置命令。
 非DAgger的底层 `joint` 接口仅保留给已核实命令话题的集成或链路调试，不作为常规数采配置。

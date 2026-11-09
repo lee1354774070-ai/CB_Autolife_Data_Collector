@@ -47,6 +47,10 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
         self._failure_button_last_ns = 0
         self._failure_button_released = False
         self._failure_button_trial = ""
+        self._contact_gripper_hold = robot.model == 's3_v3_1' and os.environ.get('DAGGER_TELEOP_BACKEND') == 'v5'
+        self._feedback_history = []
+        self._background_jobs_seen = set()
+        self._background_error_seen = ''
         super().__init__()
         self._feedback_pub = self.create_publisher(String, "/collector/feedback", 10)
         self._speech_pub = self.create_publisher(String, f"/topic_tts_{robot.suffix}", 10)
@@ -69,13 +73,24 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             with_depth=os.environ.get('WITH_DEPTH', '0') == '1',
             with_eef_state=os.environ.get('WITH_EEF_STATE', '0') == '1',
             with_eef_action=os.environ.get('WITH_EEF_ACTION', '0') == '1',
-            task_text=os.environ.get('TASK_TEXT', '')))
+            task_text=os.environ.get('TASK_TEXT', ''), feedback_events=[]))
         self.create_service(SetParametersAtomically, SERVICE, self._on_attached_command)
         self.get_logger().info("AutoLife DAgger: A=start, GL/GR=takeover, B=save, Y tap=discard / hold 1s=failure save, X=reset")
 
+    def _set_notice_locked(self, text, level='info'):
+        changed = self._save_notice.get('text') != text or self._save_notice.get('level') != level
+        super()._set_notice_locked(text, level)
+        if level == 'error' and changed:
+            self._feedback('error', text)
+
     def _feedback(self, event, text):
         if hasattr(self, "_feedback_pub"):
-            self._feedback_pub.publish(String(data=json.dumps(feedback_packet(event))))
+            packet = {**feedback_packet(event), 'text': text}
+            self._feedback_history = (self._feedback_history + [packet])[-8:]
+            # Status delivery backs up SSE and deduplicates by the same event ID.
+            if isinstance(self._state_pub, CompatibilityPublisher):
+                self._state_pub.contract['feedback_events'] = list(self._feedback_history)
+            self._feedback_pub.publish(String(data=json.dumps(packet, ensure_ascii=False)))
             self._speech_pub.publish(String(data=json.dumps({"status": "play", "text": text}, ensure_ascii=False)))
 
     def _mechanical_reset_worker(self, button, save_note=''):
@@ -300,14 +315,29 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
                     if not self._button_worker_active:
                         self._spawn_button_worker_locked("invalid-hold", lambda: self._forward_enable(False))
             background = getattr(self._collector, 'background', {})
-            if isinstance(background, dict) and not background.get('pending') and background.get('completed'):
-                if self._save_notice.get('text', '').startswith('本条后台保存中'):
-                    self._set_notice_locked(f"第{background['completed'][-1]['episode_index'] + 1}条已保存", 'success')
+            if isinstance(background, dict):
+                for result in getattr(self._collector, 'completed_results', background.get('completed', [])):
+                    job_id = result.get('job_id')
+                    if job_id and result.get('success') is True and job_id not in self._background_jobs_seen:
+                        self._background_jobs_seen.add(job_id)
+                        text = f"第{result['episode_index'] + 1}条已保存"
+                        self._set_notice_locked(text, 'success')
+                        self._feedback('save', text)
+                error = background.get('error')
+                if error and error != self._background_error_seen:
+                    self._background_error_seen = error
+                    self._set_notice_locked('后台保存失败，临时数据已保留：' + str(error), 'error')
             super()._publish_state()
 
     def _begin_failure_hold(self, reason, *, hold_to_intervene=False):
         # DAgger initializes the current-pose/gripper pickup and revokes policy.
         super()._begin_failure_hold(reason, hold_to_intervene=hold_to_intervene)
+        if self._contact_gripper_hold:
+            # Use actual controller output, never an unexecuted model proposal.
+            held = [min(360., max(10., float(v))) for v in self._vendor_grippers]
+            self._expert_gripper_hold = list(held)
+            self._expert_gripper_desired = list(held)
+            self._expert_gripper_command = list(held)
         if hold_to_intervene:
             # The controller's atomic epoch handoff checks physical freshness.
             # HTTP cancellation and recorder I/O are never takeover barriers.
@@ -553,6 +583,7 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
                 self._finish_outcome = metadata
             outcome_kind = ("任务失败" if not metadata["task_success"] else
                             "人工纠正成功" if metadata["human_takeover"] else "模型自主成功") if save else ""
+            self._feedback('saving' if save else 'discarding', '正在后台保存' if save else '正在丢弃')
             self._set_notice_locked("正在保存：" + outcome_kind if save else "正在丢弃", "info")
             self._publish_state()
         disabled, detail = self._forward_enable(False)
@@ -570,6 +601,8 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
                        "本条已保存：" + outcome_kind if saved else ("本条未保存，请检查录制错误" if save else "本条已丢弃"))
             if not disabled:
                 message += "；硬件停用未确认：" + detail
+            if not queued and (saved or not save):
+                self._feedback('save' if saved else 'error' if save else 'discard', message)
             self._set_notice_locked(message, "success" if disabled and (saved or queued or not save) else "error")
             self._publish_state()
 

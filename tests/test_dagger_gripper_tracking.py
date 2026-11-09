@@ -48,6 +48,18 @@ class GripperTrackingTest(unittest.TestCase):
         self.tick(3.1)
         self.node._begin_failure_hold.assert_called_once()
 
+    def test_s3_contact_keeps_close_but_opening_stall_still_holds(self):
+        self.node._contact_gripper_hold = True
+        self.node._policy_gripper_epoch = 3
+        self.node._latest_grippers = [330., 10.]
+        self.node._measured_grippers = [267., 10.]
+        self.tick(1); self.tick(4)
+        self.node._begin_failure_hold.assert_not_called()
+        self.assertEqual(self.node._latest_grippers, [330., 10.])
+        self.node._latest_grippers = [10., 10.]
+        self.tick(5); self.tick(8)
+        self.node._begin_failure_hold.assert_called_once()
+
     def test_moving_gripper_restarts_stall_clock(self):
         self.node._policy_gripper_epoch = 3
         self.node._latest_grippers = [360., 360.]

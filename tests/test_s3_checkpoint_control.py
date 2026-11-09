@@ -86,7 +86,7 @@ class S3CheckpointTests(unittest.TestCase):
             self.assertEqual(control.start_model(control.MODELS/'new',Path(self.tmp.name)/'log'),state)
         command=run.call_args.args[0]
         self.assertEqual(command[command.index('--port')+1],'8783')
-        self.assertEqual(command[-2:],['--gripper-mode','binary330'])
+        self.assertEqual(command[-4:],['--gripper-mode','binary330','--head-pitch-max','34.5'])
         self.assertIn('/models/new',command)
         self.assertFalse(any('baseline:' in word for word in command))
 

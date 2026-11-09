@@ -1,17 +1,38 @@
 --- a/execution_server.py
 +++ b/execution_server.py
-@@ -5,7 +5,7 @@
+@@ -5,10 +5,11 @@
  from functools import wraps
  import os
  from pathlib import Path
 -from check_checkpoint import CHECKPOINT, validate_checkpoint
 +from dagger.s3_checkpoint_control import validate_model
++from dagger.s3_head_limit import HeadPitchLimitedGenerator
  
  
- def native_session_factory(factory, gripper_mode):
-@@ -41,7 +41,8 @@
+-def native_session_factory(factory, gripper_mode):
++def native_session_factory(factory, gripper_mode, head_pitch_max=None):
+     """Select the existing Thor/S2 gripper mode before proposal hashing."""
+     if gripper_mode not in ('continuous', 'binary330'):
+         raise ValueError('unsupported gripper mode')
+@@ -23,6 +24,9 @@
+         # Keep the existing S3 physical action decoding; the S2 session performs
+         # its own binary330 mapping only on action indices 14 and 15.
+         session.candidate_generator.gripper_indices = ()
++        if head_pitch_max is not None:
++            session.candidate_generator = HeadPitchLimitedGenerator(
++                session.candidate_generator, head_pitch_max)
+         return session
+ 
+     native_factory._wyli_gripper_mode = gripper_mode
+@@ -39,9 +43,14 @@
+     p.add_argument('--port', type=int, default=8783)
+     p.add_argument('--check-only', action='store_true')
      p.add_argument('--gripper-mode', choices=('continuous', 'binary330'), default='continuous')
++    p.add_argument('--head-pitch-max', type=float, default=None,
++                   help='Optional physical head-pitch bound before proposal hashing (S3: 34.5)')
      a = p.parse_args()
++    if a.head_pitch_max is not None:
++        HeadPitchLimitedGenerator(None, a.head_pitch_max)  # Validate before loading a model.
      model = a.model_dir.resolve(strict=True)
 -    validate_checkpoint(model)
 +    validate_model(model)
@@ -19,3 +40,22 @@
      print('CHECKPOINT_OK ' + CHECKPOINT, flush=True)
      if a.check_only:
          return
+@@ -66,7 +75,7 @@
+     finally:
+         faulthandler.cancel_dump_traceback_later()
+ 
+-    native_factory = native_session_factory(factory, a.gripper_mode)
++    native_factory = native_session_factory(factory, a.gripper_mode, a.head_pitch_max)
+ 
+     class Engine(SubmissionReceiptMixin, GrootRemoteEngine):
+         def health(self):
+@@ -74,7 +83,8 @@
+                     'active_session': self.session is not None, 'robot_profile': 'autolife_s3_v3_1',
+                     'robot_id': 340, 'discard_only': False, 'robot_io': False,
+                     'physical_execution_validated': False,
+-                    'idempotent_submission_receipts': True}
++                    'idempotent_submission_receipts': True,
++                    'head_pitch_max_degrees': a.head_pitch_max}
+ 
+     engine = Engine(loaded.contract, native_factory, mode='policy_only_baseline')
+     server = ThreadingHTTPServer((a.host, a.port), make_handler(engine, token))

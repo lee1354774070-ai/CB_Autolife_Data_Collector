@@ -28,8 +28,9 @@ def task_pose(env):
         raise ValueError('任务复位配置不属于当前机器人，请提供该机器人的标定计划')
     name = env.get('DAGGER_RESET_POSE', '').strip()
     if not name:
-        task_id = TASK_IDS.get(env.get('TASK_TEXT', '').strip())
-        name = plan.get('task_poses', {}).get(task_id, '')
+        task = env.get('TASK_TEXT', '').strip()
+        mapping = plan.get('task_poses', {})
+        name = mapping.get(task, mapping.get(TASK_IDS.get(task), ''))
     if not isinstance(name, str) or not name.strip():
         raise ValueError('当前任务没有复位姿态，请在启动器明确选择，或设置 DAGGER_RESET_POSE')
     library = Path(plan['poses_file']).expanduser()

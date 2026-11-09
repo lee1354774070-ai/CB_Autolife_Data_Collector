@@ -5,6 +5,10 @@ import os
 from pathlib import Path
 import select
 import signal
+import subprocess
+import time
+import math
+import shlex
 import urllib.request
 
 
@@ -84,12 +88,105 @@ def _joint_idle(state):
         raise RuntimeError("控制中心关节模块未确认锁定空闲；不会自动退出")
 
 
-def repair_idle_conflicts(conflicts, joint_status, robot, *, recheck=None):
+DASHBOARD_NODES = {"/dashboard_arm_io", "/dashboard_gv_io"}
+DASHBOARD_UNIT = "dashboard-backend.service"
+
+
+def _dashboard_unit():
+    result = subprocess.run(['systemctl', '--user', 'show', DASHBOARD_UNIT,
+        '-p', 'ActiveState', '-p', 'MainPID', '-p', 'Environment', '-p', 'ExecStart'],
+        check=True, capture_output=True, text=True, timeout=5)
+    return dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+
+
+def _dashboard_json(path):
+    with urllib.request.urlopen('http://127.0.0.1:9001/' + path, timeout=3) as response:
+        return json.load(response)
+
+
+def _dashboard_idle(robot, feedback):
+    unit = _dashboard_unit()
+    environment = shlex.split(unit.get('Environment', ''))
+    if (unit.get('ActiveState') != 'active' or int(unit.get('MainPID', '0')) <= 1
+            or 'autolife_robot_dashboard.server import main' not in unit.get('ExecStart', '')
+            or f'ROBOT_ID={robot.robot_id}' not in environment
+            or f'ROS_DOMAIN_ID={robot.domain}' not in environment):
+        raise RuntimeError('原厂dashboard服务来源或机器人编号未确认；不会自动暂停')
+    health = _dashboard_json('health')
+    if (health.get('status') != 'healthy' or health.get('ros_ready') is not True
+            or type(health.get('websocket_clients')) is not int
+            or health['websocket_clients'] != 0):
+        raise RuntimeError('原厂dashboard仍有网页连接或状态异常，请关闭原厂控制网页后重试')
+    mapping = _dashboard_json('mapping/status')
+    if (mapping.get('ok') is not True or mapping.get('enabled') is not False
+            or mapping.get('exploring') is not False):
+        raise RuntimeError('原厂dashboard建图或探索未确认空闲；不会自动暂停')
+    flag = subprocess.run(['redis-cli', '--raw', 'GET',
+        f'shared_params:{robot.domain}:{robot.robot_id}:is_navigating'],
+        check=True, capture_output=True, text=True, timeout=3).stdout.strip().lower()
+    if flag != 'false':
+        raise RuntimeError('导航未确认空闲；不会自动暂停原厂dashboard')
+    # A disconnected browser alone does not prove an earlier arm command ended.
+    joints = feedback
+    if not 0 <= time.monotonic() - float(joints.get('_received_at', 0)) <= .8:
+        raise RuntimeError('实时关节反馈过期；不会自动暂停原厂dashboard')
+    for group, size in (('left_arm', 7), ('right_arm', 7), ('neck', 3), ('leg_waist', 4)):
+        state = joints[group + '_joint_state']
+        position, speed = state['position'], state['speed']
+        target = joints[group + '_target_joint_state']
+        if (len(position) != size or len(speed) != size or len(target) != size
+                or len(state['communication_lost']) != size
+                or any(x is not False for x in state['communication_lost'])
+                or not all(math.isfinite(x) for x in position + speed + target)
+                or max(map(abs, speed)) > 3
+                or max(abs(a-b) for a,b in zip(position, target)) > 2):
+            raise RuntimeError('原厂dashboard仍有运动或关节状态异常；不会自动暂停')
+    return unit['MainPID']
+
+
+def _pause_dashboard(receipt, expected_pid):
+    if _dashboard_unit().get('MainPID') != expected_pid:
+        raise RuntimeError('原厂dashboard进程发生变化，请重新自检')
+    # Record before stopping, so even a partial stop/error is restored by the host.
+    receipt.write_text(json.dumps({'unit': DASHBOARD_UNIT, 'pid': expected_pid}))
+    print('INFO  自检修复：正常暂停空闲原厂dashboard；退出DAgger后恢复', flush=True)
+    subprocess.run(['systemctl', '--user', 'stop', DASHBOARD_UNIT],
+                   check=True, capture_output=True, text=True, timeout=20)
+    if _dashboard_unit().get('ActiveState') != 'inactive':
+        raise RuntimeError('原厂dashboard尚未退出；不会启动第二套控制器')
+
+
+def restore_dashboard(receipt):
+    if not receipt.is_file():
+        return
+    saved = json.loads(receipt.read_text())
+    if saved.get('unit') != DASHBOARD_UNIT:
+        raise RuntimeError('原厂dashboard恢复记录不匹配')
+    from .dependencies import conflicting_processes
+    if conflicting_processes():
+        raise RuntimeError('仍有控制进程，原厂dashboard暂不恢复；确认退出后执行 systemctl --user start dashboard-backend.service')
+    unit = _dashboard_unit()
+    if unit.get('ActiveState') == 'inactive':
+        subprocess.run(['systemctl', '--user', 'start', DASHBOARD_UNIT],
+                       check=True, capture_output=True, text=True, timeout=20)
+    elif unit.get('ActiveState') != 'active':
+        raise RuntimeError('原厂dashboard状态未稳定，请检查 systemctl --user status dashboard-backend.service')
+    receipt.unlink()
+    print('INFO  原厂dashboard已恢复', flush=True)
+
+
+def repair_idle_conflicts(conflicts, joint_status, robot, *, recheck=None, robot_feedback=None):
     """No ARM/reset/enable calls; unknown or busy owners always block repair."""
     names = {n for group in conflicts["unknown_publishers"].values() for n in group}
-    allowed = {"/whole_body_joint_bridge", f"/action_player_{robot.suffix}"}
+    allowed = {"/whole_body_joint_bridge", f"/action_player_{robot.suffix}"} | DASHBOARD_NODES
     if conflicts["active_commands"] or not names or names - allowed:
         raise RuntimeError("有动作命令或未知控制程序；不会自动退出：" + ", ".join(sorted(names)))
+    dashboard_pid = None
+    if names & DASHBOARD_NODES:
+        receipt_path = os.environ.get('DAGGER_DASHBOARD_RECEIPT')
+        if not receipt_path:
+            raise RuntimeError('请通过DAgger启动器启动，以便退出后恢复原厂dashboard')
+        dashboard_pid = _dashboard_idle(robot, robot_feedback or {})
     processes = _processes()
     targets = []
     stop_file = None
@@ -118,6 +215,8 @@ def repair_idle_conflicts(conflicts, joint_status, robot, *, recheck=None):
         # Preserve the frontend/service manager; only stop its idle backend.
         stop_file = root / "logs/backend.stop"
         targets = backends + watchdogs + targets
+    if dashboard_pid is not None and _dashboard_idle(robot, robot_feedback or {}) != dashboard_pid:
+        raise RuntimeError('原厂dashboard进程发生变化，取消自检修复')
     if recheck is not None:
         current, state = recheck()
         current_names = {n for group in current["unknown_publishers"].values() for n in group}
@@ -125,9 +224,11 @@ def repair_idle_conflicts(conflicts, joint_status, robot, *, recheck=None):
             raise RuntimeError("检查期间控制接口发生变化或收到动作；取消自动退出")
         if "/whole_body_joint_bridge" in names:
             _joint_idle(state)
+    if dashboard_pid is not None:
+        _pause_dashboard(Path(receipt_path), dashboard_pid)
     if stop_file is not None:
         stop_file.touch()
     for pid, args in targets:
         print(f"INFO  自检修复：正常退出空闲控制模块 PID {pid}", flush=True)
         _stop(pid, args)
-    return len(targets)
+    return len(targets) + int(dashboard_pid is not None)

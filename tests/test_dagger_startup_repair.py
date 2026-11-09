@@ -2,6 +2,9 @@
 from pathlib import Path
 import ast
 import io
+import json
+import os
+import time
 import signal
 import tempfile
 from types import SimpleNamespace
@@ -13,7 +16,7 @@ from dagger import startup_repair as repair
 
 class StartupRepairTest(unittest.TestCase):
     def setUp(self):
-        self.robot = SimpleNamespace(robot_id='300', suffix='0_300')
+        self.robot = SimpleNamespace(robot_id='300', suffix='0_300', domain='0')
         self.idle = dict(hardware_enabled=False, hardware_unlock_mode='locked',
                          action_running=False, active_goal_groups=[], hardware_prepare_stage=None)
         self.launch = ('/usr/bin/python3', '/opt/ros/jazzy/bin/ros2', 'launch',
@@ -144,3 +147,82 @@ class LauncherStatusTest(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class DashboardRepairTest(unittest.TestCase):
+    setUp = StartupRepairTest.setUp
+    conflicts = StartupRepairTest.conflicts
+    def test_dashboard_pauses_only_after_idle_audit_and_final_quiet_window(self):
+        conflict = self.conflicts('/dashboard_arm_io', '/dashboard_gv_io')
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.dict(os.environ, DAGGER_DASHBOARD_RECEIPT=directory+'/restore.json'), \
+             patch.object(repair, '_dashboard_idle', return_value='123') as idle, \
+             patch.object(repair, '_processes', return_value={}), \
+             patch.object(repair, '_pause_dashboard') as pause:
+            recheck=Mock(return_value=(conflict, {}))
+            self.assertEqual(repair.repair_idle_conflicts(conflict,{},self.robot,recheck=recheck),1)
+            self.assertEqual(idle.call_count,2)
+            recheck.assert_called_once()
+            pause.assert_called_once_with(Path(directory)/'restore.json','123')
+            pause.reset_mock()
+            recheck.return_value=(self.conflicts('/dashboard_arm_io',active={'topic':1}),{})
+            with self.assertRaises(RuntimeError):
+                repair.repair_idle_conflicts(conflict,{},self.robot,recheck=recheck)
+            pause.assert_not_called()
+
+    def test_dashboard_connections_navigation_stale_or_moving_feedback_block(self):
+        unit={'ActiveState':'active','MainPID':'123',
+              'Environment':'ROBOT_ID=300 ROS_DOMAIN_ID=0',
+              'ExecStart':'from autolife_robot_dashboard.server import main'}
+        joints={'_received_at':time.monotonic()}
+        for group,size in (('left_arm',7),('right_arm',7),('neck',3),('leg_waist',4)):
+            joints[group+'_joint_state']={'position':[0.]*size, 'speed':[0.]*size, 'communication_lost':[False]*size}
+            joints[group+'_target_joint_state']=[0.]*size
+        good={'health':{'status':'healthy','ros_ready':True,'websocket_clients':0},
+              'mapping/status':{'ok':True,'enabled':False,'exploring':False},
+              'robot/status':{'joint_status':joints}}
+        with patch.object(repair,'_dashboard_unit',return_value=unit), \
+             patch.object(repair.subprocess,'run',return_value=SimpleNamespace(stdout='false')) as command:
+            with patch.object(repair,'_dashboard_json',side_effect=lambda p:good[p]):
+                self.assertEqual(repair._dashboard_idle(self.robot,joints),'123')
+                command.return_value.stdout='true'
+                with self.assertRaisesRegex(RuntimeError,'导航'):repair._dashboard_idle(self.robot,joints)
+                command.return_value.stdout='false'
+            for path, update in [('health',{'websocket_clients':1}),('health',{'websocket_clients':None}),
+                                  ('mapping/status',{'enabled':True})]:
+                states={**good,path:{**good[path],**update}}
+                with patch.object(repair,'_dashboard_json',side_effect=lambda p:states[p]):
+                    with self.assertRaises(RuntimeError):repair._dashboard_idle(self.robot,joints)
+            for stamp,speed,target in [(time.monotonic()-10,0,0),(time.monotonic(),10,0),(time.monotonic(),0,15)]:
+                joints['_received_at']=stamp
+                joints['left_arm_joint_state']['speed']=[speed]*7
+                joints['left_arm_target_joint_state']=[target]*7
+                with patch.object(repair,'_dashboard_json',side_effect=lambda p:good[p]):
+                    with self.assertRaises(RuntimeError):repair._dashboard_idle(self.robot,joints)
+
+    def test_dashboard_restore_requires_owned_receipt_and_no_controller(self):
+        with tempfile.TemporaryDirectory() as directory:
+            receipt=Path(directory)/'restore.json'
+            with patch.object(repair.subprocess,'run') as command:
+                repair.restore_dashboard(receipt)
+                command.assert_not_called()
+            receipt.write_text(json.dumps({'unit':repair.DASHBOARD_UNIT,'pid':'123'}))
+            with patch('dagger.dependencies.conflicting_processes',return_value=[999]), \
+                 patch.object(repair.subprocess,'run') as command:
+                with self.assertRaisesRegex(RuntimeError,'仍有控制'):repair.restore_dashboard(receipt)
+                command.assert_not_called()
+                self.assertTrue(receipt.exists())
+            with patch('dagger.dependencies.conflicting_processes',return_value=[]), \
+                 patch.object(repair,'_dashboard_unit',return_value={'ActiveState':'inactive'}), \
+                 patch.object(repair.subprocess,'run') as command:
+                repair.restore_dashboard(receipt)
+                self.assertEqual(command.call_args.args[0],['systemctl','--user','start',repair.DASHBOARD_UNIT])
+                self.assertFalse(receipt.exists())
+
+    def test_startup_failure_still_restores_dashboard(self):
+        from dagger import run
+        with patch.object(run,'_run_main',side_effect=SystemExit(2)), \
+             patch.object(run.sys,'argv',['run.py','test']), \
+             patch.object(repair,'restore_dashboard') as restore:
+            with self.assertRaises(SystemExit):run.main()
+            restore.assert_called_once()

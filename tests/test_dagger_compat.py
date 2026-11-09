@@ -92,7 +92,7 @@ class CompatibilityTest(unittest.TestCase):
     def test_attach_branch_does_not_fall_through_to_owned_startup(self):
         source = Path(__file__).resolve().parents[1] / 'dagger/run.py'
         main = next(node for node in ast.parse(source.read_text()).body
-                    if isinstance(node, ast.FunctionDef) and node.name == 'main')
+                    if isinstance(node, ast.FunctionDef) and node.name == '_run_main')
         branch = next(node for node in main.body if isinstance(node, ast.If)
                       and ast.unparse(node.test) == "backend == 'attach'")
         self.assertIsInstance(branch.body[-1], ast.Raise)

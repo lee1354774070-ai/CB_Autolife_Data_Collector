@@ -17,6 +17,7 @@ class CachedCollector:
         self.interval = interval
         self._lock = threading.Lock()
         self.background = {}
+        self.completed_results = []
         self._selector = (False, "", 0)
         self._snapshot = (self._selector, {}, {}, 0.)
         self._stopped = threading.Event()
@@ -60,7 +61,8 @@ class CachedCollector:
                     path = Path(paths[bool(depth)]).parent / '.official_background_saves.json'
                     try:
                         status = json.loads(path.read_text())
-                        self.background = {**status, 'completed': status.get('completed', [])[-1:]}
+                        self.completed_results = status.get('completed', [])  # Bounded to 50 by recorder.
+                        self.background = {**status, 'completed': self.completed_results[-1:]}
                     except FileNotFoundError:
                         self.background = {}
                 progress = self.collector.progress(depth, trial)

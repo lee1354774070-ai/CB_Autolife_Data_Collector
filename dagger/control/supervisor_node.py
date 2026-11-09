@@ -1301,6 +1301,12 @@ class HgDaggerSupervisor(Node):
             abs(target - actual)
             for target, actual in zip(target_grippers, measured)
         ]
+        if getattr(self, '_contact_gripper_hold', False):
+            # Closing against an object is expected. Keep the commanded clamp;
+            # encoder aperture alone cannot distinguish a grasp from obstruction.
+            # Opening stalls, missing feedback and hardware faults stay guarded.
+            errors = [error if target <= actual else 0.0
+                      for error, target, actual in zip(errors, target_grippers, measured)]
         side = max(range(2), key=errors.__getitem__)
         if errors[side] <= 30.0:
             self._gripper_tracking_side = -1
@@ -1816,6 +1822,10 @@ class HgDaggerSupervisor(Node):
                 "gripper_command": list(self._expert_gripper_command),
                 "notice": dict(self._save_notice),
             }
+            # The web status must carry the same feedback receipts as ROS.
+            contract = getattr(self._state_pub, 'contract', None)
+            if isinstance(contract, dict):
+                state['collector_compat'] = contract
             self._state_pub.publish(String(data=compact(state)))
             prompts = {
                 Mode.POLICY_ACTIVE: "VLA 正在控制；Grip 接管，B 保存，Y 丢弃，X 仅复位",

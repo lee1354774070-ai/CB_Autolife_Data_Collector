@@ -162,7 +162,11 @@ def conflicting_processes(proc: Path = Path("/proc")) -> list[int]:
             args = path.read_bytes().split(b"\0")
             # Command arguments can include shell code. Match whole program
             # basenames/module names, not snippets in an SSH or shell string.
-            if any(arg.decode(errors="replace").split("/")[-1] in signatures for arg in args):
+            names = [arg.decode(errors="replace").split("/")[-1] for arg in args]
+            owned_runtime = any(name == 'runtime.py' and i + 1 < len(names)
+                                and names[i+1] in ('controller', 'mapper', 'supervisor', 'bridge')
+                                for i, name in enumerate(names))
+            if owned_runtime or any(name in signatures for name in names):
                 result.append(int(path.parent.name))
         except (OSError, ValueError):
             continue

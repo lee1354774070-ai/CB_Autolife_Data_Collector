@@ -7,7 +7,7 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from dagger.control.groot_bridge_core import (
     INFERENCE_MODES, array_digest_float32, bridge_generation_boundary,
@@ -40,6 +40,7 @@ class ThorBridgeTest(unittest.TestCase):
     def setUp(self):
         self.node = node = bridge_type()()
         node._condition = threading.Condition()
+        node._v5_policy_pacing = False
         node._shutdown = False
         node._mode, node._authority_epoch, node._generation = 'POLICY_ACTIVE', 1, 1
         node._collector_session_id, node._control_received = 'trial', time.monotonic()
@@ -142,3 +143,71 @@ class ThorBridgeTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.execute()
         self.node._policy_pub.publish.assert_not_called()
+
+
+class V5PolicyPacingTest(ThorBridgeTest):
+    def setUp(self):
+        super().setUp()
+        self.node._v5_policy_pacing = True
+
+    def test_catching_up_never_changes_action_or_ack_prefix(self):
+        # Reproduce the failing left elbow: target -53.261, actual -29.849.
+        self.actions[0][3] = -53.261
+        self.proposal['executable_chunk_digest'] = array_digest_float32(self.actions)
+        actual = [0.] * 18 + [10., 10.] + [0.] * 3
+        actual[7] = -29.849  # q23[7] is policy action[3].
+        self.node._fresh_q23 = lambda: actual.copy()
+        self.node._condition.wait = Mock()
+        def catch_up(*_):
+            self.assertEqual(self.node._policy_pub.publish.call_count, 0)
+            actual[7] = -36.
+        self.node._condition.wait.side_effect = catch_up
+        def acknowledge(*_):
+            # The next proposal action is near zero; simulate following after
+            # the previous command, then observe it before allowing step 2.
+            actual[7] = 0.
+            return True
+        self.node._wait_forward_ack.side_effect = acknowledge
+        self.assertTrue(self.execute())
+        self.node._condition.wait.assert_called_once()
+        submitted = self.node._post.call_args.args[1]['submitted_prefix']
+        self.assertEqual(submitted, validated_actions(self.proposal, self.node._contract))
+        self.assertEqual(array_digest_float32(submitted), self.proposal['executable_chunk_digest'])
+
+    def test_stall_never_publishes_or_acknowledges_unsubmitted_action(self):
+        self.actions[0][3] = -53.
+        self.proposal['executable_chunk_digest'] = array_digest_float32(self.actions)
+        self.node._generation_valid = Mock(return_value=True)
+        with patch('time.monotonic', side_effect=[10., 10., 12.1]):
+            with self.assertRaisesRegex(RuntimeError, 'tracking wait exceeded 2 seconds'):
+                self.execute()
+        self.node._policy_pub.publish.assert_not_called()
+        self.node._resolve_proposal(cancel=True)
+        self.assertEqual(self.node._post.call_args.args[0], '/discard')
+
+    def test_takeover_during_wait_resolves_only_the_accepted_prefix(self):
+        self.actions[1][3] = -53.
+        self.proposal['executable_chunk_digest'] = array_digest_float32(self.actions)
+        self.node._condition.wait = Mock(side_effect=lambda *_: self.state('EXPERT_ACTIVE'))
+        with self.assertRaisesRegex(RuntimeError, 'authority changed'):
+            self.execute()
+        self.node._resolve_proposal(cancel=True)
+        receipt = self.node._post.call_args.args[1]
+        self.assertEqual(receipt['submitted_prefix'], self.actions[:1])
+        self.assertEqual(self.node._policy_pub.publish.call_count, 1)
+
+    def test_stale_feedback_is_not_replaced_by_a_fabricated_sample(self):
+        self.node._fresh_q23 = Mock(side_effect=RuntimeError('no fresh complete q23 telemetry'))
+        with self.assertRaisesRegex(RuntimeError, 'no fresh complete'):
+            self.execute()
+        self.node._policy_pub.publish.assert_not_called()
+
+    def test_gripper_contact_and_waist_do_not_gate_controller_tracked_axes(self):
+        action = [0.] * 14 + [330., 330.] + [0., 0., 0., 100., 100.]
+        self.node._wait_policy_tracking(action, 1)
+        self.node._set_phase.assert_not_called()
+
+    def test_v4_keeps_its_original_execution_path(self):
+        self.node._v5_policy_pacing = False
+        self.node._wait_policy_tracking = Mock(side_effect=AssertionError('V4 must not pace'))
+        self.assertTrue(self.execute())

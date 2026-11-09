@@ -20,10 +20,10 @@ def main():
     rclpy.init();root=tk.Tk();root.withdraw()
     app=gui.Launcher(root)
     try:
-        assert not app.publish.get()
+        assert not hasattr(app, 'publish')
         assert app.instruction.get()=='Clear the trash from the table.'
         assert app.phase.get()=='S3二值夹爪（服务端）'
-        assert app.reset_pose.get()=='table_trash_020000'
+        assert app.reset_pose.get()==(os.environ.get('DAGGER_RESET_POSE') or '按任务配置')
         assert app.checkpoint=='hotel_trash_clean233_020000'
         assert set(app.clients)=={'start','finish','fail','discard','reset','seal','quit'}
         assert not any(app.node.count_publishers(topic) for topic in (
@@ -34,10 +34,10 @@ def main():
             app.start()
             command=popen.call_args.args[0];env=popen.call_args.kwargs['env']
             assert command[1]==str(gui.BASE/'dagger/run.py') and command[-1]=='--serve'
-            assert env['DAGGER_PUBLISH']=='0'
+            assert env['DAGGER_PUBLISH']=='1'
             assert env['DAGGER_TELEOP_BACKEND']=='v5' and env['ROBOT_ID']=='340'
             assert env['DAGGER_SERVER_URL'].endswith(':8783') and env['TASK_TEXT']==app.instruction.get()
-            assert env['WITH_DEPTH']=='1' and env['DAGGER_RESET_POSE']=='table_trash_020000'
+            assert env['WITH_DEPTH']=='1' and gui.task_pose(env)['pose_name']=='table_trash_020000'
             expected=str(Path(tmp)/app.task/'.official_recording_control')
             app.on_state(String(data=json.dumps({'collector_fifo':'other','mode':'EXPERT_ACTIVE'})))
             assert not app.control_state
@@ -54,13 +54,10 @@ def main():
                     app.command('quit');kill.assert_called_once()
             app.request=None;app.process=None;app.stopping=False
             # Independent reset does not start a recorder/model/web worker.
-            before=popen.call_count
             app.start(reset_only=True)
-            assert popen.call_count==before, 'unchecked hardware must not reset'
-            app.publish.set(True)
-            app.start(reset_only=True)
+            assert popen.call_args.kwargs['env']['DAGGER_PUBLISH']=='1'
             assert popen.call_args.args[0][-1]=='--reset-only'
-            assert popen.call_args.kwargs['env']['DAGGER_RESET_POSE']=='table_trash_020000'
+            assert gui.task_pose(popen.call_args.kwargs['env'])['pose_name']=='table_trash_020000'
             app.process=None
         for mode in ('POLICY_ACTIVE','EXPERT_ACTIVE','DISARMED','ESTOP'):
             text,color=gui.describe_state({'mode':mode,'trial':{},'background_saves':{'pending':2}})

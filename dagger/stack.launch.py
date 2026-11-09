@@ -16,7 +16,7 @@ from launch.events import Shutdown
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dagger.dependencies import ASSETS, interpreter_environment
 from dagger.robot_profile import resolve_robot
-from dagger.v5_runtime import controller_parameters as v5_parameters
+from dagger.v5_runtime import controller_parameters as v5_parameters, selected as v5_selected
 
 
 def generate_launch_description():
@@ -85,6 +85,7 @@ def generate_launch_description():
                      config=vr / "config/teleop.yaml", params={
         "topic_suffix": robot.suffix, "dry_run": dry, "quick_reset_enabled": "false",
         "gripper_filter_alpha": "1.0", "gripper_max_step_per_cycle": "350.0", "gripper_closed_position": "360.0",
+        **({"gripper_closed_percent": str(100. * (330. - 10.) / 350.)} if v5_selected() else {}),
     }, remaps={**{f"{prefix}/{key}": f"/hg_dagger/expert/{key}"
                   for key in ("eef_target", "gripper_target", "release_hold")},
                f"{prefix}/head_target": "/hg_dagger/disabled/head_target",
@@ -97,7 +98,7 @@ def generate_launch_description():
     })
     web = process([web_python, runtime, "web"], params={
         "host": "0.0.0.0", "https_port": os.environ.get("DAGGER_WEB_PORT", "8447"),
-        "rgbd_camera_enabled": "true", "status_topic": "/hg_dagger/web_teleop_status",
+        "rgbd_camera_enabled": "true", "rgbd_camera_maximum_fps": "15.0", "status_topic": "/hg_dagger/web_teleop_status",
     }, remaps={f"{prefix}/set_hardware_enabled": "/hg_dagger/set_session_enabled"})
     processes = [supervisor, controller] if os.environ.get('DAGGER_RESET_ONLY') == '1' else [supervisor, controller, mapper, bridge, web]
     # Losing any component closes this entire stack; the launcher then closes

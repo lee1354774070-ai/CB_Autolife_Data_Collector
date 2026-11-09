@@ -9,7 +9,7 @@ import cv2
 import time
 from std_msgs.msg import String
 from .control.groot_policy_bridge import GrootPolicyBridge
-from .control.groot_bridge_core import array_digest_float32
+from .control.groot_bridge_core import array_digest_float32, policy_state_from_q23
 from .robot_profile import resolve_robot
 from .inference_options import validate_selection
 
@@ -20,6 +20,7 @@ class CollectorThorBridge(GrootPolicyBridge):
         self._collector_session_id = ""
         self._control_received = 0.0
         self._proposal_authority = (-1, "", -1)
+        self._v5_policy_pacing = os.environ.get("DAGGER_TELEOP_BACKEND", "v4") == "v5"
         super().__init__()
 
     def _on_control_state(self, message):
@@ -62,8 +63,35 @@ class CollectorThorBridge(GrootPolicyBridge):
                 raise RuntimeError("previous Thor session has not closed")
         super()._run_generation(generation)
 
+    def _wait_policy_tracking(self, action, generation):
+        # The pinned V5 controller faults at 22 degrees (arms and neck). Keep
+        # 4 degrees of scheduling margin without clipping the proposal/ACK.
+        # Grippers can stop against an object and must never gate body motion.
+        deadline = time.monotonic() + 2.0
+        indices = (*range(14), 16, 17, 18)
+        with self._condition:
+            while True:
+                if not self._generation_valid(generation, "POLICY_ACTIVE"):
+                    raise RuntimeError("policy authority changed while waiting for tracking")
+                measured = policy_state_from_q23(self._fresh_q23())
+                index = max(indices, key=lambda i: abs(action[i] - measured[i]))
+                error = abs(action[index] - measured[index])
+                if error <= 18.0:
+                    return
+                detail = (f"waiting for body tracking: action[{index}] error {error:.1f} deg; "
+                          "next policy step withheld (18 deg lead limit)")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(detail + "; tracking wait exceeded 2 seconds")
+                self._set_phase("holding", detail)
+                # Joint feedback / Grip / epoch changes wake this immediately.
+                # Condition.wait releases the lock; takeover never waits for us.
+                self._condition.wait(min(.02, remaining))
+
     def _policy_payload(self, action, proposal, step, generation, observation_wall_ns,
                         observation_state, *, shadow_only):
+        if self._v5_policy_pacing and not shadow_only:
+            self._wait_policy_tracking(action, generation)
         payload = super()._policy_payload(action, proposal, step, generation,
             observation_wall_ns, observation_state, shadow_only=shadow_only)
         owner_generation, session, epoch = self._proposal_authority
@@ -83,6 +111,8 @@ class CollectorThorBridge(GrootPolicyBridge):
     def _connect(self):
         super()._connect()
         resolve_robot(os.environ).validate_health(self._health)
+        from .v5_runtime import validate_server_head_limit
+        validate_server_head_limit(self._health)
         validate_selection(self._health, os.environ['TASK_TEXT'], os.environ.get('DAGGER_GRIPPER_PHASE', 'auto'),
                            os.environ.get('DAGGER_EXPECTED_CHECKPOINT', ''))
 

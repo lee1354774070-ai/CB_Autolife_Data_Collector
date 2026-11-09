@@ -44,6 +44,17 @@ class ControllerHandoffTest(unittest.TestCase):
         self.assertTrue(apply_authority(self.node, self.packet, 'EXPERT_ACTIVE'))
         self.node._begin_fresh_teleop_session_locked.assert_called_once()
 
+    def test_v5_contact_does_not_unload_at_takeover_or_stop(self):
+        self.node._collector_contact_gripper_hold = True
+        self.node._collector_published_grippers = {'left': 330., 'right': 10.}
+        self.node._gripper_targets = {'left': 10., 'right': 10.}  # Queued but never published.
+        self.node._feedback.left_gripper = [267.]
+        self.assertTrue(apply_authority(self.node, self.packet, 'EXPERT_READY'))
+        self.assertEqual(self.node._gripper_targets, {'left': 330., 'right': 10.})
+        self.node._follow_authority_mode = 'EXPERT_ACTIVE'
+        self.assertTrue(apply_authority(self.node, {**self.packet, 'authority_epoch': 7}, 'DISARMED'))
+        self.assertEqual(self.node._gripper_targets, {'left': 330., 'right': 10.})
+
     def test_feedback_overshoot_cannot_become_an_out_of_range_hold(self):
         self.node._feedback.left_gripper = [365.16]
         self.node._feedback.right_gripper = [-3.78]

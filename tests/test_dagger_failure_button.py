@@ -153,5 +153,18 @@ class FailureButtonTest(unittest.TestCase):
             self.assertEqual(color, '#ffb09a' if level == 'error' else '#8bd5ae')
 
 
+    def test_controller_fault_remains_visible_after_action_expires(self):
+        source = SOURCE.parents[1] / 'gui/dagger_launcher.py'
+        method = next(n for n in ast.parse(source.read_text()).body
+                      if isinstance(n, ast.FunctionDef) and n.name == 'describe_state')
+        scope = {}
+        exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), 'exec'), scope)
+        text, color = scope['describe_state'](dict(mode='ESTOP',
+            controller_reason='tracking error 23.7 deg exceeds limit; output stopped',
+            trial=dict(invalid_reason='missing_stale_or_noncausal_action')))
+        self.assertLess(text.index('tracking error'), text.index('missing_stale'))
+        self.assertEqual(color, '#ffb09a')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -30,6 +30,16 @@ class TaskResetTest(unittest.TestCase):
         self.env.update(TASK_TEXT='custom task', DAGGER_RESET_POSE='table')
         self.assertEqual(task_pose(self.env)['custom']['joints_deg'], self.joints)
 
+    def test_s3_exact_prompt_mapping_keeps_manual_override(self):
+        self.plan.write_text(json.dumps({'robot_id': '340', 'poses_file': 'poses.yaml',
+            'task_poses': {'Clear the trash from the table.': 'table'}}))
+        env = {**self.env, 'ROBOT_ID': '340', 'TASK_TEXT': 'Clear the trash from the table.'}
+        self.assertEqual(task_pose(env)['pose_name'], 'table')
+        with self.assertRaisesRegex(ValueError, '没有复位姿态'):
+            task_pose({**env, 'TASK_TEXT': 'another task'})
+        self.assertEqual(task_pose({**env, 'TASK_TEXT': 'another task',
+                                   'DAGGER_RESET_POSE': 'table'})['pose_name'], 'table')
+
     def test_unknown_prompt_does_not_guess(self):
         self.env['TASK_TEXT'] = 'Pick the laundry bag.'
         with self.assertRaisesRegex(ValueError, '没有复位姿态'):

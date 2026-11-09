@@ -85,12 +85,13 @@ def start_model(path, log):
         '-e', 'PYTHONPATH=/workspace:/collector', '-e', 'HF_HOME=/cache/huggingface',
         '-e', 'HF_HUB_OFFLINE=1', '-e', 'TRANSFORMERS_OFFLINE=1',
         '-v', f'{ROOT}/repo:/workspace:ro', '-v', f'{DEPLOY}:/collector:ro',
-        '-v', f'{DEPLOY}/s3:/s3:ro', '-v', f'{MODELS}:/models:ro',
+        '-v', f'{DEPLOY}/s3:/s3:ro',
+        '-v', f'{MODELS}:/models:ro',
         '-v', f'{ROOT}/base/GR00T-N1.7-3B:{base}:ro', '-v', f'{ROOT}/cache:/cache',
         '-v', f'{TOKEN}:/run/s3.token:ro', IMAGE,
         'python', '-u', '/s3/execution_server.py', '--model-dir', '/models/' + path.name,
         '--token-file', '/run/s3.token', '--host', '192.168.8.224', '--port', '8783',
-        '--gripper-mode', 'binary330']
+        '--gripper-mode', 'binary330', '--head-pitch-max', '34.5']
     with log.open('ab') as output:
         subprocess.run(command, stdout=output, stderr=subprocess.STDOUT, check=True, timeout=30)
     deadline = time.monotonic() + 600

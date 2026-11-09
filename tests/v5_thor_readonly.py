@@ -40,12 +40,13 @@ def main():
         proposal=response['proposal']
         actions=np.asarray(proposal['executable_actions'],dtype=np.float32)
         assert actions.shape==(40,21) and np.isfinite(actions).all()
+        assert float(actions[:,17].max())<=34.5
         assert array_digest_float32(actions.tolist())==proposal['executable_chunk_digest']
         node._resolve_proposal(cancel=True)
         node._close_session();assert not node._session_id
         node._policy_pub.publish.assert_not_called()
         print('DAGGER_V5_READONLY_INFERENCE_PASS '+json.dumps(dict(checkpoint=node._health['checkpoint'],
-            shape=list(actions.shape),round_trip_ms=response['bridge_round_trip_ms'],discarded=True,
+            shape=list(actions.shape),head_pitch_max=float(actions[:,17].max()),round_trip_ms=response['bridge_round_trip_ms'],discarded=True,
             gripper_mode=node._health['gripper_mode'],gripper_range=[float(actions[:,14:16].min()),float(actions[:,14:16].max())],
             hardware_calls=0,actions_published=0,controller_acks=0)))
     finally:

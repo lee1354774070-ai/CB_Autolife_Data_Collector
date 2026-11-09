@@ -65,7 +65,7 @@ def prepare_copy(cache_root, env=None):
     loader = BUNDLED_RESET_ROOT / 'reset_pose_loader.py'
     reset_patch = HERE / 'task_reset_loader.patch'
     identity = hashlib.sha256(b''.join(p.read_bytes() for p in (
-        MANIFEST, Path(__file__), patch, loader, reset_patch))).hexdigest()
+        MANIFEST, Path(__file__), patch, loader, reset_patch, HERE / 'v5_reset_guard.py'))).hexdigest()
     target = cache_root / ('v5-' + identity[:20])
     if target.exists():
         manifest = json.loads((target / '.collector_copy.json').read_text())
@@ -99,5 +99,15 @@ def controller_parameters(runtime, env=None):
     """V5's matched collision pair, with the same 21 joint axes/limits as S3 SDK."""
     if not selected(env):
         return {}
+    # Match the reviewed V5/normal inference per-frame policy. Reset planning
+    # still uses its always-on collision model; native dead-zone limits remain.
     return {'urdf_path': str(Path(runtime) / 'urdf/robot_v3_1_simplified.urdf'),
             'srdf_path': str(Path(runtime) / 'urdf/robot_v3_1.srdf')}
+
+
+def validate_server_head_limit(health, env=None):
+    if not selected(env):
+        return
+    value = health.get('head_pitch_max_degrees')
+    if type(value) not in (int, float) or not 0 < value <= 34.5:
+        raise ValueError('S3推理服务缺少34.5°头部上限；请先更新8783服务，不在客户端裁剪动作')

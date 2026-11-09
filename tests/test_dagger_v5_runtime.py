@@ -22,6 +22,14 @@ class V5SelectionTest(unittest.TestCase):
         self.assertEqual(result['ACTION_MODE'],'joint')
         self.assertEqual(result['DAGGER_PUBLISH'],'0')
 
+    def test_v5_requires_server_head_bound_but_s2_health_is_unchanged(self):
+        env={'DAGGER_TELEOP_BACKEND':'v5'}
+        v5_runtime.validate_server_head_limit({}, {})
+        v5_runtime.validate_server_head_limit({'head_pitch_max_degrees':34.5}, env)
+        for value in (None, True, 0, 42.5, float('nan')):
+            with self.assertRaises(ValueError):
+                v5_runtime.validate_server_head_limit({'head_pitch_max_degrees':value}, env)
+
     def test_binary330_requires_explicit_selection_and_server_support(self):
         h=dict(ready=True,gripper_mode='binary330',gripper_phases=['binary330'],checkpoint='020000')
         self.assertEqual(validate_selection(h,'Clear the trash from the table.','binary330','020000'),'binary330')

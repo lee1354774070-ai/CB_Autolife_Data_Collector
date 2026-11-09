@@ -55,6 +55,7 @@ def apply_authority(controller, payload, mode):
         # Reuse the vendor's clutch/trajectory reset, but never its hold-ACK
         # state machine. Replace all outstanding policy goals, including waist,
         # neck and grippers, with measured values in this same critical section.
+        held_grippers = dict(getattr(controller, "_collector_published_grippers", {}))
         groups = controller._feedback.as_dict()
         controller._begin_fresh_teleop_session_locked(groups)
         if (getattr(controller, '_waist_follow_enabled', False)
@@ -74,6 +75,13 @@ def apply_authority(controller, payload, mode):
             for side, measured in (('left', controller._feedback.left_gripper),
                                    ('right', controller._feedback.right_gripper))
         }
+        if getattr(controller, '_collector_contact_gripper_hold', False):
+            # A physical grasp stops before the close angle. Replacing the
+            # target with that encoder angle would unload the fingers.
+            for side, value in held_grippers.items():
+                if (side in controller._gripper_targets and isinstance(value, (int, float))
+                        and minimum <= value <= maximum):
+                    controller._gripper_targets[side] = value
         controller._gripper_dirty = {'left': True, 'right': True}
         controller._collector_body_origin_epoch = -1
         controller._collector_gripper_origin_epoch = -1
