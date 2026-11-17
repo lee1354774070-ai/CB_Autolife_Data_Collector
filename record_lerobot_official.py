@@ -85,7 +85,7 @@ from subtask_annotations import (
     SUBTASK_FEATURE, SubtaskAnnotations, check_pending_annotations, prepare_annotation,
 )
 from shm_camera import PIXEL_FORMAT_MJPEG, ShmCameraReader, frame_to_hwc, read_shm_frame, read_shm_metadata, shm_timestamp_sec
-from jpeg_decoding import select_jpeg_decoder
+from jpeg_decoding import select_jpeg_decoder, save_jpeg_failure
 from time_sync import (
     frame_interval_error_ratio,
     latest_at_or_before,
@@ -488,7 +488,7 @@ class OfficialLeRobotRecorder(Node):
         self.jpeg_decoder = select_jpeg_decoder(
             self.args.jpeg_decoder, self.args.jpeg_device, self.get_logger())
         self.image_decoding.update(
-            backend='nvjpeg' if self.jpeg_decoder is not None else 'opencv',
+            backend=getattr(self.jpeg_decoder, 'backend', 'nvjpeg') if self.jpeg_decoder is not None else 'opencv',
             device=str(self.jpeg_decoder.device) if self.jpeg_decoder is not None else None)
         self.create_timer(1.0 / float(self.args.image_poll_fps), self._poll_shm_images)
 
@@ -553,9 +553,18 @@ class OfficialLeRobotRecorder(Node):
                 decoded = decoder.decode([(frame.data, frame.width, frame.height) for frame in jpeg_frames]) if jpeg_frames else []
                 jpeg_images = {id(frame): image for frame, image in zip(jpeg_frames, decoded, strict=True)}
             except Exception as exc:
+                now = time.time()
+                if not self.is_recording and now - self.__dict__.get('_last_jpeg_failure_log_sec', 0) < 1:
+                    return
+                self._last_jpeg_failure_log_sec = now
+                try:
+                    evidence = save_jpeg_failure(self.args.output_dir, copied_frames, exc)
+                except Exception as diagnostic_error:
+                    evidence = {'diagnostic_error': str(diagnostic_error)}
                 if self.is_recording:
-                    self._invalidate_episode('jpeg_decode_failed', time.time(), error=str(exc))
-                raise RuntimeError(f'GPU JPEG decode failed; recording stopped: {exc}') from exc
+                    self._invalidate_episode('jpeg_decode_failed', now, error=str(exc), **evidence)
+                self.get_logger().error(f'JPEG decode failed; current batch rejected: {exc}; {evidence}')
+                return  # Keep service/control commands alive; invalid episodes cannot be saved.
         for camera_name, spec, frame, received_sec in copied_frames:
             try:
                 image = jpeg_images.get(id(frame))

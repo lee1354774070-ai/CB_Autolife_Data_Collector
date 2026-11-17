@@ -63,12 +63,15 @@ def describe_state(state):
     if background.get('error'):
         lines.append('后台保存失败，暂存数据保留：' + background['error'])
     notice = state.get('notice', {})
-    control_error = (state.get('controller_reason') or state.get('failure_reason')) if mode == 'ESTOP' else None
+    control_error = (state.get('failure_reason') or state.get('controller_reason')) if mode in ('ESTOP', 'FAILURE_HOLD') else None
     error = control_error or background.get('error') or trial.get('invalid_reason') or state.get('gripper_tracking_warning') or state.get('failure_reason')
     if error:
         lines.append('异常：' + str(error))
     if control_error and trial.get('invalid_reason'):
         lines.append('录制失效：' + str(trial['invalid_reason']))
+    bridge = state.get('policy_bridge', {})
+    if mode == 'POLICY_ACTIVE' and bridge.get('phase') == 'holding':
+        lines.append('等待机械臂跟随：' + str(bridge.get('detail', '')))
     if notice.get('text'):
         lines.append(str(notice['text']))
     if mode == 'EXPERT_ACTIVE':
@@ -149,6 +152,14 @@ class Launcher:
             check = tk.Checkbutton(options, text=label, variable=value, bg=CARD, fg=INK, selectcolor=BG, activebackground=CARD, activeforeground=INK, font=('Sans', 11))
             check.pack(side='left', padx=(0, 14))
             self.option_widgets.append(check)
+        # Preview is separate from recorded head joints and camera inputs.
+        value = tk.BooleanVar(value=os.environ.get('DAGGER_HEADSET_VIDEO', '1') == '1')
+        self.options['DAGGER_HEADSET_VIDEO'] = value
+        check = tk.Checkbutton(panel, text='头显显示头部 RGB（启动前设置）', variable=value,
+                               bg=CARD, fg=INK, selectcolor=BG, activebackground=CARD,
+                               activeforeground=INK, font=('Sans', 11))
+        check.pack(anchor='w', pady=(6, 0))
+        self.option_widgets.append(check)
         self.schema_hint = self.label(panel, '', 10)
         self.schema_hint.pack(anchor='w', pady=(6, 0))
         for value in self.options.values():

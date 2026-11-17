@@ -33,6 +33,7 @@ from episode_storage import StorageLimitError
 from first_frames import stage_first_frames
 from video_encoding import accelerated_rgb_encoding
 from shm_camera import PIXEL_FORMAT_MJPEG
+from jpeg_decoding import save_jpeg_failure
 
 
 SOURCE = Path(__file__).resolve().parents[1] / 'record_lerobot_official.py'
@@ -53,6 +54,7 @@ namespace = {'emit_receipt': emit_receipt, 'time': time, 'Path': Path, 'os': os,
              'shutil': shutil, 'StorageLimitError': StorageLimitError,
              'success_annotation': success_annotation,
              'PIXEL_FORMAT_MJPEG': PIXEL_FORMAT_MJPEG,
+             'save_jpeg_failure': save_jpeg_failure,
              'accelerated_rgb_encoding': accelerated_rgb_encoding, 'stage_first_frames': stage_first_frames}
 exec(compile(ast.Module(body=methods, type_ignores=[]), str(SOURCE), 'exec'), namespace)
 
@@ -302,8 +304,7 @@ class RecorderControlsTest(unittest.TestCase):
         frame = SimpleNamespace(timestamp_ns=1, width=2, height=1, data=b'bad', pixel_format=PIXEL_FORMAT_MJPEG)
         with patch.dict(namespace, CAMERA_SPECS=CAMERA_SPECS, read_shm_metadata=lambda spec: (1,),
                         read_shm_frame=lambda *a: frame):
-            with self.assertRaisesRegex(RuntimeError, 'GPU JPEG decode failed'):
-                namespace['_poll_shm_images'](node)
+            namespace['_poll_shm_images'](node)
         node._store_image.assert_not_called()
         node._invalidate_episode.assert_called_once()
         self.assertEqual(node._invalidate_episode.call_args.args[0], 'jpeg_decode_failed')

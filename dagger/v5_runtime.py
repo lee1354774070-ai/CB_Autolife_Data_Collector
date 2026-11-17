@@ -64,8 +64,10 @@ def prepare_copy(cache_root, env=None):
     patch = HERE / 'v5_controller.patch'
     loader = BUNDLED_RESET_ROOT / 'reset_pose_loader.py'
     reset_patch = HERE / 'task_reset_loader.patch'
+    local_patch = HERE / 'local_policy_controller.patch'
     identity = hashlib.sha256(b''.join(p.read_bytes() for p in (
-        MANIFEST, Path(__file__), patch, loader, reset_patch, HERE / 'v5_reset_guard.py'))).hexdigest()
+        MANIFEST, Path(__file__), patch, loader, reset_patch, HERE / 'v5_reset_guard.py',
+        local_patch, HERE / 'local_policy_execution.py'))).hexdigest()
     target = cache_root / ('v5-' + identity[:20])
     if target.exists():
         manifest = json.loads((target / '.collector_copy.json').read_text())
@@ -85,7 +87,7 @@ def prepare_copy(cache_root, env=None):
                 content = content.replace(b'_306_v5', b'_306_v4')
             dest.write_bytes(content)
         shutil.copy2(loader, stage / LEGACY / 'reset_pose_loader.py')
-        for item in (patch, reset_patch):
+        for item in (patch, reset_patch, local_patch):
             subprocess.run(['patch', '--batch', '--forward', '--fuzz=0', '-p1', '-i', str(item)],
                            cwd=stage, check=True, capture_output=True, text=True)
         (stage / '.collector_copy.json').write_text(json.dumps({

@@ -31,10 +31,15 @@ def main():
         with tempfile.TemporaryDirectory() as tmp,patch.object(gui,'DATA_ROOT',Path(tmp)),patch.object(gui,'LOGS',Path(tmp)/'logs'), \
              patch.object(gui.subprocess,'Popen') as popen:
             popen.return_value.poll.return_value=None
+            assert app.options['DAGGER_HEADSET_VIDEO'].get() is True
+            app.options['DAGGER_HEADSET_VIDEO'].set(False)
             app.start()
             command=popen.call_args.args[0];env=popen.call_args.kwargs['env']
             assert command[1]==str(gui.BASE/'dagger/run.py') and command[-1]=='--serve'
             assert env['DAGGER_PUBLISH']=='1'
+            assert env['DAGGER_HEADSET_VIDEO']=='0'
+            assert env['WITH_HEAD']=='1' and env['WITH_UPPER_WAIST']=='1'
+            assert all(str(w['state'])=='disabled' for w in app.option_widgets)
             assert env['DAGGER_TELEOP_BACKEND']=='v5' and env['ROBOT_ID']=='340'
             assert env['DAGGER_SERVER_URL'].endswith(':8783') and env['TASK_TEXT']==app.instruction.get()
             assert env['WITH_DEPTH']=='1' and gui.task_pose(env)['pose_name']=='table_trash_020000'

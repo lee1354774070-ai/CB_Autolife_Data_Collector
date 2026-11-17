@@ -1,0 +1,25 @@
+diff --git a/work/baseline/collector/.runtime/v5-2c34ab6101ff01910ede/openarmx_teleop_vr_306_v4/controller_node.py b/work/candidate/collector/.runtime/v5-2c34ab6101ff01910ede/openarmx_teleop_vr_306_v4/controller_node.py
+index 434f449..c580303 100644
+--- a/openarmx_teleop_vr_306_v4/controller_node.py
++++ b/openarmx_teleop_vr_306_v4/controller_node.py
+@@ -184,7 +184,10 @@ def enable_vendor_pid_loop(shared_memory_glob):
+     return path, bool(previous)
+ 
+ 
+-class IndependentArmController(Node):
++from dagger.local_policy_execution import LocalPolicyExecutionMixin
++
++
++class IndependentArmController(LocalPolicyExecutionMixin, Node):
+     def __init__(self):
+         super().__init__('independent_arm_controller')
+         self._declare_parameters()
+@@ -611,6 +614,8 @@ class IndependentArmController(Node):
+                 f'self-collision model unavailable: {self._kinematics.collision_error}'
+             )
+ 
++        self._init_local_policy_execution()
++
+     def _acquire_instance_lock(self):
+         """Prevent two controllers from publishing to the same robot suffix."""
+         domain = os.environ.get('ROS_DOMAIN_ID', '0')

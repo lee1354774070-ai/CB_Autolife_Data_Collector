@@ -33,7 +33,7 @@ from dagger.robot_profile import resolve_robot, recorder_cpus
 
 def environment(task: str, text: str | None, source: dict[str, str], *, reset_only=False) -> dict[str, str]:
     env = dict(source)
-    for name, default in (("DAGGER_PUBLISH", "0"), ("WITH_HEAD", "1"),
+    for name, default in (("DAGGER_PUBLISH", "0"), ("DAGGER_HEADSET_VIDEO", "1"), ("WITH_HEAD", "1"),
                           ("WITH_UPPER_WAIST", "1"), ("WITH_WAIST", "0"), ("WITH_DEPTH", "0"),
                           ("WITH_EEF_STATE", "0"), ("WITH_EEF_ACTION", "0")):
         env.setdefault(name, default)
@@ -233,11 +233,14 @@ def _run_main():
     for signum in (signal.SIGINT, signal.SIGTERM):
         signal.signal(signum, lambda *_: stop.set())
     command_worker = None
+    from dagger.power_session import PowerSession
+    power = PowerSession(env)
     try:
         env["DAGGER_V4_RUNTIME_ROOT"] = str(prepare_copy(
             Path(env["DAGGER_DEPENDENCY_ROOT"]), ROOT / ".runtime", env=env))
         print(f"{env.get('DAGGER_TELEOP_BACKEND', 'v4').upper()} runtime COPY: {env['DAGGER_V4_RUNTIME_ROOT']}; colleague source unchanged.", flush=True)
         if not args.reset_only:
+            power.start()
             if env.get("COLLECTOR_CAMERA_SESSION_ACTIVE") != "1":
                 cameras.acquire()
             env["COLLECTOR_CAMERA_SESSION_ACTIVE"] = "1"
@@ -291,14 +294,17 @@ def _run_main():
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, terminal)
         # Revoke control first. DAgger recorder shutdown discards unconfirmed
         # frames, unlike ordinary keyboard mode's save-on-exit behavior.
-        stop_child(stack, launch_managed=True)
-        stop_child(reset_client)
-        stop_child(recorder, timeout=330, preserve_writer=True)
-        cameras.release()
-        if command_worker is not None:
-            command_worker.join(timeout=12)
-        for lock in locks:
-            lock.close()
+        try:
+            stop_child(stack, launch_managed=True)
+            stop_child(reset_client)
+            stop_child(recorder, timeout=330, preserve_writer=True)
+            cameras.release()
+            if command_worker is not None:
+                command_worker.join(timeout=12)
+        finally:
+            power.close()
+            for lock in locks:
+                lock.close()
 
 
 def main():

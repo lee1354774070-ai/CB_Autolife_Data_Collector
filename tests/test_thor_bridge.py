@@ -26,7 +26,7 @@ def bridge_type():
     cls.body = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in names]
     adapter = next(c for c in ast.parse((ROOT / 'thor_bridge.py').read_text()).body if isinstance(c, ast.ClassDef))
     adapter.body = [n for n in adapter.body if isinstance(n, ast.FunctionDef) and n.name != '__init__']
-    ns = dict(json=json, time=time, INFERENCE_MODES=INFERENCE_MODES,
+    ns = dict(__package__="dagger", json=json, time=time, INFERENCE_MODES=INFERENCE_MODES,
               bridge_generation_boundary=bridge_generation_boundary,
               validated_actions=validated_actions, array_digest_float32=array_digest_float32,
               policy_state_from_q23=policy_state_from_q23,
@@ -211,3 +211,64 @@ class V5PolicyPacingTest(ThorBridgeTest):
         self.node._v5_policy_pacing = False
         self.node._wait_policy_tracking = Mock(side_effect=AssertionError('V4 must not pace'))
         self.assertTrue(self.execute())
+
+
+class LocalV5PacingTest(unittest.TestCase):
+    state = ThorBridgeTest.state
+
+    def setUp(self):
+        ThorBridgeTest.setUp(self)
+        self.node._v5_policy_pacing = self.node._local_execution = True
+        self.node._local_capability = dict(version=1, timestamp_ns=time.time_ns())
+        self.node._local_pending = None
+
+    def test_local_receipts_cannot_bypass_tracking_wait(self):
+        self.actions[0][3] = -53.261
+        actual = [0.] * 18 + [10., 10.] + [0.] * 3
+        actual[7] = -29.849
+        self.node._fresh_q23 = lambda: actual.copy()
+        def follow(*_):
+            self.assertIsNone(self.node._local_pending)
+            self.node._policy_pub.publish.assert_not_called()
+            actual[7] = -36.
+        self.node._condition.wait = Mock(side_effect=follow)
+        payload = self.node._policy_payload(self.actions[0], self.proposal, 0, 1,
+                                           0, [0.] * 21, shadow_only=False)
+        self.node._condition.wait.assert_called_once()
+        self.assertEqual(payload['action'], self.actions[0])
+        self.assertEqual(self.node._local_pending['payload']['action'], self.actions[0])
+        self.assertGreater(payload['timestamp_ns'], 0)
+
+    def test_takeover_cancels_local_wait_before_submission(self):
+        self.actions[0][3] = -53.
+        self.node._condition.wait = Mock(side_effect=lambda *_: self.state('EXPERT_ACTIVE'))
+        with self.assertRaisesRegex(RuntimeError, 'authority changed'):
+            self.node._policy_payload(self.actions[0], self.proposal, 0, 1,
+                                      0, [0.] * 21, shadow_only=False)
+        self.assertIsNone(self.node._local_pending)
+        self.node._policy_pub.publish.assert_not_called()
+
+
+    def test_real_wait_releases_lock_for_immediate_takeover(self):
+        self.actions[0][3] = -53.
+        entered = threading.Event()
+        self.node._set_phase = Mock(side_effect=lambda *_: entered.set())
+        errors = []
+        def wait_for_tracking():
+            try:
+                self.node._policy_payload(self.actions[0], self.proposal, 0, 1,
+                                          0, [0.] * 21, shadow_only=False)
+            except RuntimeError as exc:
+                errors.append(str(exc))
+        worker = threading.Thread(target=wait_for_tracking, daemon=True)
+        worker.start()
+        self.assertTrue(entered.wait(.5))
+        started = time.monotonic()
+        self.state('EXPERT_ACTIVE')
+        worker.join(.25)
+        self.assertFalse(worker.is_alive())
+        self.assertLess(time.monotonic() - started, .25)
+        self.assertEqual(len(errors), 1)
+        self.assertIn('authority changed', errors[0])
+        self.assertIsNone(self.node._local_pending)
+        self.node._policy_pub.publish.assert_not_called()

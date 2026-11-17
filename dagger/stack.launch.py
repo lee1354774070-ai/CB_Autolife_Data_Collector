@@ -42,7 +42,7 @@ def generate_launch_description():
         for source, target in (remaps or {}).items():
             args += ["-r", f"{source}:={target}"]
         process_env = {**env, **interpreter_environment(command[0], os.environ)}
-        return ExecuteProcess(cmd=args, additional_env=process_env, output="screen",
+        return ExecuteProcess(cmd=args, cwd=str(here.parent), additional_env=process_env, output="screen",
                               sigterm_timeout="15", sigkill_timeout="5")
 
     supervisor = process([python, runtime, "supervisor"], config=hg / "config/hg_dagger.yaml", params={
@@ -98,7 +98,8 @@ def generate_launch_description():
     })
     web = process([web_python, runtime, "web"], params={
         "host": "0.0.0.0", "https_port": os.environ.get("DAGGER_WEB_PORT", "8447"),
-        "rgbd_camera_enabled": "true", "rgbd_camera_maximum_fps": "15.0", "status_topic": "/hg_dagger/web_teleop_status",
+        "rgbd_camera_enabled": "true" if os.environ.get("DAGGER_HEADSET_VIDEO", "1") == "1" else "false",
+        "rgbd_camera_maximum_fps": "15.0", "status_topic": "/hg_dagger/web_teleop_status",
     }, remaps={f"{prefix}/set_hardware_enabled": "/hg_dagger/set_session_enabled"})
     processes = [supervisor, controller] if os.environ.get('DAGGER_RESET_ONLY') == '1' else [supervisor, controller, mapper, bridge, web]
     # Losing any component closes this entire stack; the launcher then closes

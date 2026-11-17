@@ -180,3 +180,25 @@ test('head RGB stays centered and fits 4:3 or 16:9 without stretching', () => {
     assert.ok(layout.width<=1.8 && layout.height<=1.1+1e-10);
   }
 });
+
+
+test('root failure outranks later hold reason; tracking wait is informational', () => {
+  const context = vm.createContext({
+    panelLayout() {}, updateCameraPanel() {}, setCameraMode() {}, applyCanvasTexture() {},
+    HG_DAGGER_MODE_LABELS: {}, state: {teleop: {}}, collectorRobotTitle: 'test',
+    document: {title: 'test', querySelector: () => null}, renderHardwareControl() {}, updateHgStatusHud() {}
+  });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../dagger/ui_overrides.js'), 'utf8'), context);
+  for (const mode of ['ESTOP','FAILURE_HOLD']) {
+    context.status = {mode, failure_reason: 'tracking error 22.3 deg',
+      controller_reason: 'hardware output disabled', trial: {invalid_reason: 'missing_stale_or_noncausal_action'}};
+    const shown = vm.runInContext('hgDaggerVisualState(status)', context);
+    assert.match(shown.label, /^控制停止：tracking error.*本条录制失效/);
+    assert.doesNotMatch(shown.label, /hardware output disabled/);
+  }
+  context.status = {mode: 'POLICY_ACTIVE', notice: {text: 'started'},
+    policy_bridge: {phase: 'holding', detail: 'action[3] error 20 deg'}};
+  const shown = vm.runInContext('hgDaggerVisualState(status)', context);
+  assert.match(shown.label, /等待机械臂跟随.*action\[3\]/);
+  assert.notEqual(shown.color, '#FF6B6B');
+});

@@ -27,12 +27,14 @@ hgDaggerVisualState = function (status) {
   const invalid = status?.trial?.invalid_reason;
   const notice = status?.notice;
   const mode = String(status?.mode || 'DISARMED');
-  const controlError = mode === 'ESTOP' && (status?.controller_reason || status?.failure_reason);
+  const controlError = ['ESTOP', 'FAILURE_HOLD'].includes(mode) && (status?.failure_reason || status?.controller_reason);
+  const trackingWait = mode === 'POLICY_ACTIVE' && status?.policy_bridge?.phase === 'holding'
+    ? '等待机械臂跟随：' + String(status.policy_bridge.detail || '') : '';
   return {
-    key: String(controlError || '') + ':' + String(invalid || notice?.token || mode) + ':' + String(status?.background_saves?.pending ?? '') + ':' + String(status?.background_saves?.completed?.at(-1)?.job_id ?? '') + ':' + String(status?.background_saves?.error ?? ''),
+    key: String(controlError || trackingWait || '') + ':' + String(invalid || notice?.token || mode) + ':' + String(status?.background_saves?.pending ?? '') + ':' + String(status?.background_saves?.completed?.at(-1)?.job_id ?? '') + ':' + String(status?.background_saves?.error ?? ''),
     label: controlError ? `控制停止：${controlError}${invalid ? '；本条录制失效：' + invalid : ''}`
       : invalid ? `本条失效：${invalid}；Y 丢弃，X 仅全身复位（先保存或丢弃当前条）。`
-      : [notice?.text || HG_DAGGER_MODE_LABELS[mode] || mode,
+      : [trackingWait || notice?.text || HG_DAGGER_MODE_LABELS[mode] || mode,
           status?.background_saves?.error ? '后台保存失败，暂存数据保留' :
           status?.background_saves?.pending ? `后台保存中：${status.background_saves.pending}条（尚未落盘）` :
           status?.background_saves?.completed?.length ? `最近已保存：第${status.background_saves.completed.at(-1).episode_index + 1}条` : ''].filter(Boolean).join(' · '),

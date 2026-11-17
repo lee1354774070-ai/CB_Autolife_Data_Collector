@@ -31,6 +31,14 @@ if os.environ.get('ROS_DOMAIN_ID') == '211':
 class RecorderStorageTest(unittest.TestCase):
     @unittest.skipUnless(os.environ.get('COLLECTOR_TEST_NVJPEG') == '1', 'requires opt-in CUDA JPEG decode')
     def test_nvjpeg_shm_poll_sync_and_real_dataset_save(self):
+        with patch('jpeg_decoding.StrictCpuJpegDecoder', side_effect=AssertionError('CPU fallback forbidden')):
+            self.jpeg_shm_poll_sync_and_real_dataset_save('nvjpeg', 'nvjpeg')
+
+    @unittest.skipUnless(Path(__file__).resolve().parents[1].joinpath('libstrictjpeg.so').exists(), 'requires private strict decoder')
+    def test_strict_cpu_shm_poll_sync_and_real_dataset_save(self):
+        self.jpeg_shm_poll_sync_and_real_dataset_save('strict_cpu', 'strict_cpu')
+
+    def jpeg_shm_poll_sync_and_real_dataset_save(self, requested, backend):
         from PIL import Image
         from shm_camera import ShmFrame, PIXEL_FORMAT_MJPEG
         recorder.rclpy.init()
@@ -39,12 +47,13 @@ class RecorderStorageTest(unittest.TestCase):
                 root = Path(directory) / 'dataset'
                 with patch.object(sys, 'argv', ['recorder', '--output-dir', str(root),
                                                '--vcodec', 'h264',
-                                               '--encoder-threads', '1']):
+                                               '--encoder-threads', '1', '--jpeg-decoder', requested]):
                     args = recorder.parse_args([*sys.argv[1:], '--no-background-save'])
                 node = recorder.OfficialLeRobotRecorder(args)
                 node.shm_readers = {}  # Synthetic SHM functions below, never hardware.
                 self.assertIsNone(node.jpeg_decoder)  # No CUDA work before joint readiness.
-                self.assertEqual(args.jpeg_decoder, 'auto')
+                self.assertEqual(args.jpeg_decoder, requested)
+                corrupt = False
                 def seed(anchor):
                     for stamp in (anchor - .005, anchor + .005):
                         node.state_buffer.append(recorder.StateSample(
@@ -54,6 +63,8 @@ class RecorderStorageTest(unittest.TestCase):
                     for i, name in enumerate(args.cameras):
                         bgr = np.full((64, 64, 3), 40 + 60 * i, np.uint8)
                         _, encoded = recorder.cv2.imencode('.jpg', bgr)
+                        if corrupt and i == 1:
+                            encoded = encoded[:len(encoded)//2]
                         stamp = round(anchor * 1e9)
                         frames[name] = ShmFrame(stamp, 64, 64, 3, PIXEL_FORMAT_MJPEG,
                                                 len(encoded), encoded.tobytes())
@@ -63,7 +74,7 @@ class RecorderStorageTest(unittest.TestCase):
                         node._poll_shm_images()
                 try:
                     seed(time.time())
-                    self.assertEqual(node.image_decoding['backend'], 'nvjpeg')
+                    self.assertEqual(node.image_decoding['backend'], backend)
                     node.create_dataset()
                     self.assertTrue(node.start_episode('synthetic-gpu-jpeg'))
                     start = time.time() + .1
@@ -82,11 +93,41 @@ class RecorderStorageTest(unittest.TestCase):
                              for folder in ('meta', 'data', 'videos', 'first_frame')
                              for p in (root / folder).rglob('*') if p.is_file()}
                     self.assertTrue(node.start_episode('injected-gpu-failure'))
-                    with patch.object(node.jpeg_decoder, 'decode', side_effect=RuntimeError('injected GPU failure')):
-                        with self.assertRaisesRegex(RuntimeError, 'GPU JPEG decode failed'):
-                            seed(time.time() + 1)
+                    bad_start = time.time() + .6
+                    for i in range(2):
+                        anchor = bad_start + i / 30
+                        seed(anchor)
+                        with patch.object(recorder.time, 'time', return_value=anchor + .06):
+                            node._record_tick()
+                    self.assertEqual(node.current_episode_frames, 2)
+                    if backend == 'strict_cpu':
+                        corrupt = True
+                        seed(bad_start + 2 / 30)
+                    else:
+                        with patch.object(node.jpeg_decoder, 'decode', side_effect=RuntimeError('injected GPU failure')):
+                            seed(bad_start + 2 / 30)
                     self.assertTrue(node.episode_invalid)
                     self.assertEqual(node.episode_invalid_reason, 'jpeg_decode_failed')
+                    self.assertFalse(node.is_recording)
+                    self.assertFalse(node.stop_requested)
+                    # True acknowledges the discard command, not a dataset save.
+                    node.save_current_episode('must-refuse-corrupt-episode')
+                    self.assertFalse(node.episode_invalid)
+                    self.assertEqual(node.current_episode_frames, 0)
+                    for path, digest in saved.items():
+                        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest)
+                    corrupt = False
+                    recovery_start = bad_start + 1
+                    seed(recovery_start)
+                    self.assertTrue(node.start_episode('recovered-without-process-restart'))
+                    for i in range(2):
+                        anchor = recovery_start + (i + 1) / 30
+                        seed(anchor)
+                        with patch.object(recorder.time, 'time', return_value=anchor + .06):
+                            node._record_tick()
+                    self.assertEqual(node.current_episode_frames, 2)
+                    node.discard_current_episode('end-isolated-test')
+                    self.assertEqual(len(list((root.parent/'jpeg_failures').glob('event-*/failure.json'))), 1)
                 finally:
                     node.finish()
                     node.destroy_node()
@@ -95,10 +136,10 @@ class RecorderStorageTest(unittest.TestCase):
                     self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest)
                 events = [json.loads(line) for line in (root / 'sync_log.jsonl').read_text().splitlines()]
                 selected = next(e for e in events if e['event'] == 'image_decoder_selected')
-                self.assertEqual(selected['backend'], 'nvjpeg')
-                self.assertEqual(selected['requested_backend'], 'auto')
-                self.assertEqual(selected['device'], 'cuda:0')
-                self.assertEqual(next(e for e in events if e['event'] == 'episode_started')['image_decoding']['backend'], 'nvjpeg')
+                self.assertEqual(selected['backend'], backend)
+                self.assertEqual(selected['requested_backend'], requested)
+                self.assertEqual(selected['device'], 'cpu' if backend == 'strict_cpu' else 'cuda:0')
+                self.assertEqual(next(e for e in events if e['event'] == 'episode_started')['image_decoding']['backend'], backend)
         finally:
             recorder.rclpy.shutdown()
 

@@ -26,17 +26,23 @@ def main():
     monitor.create_subscription(String,'/openarmx_teleop_vr_306_v4/vr_input',vr_input,qos_profile_sensor_data)
     def status(msg):states.update(json.loads(msg.data))
     monitor.create_subscription(String,'/hg_dagger/control_state',status,10)
-    for name in ('whole_body_target_joints_position','gripper_target_joints_position','joints_set_enable_state','joints_clear_error'):
-        topic=f'/topic_arm_{name}_211_340';counts[topic]=0
-        def cb(msg,key=topic):counts[key]+=1
-        monitor.create_subscription(String,topic,cb,qos_profile_sensor_data)
+    for suffix in ('211_340', '0_340'):
+        for name in ('whole_body_target_joints_position','gripper_target_joints_position','joints_set_enable_state','joints_clear_error'):
+            topic=f'/topic_arm_{name}_{suffix}';counts[topic]=0
+            def cb(msg,key=topic):counts[key]+=1
+            monitor.create_subscription(String,topic,cb,qos_profile_sensor_data)
     with tempfile.TemporaryDirectory(prefix='v5_stack_smoke_') as tmp:
+        # Desktop files may keep the old checkout as their working directory.
+        # A shadow package here reproduces the real production import failure.
+        desktop_cwd=Path(tmp)/'desktop_cwd'
+        (desktop_cwd/'dagger').mkdir(parents=True)
+        (desktop_cwd/'dagger/__init__.py').write_text('# old desktop working-directory package\n')
         env=dict(os.environ,DAGGER_BASE_DIR=tmp,DAGGER_DEPENDENCY_ROOT=str(root/'teleop_snapshot'),
             DAGGER_V4_RUNTIME_ROOT=str(runtime),DAGGER_WEB_PORT='18447',
             DAGGER_VR_PY='/home/ubuntu/ros2_ws/venvs/openarmx_v5_mink/bin/python',
             DAGGER_WEB_PY='/home/ubuntu/miniconda3/envs/robot_env/bin/python')
         log=Path(root.parent/'stack_components.log').open('w')
-        proc=subprocess.Popen(['ros2','launch',str(root/'dagger/stack.launch.py')],env=env,stdout=log,stderr=subprocess.STDOUT)
+        proc=subprocess.Popen(['ros2','launch',str(root/'dagger/stack.launch.py')],cwd=desktop_cwd,env=env,stdout=log,stderr=subprocess.STDOUT)
         try:
             start=time.monotonic();web=False
             while time.monotonic()-start<15:
@@ -98,8 +104,14 @@ asyncio.run(check())
             assert input_count[0] >= 1, 'WebSocket packets never reached the ROS input topic'
             print('WEBSOCKET_TO_ROS_PASS packets='+str(input_count[0]))
             assert states.get('mode')=='DISARMED',states
+            if os.environ.get('DAGGER_LOCAL_POLICY_EXECUTION') == '1':
+                capability=states.get('collector_compat',{}).get('local_policy_execution')
+                assert isinstance(capability,dict) and capability.get('version')==1,states
+                assert 0<=time.time_ns()-capability['timestamp_ns']<1_000_000_000
+                print('LOCAL_CONTROLLER_CAPABILITY_PASS actual_ros_transport=true')
             assert not any(counts.values()),counts
             print('V5_STACK_START_PASS web=200 mode=DISARMED hardware_messages=0')
+            print('DESKTOP_SHADOW_PACKAGE_START_PASS explicit_child_working_directory=true')
         finally:
             proc.send_signal(signal.SIGINT) if proc.poll() is None else None
             try:proc.wait(timeout=20)

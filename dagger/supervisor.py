@@ -74,6 +74,13 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             with_eef_state=os.environ.get('WITH_EEF_STATE', '0') == '1',
             with_eef_action=os.environ.get('WITH_EEF_ACTION', '0') == '1',
             task_text=os.environ.get('TASK_TEXT', ''), feedback_events=[]))
+        from .local_policy_execution import enabled, POLICY_TOPIC, RECEIPT_TOPIC
+        self._local_policy_execution = enabled()
+        if self._local_policy_execution:
+            qos = QoSProfile(depth=16, reliability=ReliabilityPolicy.RELIABLE)
+            self._local_policy_pub = self.create_publisher(String, POLICY_TOPIC, qos)
+            self.create_subscription(String, RECEIPT_TOPIC, self._on_local_policy_receipt, qos)
+            self._state_pub.contract['local_policy_execution'] = False
         self.create_service(SetParametersAtomically, SERVICE, self._on_attached_command)
         self.get_logger().info("AutoLife DAgger: A=start, GL/GR=takeover, B=save, Y tap=discard / hold 1s=failure save, X=reset")
 
@@ -246,9 +253,78 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
                     self._publish_state()
                 self._reject_policy(payload, detail)
                 return
+            if getattr(self, '_local_policy_execution', False):
+                from .local_policy_execution import binding
+                try:
+                    binding(payload)
+                    if payload.get('units') != 'degrees':
+                        raise ValueError('policy submission must use degrees')
+                except (KeyError, TypeError, ValueError) as exc:
+                    self._begin_failure_hold('invalid policy submission: ' + str(exc))
+                    self._reject_policy(payload, str(exc))
+                    return
+                envelope = self._timestamp('policy', payload)
+                self._trace.append_ring({'wall_ns': envelope['robot_receive_timestamp_ns'],
+                                         'stream': 'policy', 'data': envelope})
+                self._trace.write('policy', envelope)
+                self._last_policy_monotonic_ns = time.monotonic_ns()
+                # The controller commits body and grippers together. Do not
+                # issue a positive ACK merely because DDS accepted a publish.
+                self._local_policy_pub.publish(String(data=json.dumps(payload)))
+                return
             super()._on_policy_action(message)
 
+    def _on_local_policy_receipt(self, message):
+        try:
+            packet = self._parse(message)
+        except (TypeError, ValueError):
+            return
+        with self._lock:
+            if packet.get('kind') == 'capability':
+                if (packet.get('enabled') is True and packet.get('version') == 1
+                        and type(packet.get('timestamp_ns')) is int
+                        and 0 <= time.time_ns() - packet['timestamp_ns'] <= 500_000_000):
+                    self._state_pub.contract['local_policy_execution'] = {
+                        'version': 1, 'timestamp_ns': packet['timestamp_ns']}
+                return
+            from .local_policy_execution import IDENTITY
+            if (any(k not in packet for k in (*IDENTITY, 'action_digest'))
+                    or packet.get('receipt_scope') != 'controller_submission'
+                    or packet.get('physical_execution_confirmed') is not False
+                    or type(packet.get('accepted')) is not bool):
+                return
+            self._event('controller_submission_receipt', packet.get('reason', ''), receipt=packet)
+            self._policy_forward_ack_pub.publish(String(data=json.dumps(packet)))
+            current = (packet.get('collector_session_id') == self._session_id
+                       and packet.get('authority_epoch') == self._machine.authority_epoch
+                       and self._machine.mode == Mode.POLICY_ACTIVE)
+            if current and packet['accepted'] is True:
+                self._latest_grippers = packet['requested_action'][14:16]
+                self._policy_gripper_epoch = packet['authority_epoch']
+                if packet.get('limited_joints'):
+                    now = time.monotonic()
+                    if now - getattr(self, '_last_local_limit_notice', 0.) > 1.:
+                        self._last_local_limit_notice = now
+                        detail = 'Policy target bounded by local joint limits: ' + str(packet['limited_joints'])
+                        self.get_logger().warning(detail)
+                        self._set_notice_locked(detail, 'warning')
+            if current and packet['accepted'] is False:
+                detail = 'controller rejected policy: ' + str(packet.get('reason', 'unknown'))
+                self._begin_failure_hold(detail)
+                self._set_notice_locked(detail, 'error')
+                self._publish_state()
+
     def _reject_policy(self, payload, reason):
+        if getattr(self, '_local_policy_execution', False):
+            from .local_policy_execution import binding
+            try:
+                receipt = binding(payload)
+            except (KeyError, TypeError, ValueError):
+                return
+            receipt.update(accepted=False, reason=reason,
+                receipt_scope='controller_submission', physical_execution_confirmed=False)
+            self._policy_forward_ack_pub.publish(String(data=json.dumps(receipt)))
+            return
         if all(key in payload for key in ("proposal_id", "chunk_step", "bridge_generation", "authority_epoch")):
             receipt = {key: payload[key] for key in (
                 "proposal_id", "chunk_step", "bridge_generation", "authority_epoch")}
@@ -284,13 +360,19 @@ class CollectorDaggerSupervisor(HgDaggerSupervisor):
             return
         if status.get("emergency_stop_latched") or status.get("state") == "FAULT":
             with self._lock:
+                # Authority handoff/hold can replace reason before the 10-Hz status arrives.
+                reason = str(status.get("last_hardware_fault_reason")
+                             or status.get("reason") or "controller fault")
+                status = dict(status, reason=reason)
+                self._last_failure_reason = reason
                 self._controller_status = status
                 self._controller_status_received_ns = time.monotonic_ns()
                 if self._machine.mode.value == "ESTOP":
                     return
-                transition = self._machine.estop(str(status.get("reason", "controller fault")))
+                self.get_logger().error("Controller output stopped: " + reason)
+                transition = self._machine.estop(reason)
                 self._event("transition", transition.reason, old=transition.old.value, new=transition.new.value)
-                self._set_notice_locked("Controller fault; output stopped; episode retained for B/Y", "error")
+                self._set_notice_locked("控制器已停止：" + reason + "；本条尚未保存", "error")
                 self._publish_state()
             return  # Do not block a control callback on video encoding/FIFO.
         super()._on_controller_status(message)

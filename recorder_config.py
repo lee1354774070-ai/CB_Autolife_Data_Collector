@@ -125,8 +125,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_IMAGE_POLL_FPS,
         help="Direct-SHM metadata polling frequency. This is the camera polling rate, not dataset FPS; new source timestamps are buffered once.",
     )
-    parser.add_argument('--jpeg-decoder', choices=('auto', 'nvjpeg', 'opencv'), default='auto',
-                        help='JPEG decoder: auto prefers NVIDIA nvJPEG and falls back to OpenCV only at startup; nvjpeg requires GPU initialization to succeed; opencv forces CPU. ROS Image is already decoded upstream. Raw RGB and depth are unchanged.')
+    parser.add_argument('--jpeg-decoder', choices=('auto', 'nvjpeg', 'opencv', 'strict_cpu'), default='auto',
+                        help='JPEG decoder: strict_cpu uses the private libjpeg adapter and rejects corrupt-data warnings; auto prefers NVIDIA nvJPEG and falls back to OpenCV only at startup; nvjpeg requires GPU initialization to succeed; opencv forces CPU. ROS Image is already decoded upstream. Raw RGB and depth are unchanged.')
     parser.add_argument('--jpeg-device', default='cuda:0',
                         help='CUDA device for nvJPEG, e.g. cuda:0. Requires compatible CUDA torch/torchvision and CUDA >= 11.6; does not select the video encoder.')
     parser.add_argument(

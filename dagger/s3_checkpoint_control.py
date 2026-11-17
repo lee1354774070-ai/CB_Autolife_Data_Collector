@@ -2,6 +2,7 @@
 """Forced-SSH checkpoint management for the native S3 :8783 service only."""
 import fcntl
 import json
+import os
 import re
 from pathlib import Path
 import subprocess
@@ -161,6 +162,9 @@ def switch(name):
 
 
 def main():
+    if os.environ.get('SSH_ORIGINAL_COMMAND') == 'dagger-power-session':
+        from dagger.power_session import worker
+        raise SystemExit(worker())
     try:
         payload = json.loads(sys.stdin.read(4097))
         if not isinstance(payload, dict) or set(payload) - {'action', 'checkpoint'}:

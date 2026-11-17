@@ -1,6 +1,11 @@
 --- a/execution_server.py
 +++ b/execution_server.py
-@@ -5,10 +5,11 @@
+@@ -1,14 +1,16 @@
+ """Staged native S3 execution-protocol server. Not started by deployment/tests."""
+ import argparse
+ import faulthandler
++import json
+ from http.server import ThreadingHTTPServer
  from functools import wraps
  import os
  from pathlib import Path
@@ -14,17 +19,42 @@
      """Select the existing Thor/S2 gripper mode before proposal hashing."""
      if gripper_mode not in ('continuous', 'binary330'):
          raise ValueError('unsupported gripper mode')
-@@ -23,6 +24,9 @@
+@@ -23,6 +25,34 @@
          # Keep the existing S3 physical action decoding; the S2 session performs
          # its own binary330 mapping only on action indices 14 and 15.
          session.candidate_generator.gripper_indices = ()
++        if gripper_mode == 'binary330':
++            guard = session._guard_gripper_chunk
++
++            def traced_guard(action, state):
++                output = guard(action, state)
++                # Bounded diagnostics only: never change the chunk or ACK state.
++                if session._proposal_counter < 32:
++                    indices = list(session._gripper_indices)
++                    previous = session._last_gripper_target
++                    committed = session._binary_state
++                    try:
++                        print('S3_GRIPPER_TRACE ' + json.dumps({
++                            'proposal_id': f'{session.session_id}:{session._proposal_counter + 1}',
++                            'observation_sequence_id': session._last_observation_sequence,
++                            'input_state': state.tolist(),
++                            'previous_submitted_gripper': None if previous is None else previous.tolist(),
++                            'committed_binary_state': None if committed is None else [x.tolist() for x in committed],
++                            'raw_physical_grippers': action[:, indices].tolist(),
++                            'guarded_grippers': output[:, indices].tolist(),
++                        }, separators=(',', ':')), flush=True)
++                    except (OSError, ValueError, TypeError):
++                        pass  # A diagnostic sink failure must not interrupt control.
++                return output
++
++            session._guard_gripper_chunk = traced_guard
 +        if head_pitch_max is not None:
 +            session.candidate_generator = HeadPitchLimitedGenerator(
 +                session.candidate_generator, head_pitch_max)
          return session
  
      native_factory._wyli_gripper_mode = gripper_mode
-@@ -39,9 +43,14 @@
+@@ -39,9 +69,14 @@
      p.add_argument('--port', type=int, default=8783)
      p.add_argument('--check-only', action='store_true')
      p.add_argument('--gripper-mode', choices=('continuous', 'binary330'), default='continuous')
@@ -40,7 +70,7 @@
      print('CHECKPOINT_OK ' + CHECKPOINT, flush=True)
      if a.check_only:
          return
-@@ -66,7 +75,7 @@
+@@ -66,7 +101,7 @@
      finally:
          faulthandler.cancel_dump_traceback_later()
  
@@ -49,13 +79,14 @@
  
      class Engine(SubmissionReceiptMixin, GrootRemoteEngine):
          def health(self):
-@@ -74,7 +83,8 @@
+@@ -74,7 +109,9 @@
                      'active_session': self.session is not None, 'robot_profile': 'autolife_s3_v3_1',
                      'robot_id': 340, 'discard_only': False, 'robot_io': False,
                      'physical_execution_validated': False,
 -                    'idempotent_submission_receipts': True}
 +                    'idempotent_submission_receipts': True,
-+                    'head_pitch_max_degrees': a.head_pitch_max}
++                    'head_pitch_max_degrees': a.head_pitch_max,
++                    'gripper_trace_max_proposals': 32}
  
      engine = Engine(loaded.contract, native_factory, mode='policy_only_baseline')
      server = ThreadingHTTPServer((a.host, a.port), make_handler(engine, token))
