@@ -1989,7 +1989,11 @@ class OfficialLeRobotRecorder(Node):
             self.get_logger().warn(
                 f"save rejected because episode is invalid ({invalid_reason}); discarding entire episode"
             )
-            return self.discard_current_episode(f"invalid:{invalid_reason}", request_id)
+            if getattr(self, "dagger", None) is not None:
+                # The authority supervisor consumes discard acknowledgements to close a failed trial.
+                return self.discard_current_episode(f"invalid:{invalid_reason}", request_id)
+            self.discard_current_episode(f"invalid:{invalid_reason}", request_id, rejected_save=True)
+            return False
         if (getattr(self, "dagger", None) is not None and self.is_recording
                 and self.dataset is not None and self.current_episode_frames == 0):
             return self.discard_current_episode("empty_dagger_episode", request_id)
@@ -2203,9 +2207,12 @@ class OfficialLeRobotRecorder(Node):
             self._publish_background_status()
         return not bool(background.error)
 
-    def discard_current_episode(self, reason: str, request_id: str | None = None) -> bool:
+    def discard_current_episode(
+        self, reason: str, request_id: str | None = None, *, rejected_save: bool = False
+    ) -> bool:
+        event = "save" if rejected_save else "discard"
         if self.save_failed:
-            self._write_command_status("discard", False, request_id,
+            self._write_command_status(event, False, request_id,
                                        message="discard failed: previous save result uncertain; inspect dataset")
             return False
         invalid_reason = self.episode_invalid_reason
@@ -2216,7 +2223,7 @@ class OfficialLeRobotRecorder(Node):
             self._release_motion_lock()
             self.get_logger().warn(f"no pending episode to discard ({reason})")
             self._write_command_status(
-                "discard",
+                event,
                 False,
                 request_id,
                 message="no pending episode to discard",
@@ -2239,7 +2246,7 @@ class OfficialLeRobotRecorder(Node):
             self.is_recording = False
             self._release_motion_lock()
             self._invalidate_episode('episode_discard_failed', time.time(), detail=str(exc))
-            self._write_command_status('discard', False, request_id, frames=discarded_frames,
+            self._write_command_status(event, False, request_id, frames=discarded_frames,
                                        message=f"discard failed: {exc}")
             return False
         self.frames_written -= discarded_frames
@@ -2265,8 +2272,8 @@ class OfficialLeRobotRecorder(Node):
                 self.stop_requested = True
                 self.get_logger().error(f"episode discarded; next workspace unavailable: {exc}")
         self._write_command_status(
-            "discard",
-            True,
+            event,
+            not rejected_save,
             request_id,
             frames=discarded_frames,
             message=(f"invalid episode discarded: {invalid_reason}" if invalid_reason else "episode discarded"),

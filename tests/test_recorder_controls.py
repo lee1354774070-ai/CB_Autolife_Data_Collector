@@ -485,7 +485,7 @@ class RecorderControlsTest(unittest.TestCase):
         node.sync_log = None
         node.motion_lock_handle = None
         node.save_current_episode = lambda *a: namespace['save_current_episode'](node, *a)
-        node.discard_current_episode = lambda *a: namespace['discard_current_episode'](node, *a)
+        node.discard_current_episode = lambda *a, **kw: namespace['discard_current_episode'](node, *a, **kw)
         return node
 
 
@@ -677,6 +677,29 @@ class RecorderControlsTest(unittest.TestCase):
             self.assertTrue(node.discard_current_episode('discard'))
             self.assertFalse(pending.exists())
             self.assertTrue((saved / 'frame-000000.png').is_file())
+
+    def test_invalid_episode_requested_save_discards_but_acknowledges_failed_save(self):
+        from collector_control import format_status
+
+        with tempfile.TemporaryDirectory() as root:
+            node = self.annotation_recorder(root)
+            node.episode_invalid = True
+            node.episode_invalid_reason = "reference_frame_interval"
+            node.dagger = None
+            frames = node.current_episode_frames
+            self.assertFalse(node.save_current_episode("command:save", "request"))
+            node.episode_store.discard.assert_called_once()
+            node.episode_store.commit.assert_not_called()
+            node._write_command_status.assert_called_once_with(
+                "save", False, "request", frames=frames,
+                message="invalid episode discarded: reference_frame_interval",
+            )
+            text = format_status({
+                "event": "save", "success": False, "frames": frames,
+                "message": "invalid episode discarded: reference_frame_interval",
+            })
+            self.assertIn("本条未保存，已丢弃", text)
+            self.assertNotIn("[SAVED]", text)
 
     def test_first_frame_partial_failure_is_invalid_and_discardable(self):
         with tempfile.TemporaryDirectory() as root:

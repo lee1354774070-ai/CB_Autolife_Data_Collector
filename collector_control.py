@@ -184,6 +184,7 @@ def format_status(status: dict[str, Any]) -> str:
     task = str(status.get("task", "unknown"))
     frames = int(status.get("frames", 0))
     episode_index = status.get("episode_index")
+    message = str(status.get("message", ""))
 
     if event == "start" and success:
         lines = [f"[STARTED] Episode {episode_index} | Task: {task}"]
@@ -197,9 +198,11 @@ def format_status(status: dict[str, Any]) -> str:
         lines = [f"[SUBTASK MARKED] Episode {episode_index} | Boundary: frame {frames} (exclusive)"]
     elif event == "discard" and success:
         lines = [f"[DISCARDED] {frames} frames | Task: {task} | Saved counts unchanged"]
-        message = str(status.get("message", ""))
         if message.startswith("invalid episode discarded:"):
             lines.append(f"Reason: {message.removeprefix('invalid episode discarded:').strip()}")
+    elif event == "save" and not success and message.startswith("invalid episode discarded:"):
+        reason = message.removeprefix("invalid episode discarded:").strip()
+        lines = [f"[SAVE NOT COMPLETED] 本条未保存，已丢弃。原因 {reason}"]
     else:
         action = event.upper()
         lines = [f"[{action} NOT COMPLETED] {status.get('message', 'Unknown error')} | Task: {task}"]
