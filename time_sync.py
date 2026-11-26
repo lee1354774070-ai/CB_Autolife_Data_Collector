@@ -14,7 +14,7 @@ can be unit-tested without ROS, cameras, or LeRobot.
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from typing import Any, Protocol, TypeVar
 
 
@@ -151,6 +151,29 @@ def nearest_sample(samples: Iterable[TimestampedT], target_sec: float) -> tuple[
     if nearest is None:
         return None
     return nearest, nearest_delta
+
+
+def camera_sample_for_adjacent_frames(
+    samples: Collection[TimestampedT],
+    target_sec: float,
+    next_target_sec: float,
+    max_delta_sec: float,
+) -> tuple[TimestampedT, float] | None:
+    """Keep a usable image for the next anchor if the current anchor has another match."""
+    match = nearest_sample(samples, target_sec)
+    if match is None:
+        return None
+    selected_sec = match[0].stamp_sec
+    if abs(selected_sec - next_target_sec) > max_delta_sec:
+        return match
+    if any(
+        sample.stamp_sec > selected_sec and abs(sample.stamp_sec - next_target_sec) <= max_delta_sec
+        for sample in samples
+    ):
+        return match
+
+    earlier = nearest_sample((sample for sample in samples if sample.stamp_sec < selected_sec), target_sec)
+    return earlier if earlier is not None and earlier[1] <= max_delta_sec else match
 
 
 def oldest_ready_sample(

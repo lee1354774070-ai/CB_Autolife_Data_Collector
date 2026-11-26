@@ -87,6 +87,7 @@ from subtask_annotations import (
 from shm_camera import PIXEL_FORMAT_MJPEG, ShmCameraReader, frame_to_hwc, read_shm_frame, read_shm_metadata, shm_timestamp_sec
 from jpeg_decoding import JpegFailureDiagnostics, decode_camera_jpegs, select_jpeg_decoder
 from time_sync import (
+    camera_sample_for_adjacent_frames,
     frame_interval_error_ratio,
     latest_at_or_before,
     linear_interpolation_alpha,
@@ -1655,13 +1656,23 @@ class OfficialLeRobotRecorder(Node):
             "state_before": before_age * 1000.0,
             "state_after": after_age * 1000.0,
         }
+        next_anchor_sec = None
+        if self.alshm_reader is not None and reference_name in ("hand_left", "hand_right"):
+            next_anchor_sec = next(
+                (sample.stamp_sec for sample in self.image_buffers[reference_name] if sample.stamp_sec > anchor_sec),
+                None,
+            )
         matched_images: dict[str, ImageSample] = {}
         for camera_name in self.active_cameras:
-            image_match = (
-                (reference, 0.0)
-                if camera_name == reference_name
-                else nearest_sample(self.image_buffers[camera_name], anchor_sec)
-            )
+            if camera_name == reference_name:
+                image_match = reference, 0.0
+            elif next_anchor_sec is not None and camera_name in ("rgbd_head_color", "rgbd_head_depth"):
+                # The SDK pair carries identical timestamps, so both planes select the same publication.
+                image_match = camera_sample_for_adjacent_frames(
+                    self.image_buffers[camera_name], anchor_sec, next_anchor_sec, self.args.max_sync_delta_sec
+                )
+            else:
+                image_match = nearest_sample(self.image_buffers[camera_name], anchor_sec)
             if image_match is None:
                 self._invalidate_episode(f"missing_camera:{camera_name}", now)
                 return
