@@ -7,6 +7,7 @@ import unittest
 from dataclasses import dataclass
 
 from time_sync import (
+    camera_sample_for_adjacent_frames,
     frame_interval_error_ratio,
     latest_at_or_before,
     linear_interpolation_alpha,
@@ -78,6 +79,22 @@ class TimeSyncTest(unittest.TestCase):
             payload_timestamp_sec(payload, received, max_clock_skew_sec=0.25),
             received - 0.2,
         )
+
+    def test_head_match_reserves_existing_frame_after_source_gap(self) -> None:
+        samples = [Sample(offset, "head") for offset in (-0.047779, -0.017217, 0.013267, 0.072967)]
+        current, delta = camera_sample_for_adjacent_frames(samples, 0.0, 0.031797, 0.03)
+        self.assertIs(current, samples[1])
+        self.assertAlmostEqual(delta, 0.017217)
+        following, delta = nearest_sample(samples[2:], 0.031797)
+        self.assertIs(following, samples[2])
+        self.assertAlmostEqual(delta, 0.018530)
+
+    def test_head_match_keeps_nearest_when_later_match_exists_or_earlier_is_outside_window(self) -> None:
+        for stamps in ((-0.017, 0.013, 0.039), (-0.031, 0.013, 0.073)):
+            with self.subTest(stamps=stamps):
+                samples = [Sample(offset, "head") for offset in stamps]
+                selected, _ = camera_sample_for_adjacent_frames(samples, 0.0, 0.032, 0.03)
+                self.assertIs(selected, samples[1])
 
     def test_nearest_sample_reports_delta(self) -> None:
         samples = [Sample(10.000, "old"), Sample(10.032, "nearest"), Sample(10.070, "new")]
