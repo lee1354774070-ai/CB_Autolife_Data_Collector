@@ -127,6 +127,7 @@ class RecorderStorageTest(unittest.TestCase):
                             node._record_tick()
                     self.assertEqual(node.current_episode_frames, 2)
                     node.discard_current_episode('end-isolated-test')
+                    node.jpeg_failures.close()
                     self.assertEqual(len(list((root.parent/'jpeg_failures').glob('event-*/failure.json'))), 1)
                 finally:
                     node.finish()

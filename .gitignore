@@ -3,6 +3,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .runtime/
+/libstrictjpeg.so
+/strict_jpeg_build.json
 
 # Local deployment backups and generated collection artifacts, never release sources.
 *.bak

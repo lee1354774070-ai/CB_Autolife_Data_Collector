@@ -147,6 +147,7 @@ EEF纠错训练需单独核实和标注来源。混合state/action、四元数�
 四种模式共用默认`JPEG_DECODER=auto`，原启动命令不变。日志输出`JPEG decoder: nvjpeg on cuda:0`才表示已选择GPU；
 `JPEG decoder: opencv (CPU startup fallback)`表示本次使用CPU。录制途中不切换后端，GPU解码失败使当前episode无效并停止录制器。
 要求固定旧解码行为时显式设置`JPEG_DECODER=opencv`；要求GPU必须可用时设置`JPEG_DECODER=nvjpeg`。
+SHM/ALSHM 录制期间发现 JPEG 不完整或解码失败时，整条 episode 作废，不终止录制器、不影响已保存数据。原始 JPEG 在后台尽力留证到与 dataset 同级的 `jpeg_failures/`，最多 8 次、每次最多 8 MiB；诊断盘慢时跳过留证，不等待。常规解码器不保证发现所有可恢复的码流损坏。需要把 libjpeg 警告也当作错误时，在目标机安装编译器及 libjpeg 开发头文件、运行 `python3 scripts/build_strict_jpeg.py`，再用 `JPEG_DECODER=strict_cpu` 启动。
 源流、匹配或存储失败时不会静默跳帧继续生成“有效”数据，而是作废当前episode。
 
 例如，任务允许40ms容差时可显式设置以下参数；这不是所有机器都必须采用的配置：

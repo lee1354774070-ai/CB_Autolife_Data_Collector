@@ -3,10 +3,12 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
+import threading
 import unittest
+from unittest.mock import patch
 import cv2
 import numpy as np
-from jpeg_decoding import StrictCpuJpegDecoder, save_jpeg_failure
+from jpeg_decoding import JpegFailureDiagnostics, StrictCpuJpegDecoder, decode_camera_jpegs, save_jpeg_failure
 
 
 @unittest.skipUnless(Path(__file__).resolve().parents[1].joinpath('libstrictjpeg.so').exists(), 'private native decoder not built')
@@ -45,6 +47,38 @@ class StrictJpegTest(unittest.TestCase):
 
 
 class DiagnosticTest(unittest.TestCase):
+    def test_opencv_does_not_accept_truncation_or_publish_a_partial_batch(self):
+        ok, encoded = cv2.imencode('.jpg', np.zeros((8, 8, 3), np.uint8))
+        self.assertTrue(ok)
+        data = encoded.tobytes()
+        def frame(payload):
+            return SimpleNamespace(pixel_format=4, data=payload, width=8, height=8)
+        good = frame(data + b'\0' * 16)
+        self.assertIn(id(good), decode_camera_jpegs([('left', None, good, 0)], [], None))
+        for payload in (data[:-2], b'\xff\xd8invalid\xff\xd9'):
+            with self.assertRaises(ValueError):
+                decode_camera_jpegs([('left', None, good, 0), ('right', None, frame(payload), 0)], [], None)
+
+    def test_slow_diagnostic_neither_blocks_nor_queues_more_batches(self):
+        started, release = threading.Event(), threading.Event()
+        def slow_save(*args):
+            started.set()
+            release.wait(2)
+            return {}
+        reporter = JpegFailureDiagnostics('/unused')
+        jpeg = ('hand', None, SimpleNamespace(pixel_format=4, data=b'bad'), 0)
+        depth = ('depth', None, SimpleNamespace(pixel_format=2), 0)
+        with patch('jpeg_decoding.save_jpeg_failure', side_effect=slow_save) as save:
+            try:
+                reporter.submit([jpeg, depth], 'bad', 123)
+                self.assertTrue(started.wait(1))
+                reporter.submit([jpeg], 'bad again', 124)
+                self.assertEqual(save.call_count, 1)
+                self.assertEqual(save.call_args.args[1], [jpeg])
+            finally:
+                release.set()
+                reporter.close()
+
     def test_exact_bytes_timestamps_digest_and_event_bound(self):
         with tempfile.TemporaryDirectory() as directory:
             frame = SimpleNamespace(data=b'bad original jpeg', timestamp_ns=1234567,

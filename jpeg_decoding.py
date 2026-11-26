@@ -10,11 +10,33 @@ import re
 import ctypes
 import hashlib
 import json
+import logging
+import threading
 import time
 from pathlib import Path
 
 import cv2
 import numpy as np
+from shm_camera import PIXEL_FORMAT_MJPEG, frame_to_hwc
+
+
+def decode_camera_jpegs(copied, depth_cameras, decoder):
+    """Decode before touching any FIFO. Never switch backend on a bad batch."""
+    batch = [(name, f) for name, _, f, _ in copied
+             if name not in depth_cameras and getattr(f, 'pixel_format', None) == PIXEL_FORMAT_MJPEG]
+    if not batch:
+        return {}
+    for name, frame in batch:
+        data = frame.data
+        # The usual tight payload takes two constant-time checks. Some vendor
+        # slots contain padding after EOI. Do not treat padding as corruption.
+        if not data.startswith(b'\xff\xd8') or (not data.endswith(b'\xff\xd9') and b'\xff\xd9' not in data):
+            raise ValueError(f'{name}: missing JPEG SOI/EOI')
+    if decoder is None:
+        images = [frame_to_hwc(frame, False, rgb=True) for _, frame in batch]
+    else:
+        images = decoder.decode([(f.data, f.width, f.height) for _, f in batch])
+    return {id(f): image for (_, f), image in zip(batch, images, strict=True)}
 
 
 class StrictCpuJpegDecoder:
@@ -48,13 +70,13 @@ class StrictCpuJpegDecoder:
         return images
 
 
-def save_jpeg_failure(output_dir, copied_frames, error):
+def save_jpeg_failure(output_dir, copied_frames, error, event_ns=None):
     """Bounded immutable evidence, outside the dataset; never replace frames."""
     root = Path(output_dir).parent / 'jpeg_failures'
     root.mkdir(parents=True, exist_ok=True)
     if len(list(root.glob('event-*'))) >= 8:
         return {'diagnostic': 'event_limit_reached'}
-    event = root / f'event-{time.time_ns()}'
+    event = root / f'event-{event_ns if event_ns is not None else time.time_ns()}'
     event.mkdir()
     records, total = [], 0
     for name, _, frame, _ in copied_frames:
@@ -70,6 +92,39 @@ def save_jpeg_failure(output_dir, copied_frames, error):
                             sha256=hashlib.sha256(frame.data).hexdigest()))
     (event / 'failure.json').write_text(json.dumps(dict(error=str(error), frames=records), indent=2))
     return {'diagnostic': str(event)}
+
+
+class JpegFailureDiagnostics:
+    """Best-effort evidence: at most one in-flight write, no raw/depth backlog."""
+    def __init__(self, output_dir):
+        self.output_dir = output_dir
+        self.worker = None
+        self.full = threading.Event()
+
+    def submit(self, frames, error, event_ns):
+        # The recorder has one producer. Keep only references to immutable,
+        # bounded JPEG bytes, not to a whole RGB-D batch while a NAS is slow.
+        if self.full.is_set() or (self.worker is not None and self.worker.is_alive()):
+            return
+        evidence, size = [], 0
+        for record in frames:
+            frame = record[2]
+            if frame.pixel_format == PIXEL_FORMAT_MJPEG and size + len(frame.data) <= 8 * 1024**2:
+                evidence.append(record)
+                size += len(frame.data)
+        def write():
+            try:
+                result = save_jpeg_failure(self.output_dir, evidence, error, event_ns)
+                if result.get('diagnostic') == 'event_limit_reached':
+                    self.full.set()
+            except Exception:
+                logging.warning('Could not persist optional JPEG diagnostic %s', event_ns, exc_info=True)
+        self.worker = threading.Thread(target=write, name='jpeg-evidence', daemon=True)
+        self.worker.start()
+
+    def close(self):
+        if self.worker is not None:
+            self.worker.join(timeout=0.5)  # Never hold shutdown hostage to diagnostic storage.
 
 
 class NvJpegDecoder:

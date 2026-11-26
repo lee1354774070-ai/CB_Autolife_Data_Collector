@@ -33,7 +33,7 @@ from episode_storage import StorageLimitError
 from first_frames import stage_first_frames
 from video_encoding import accelerated_rgb_encoding
 from shm_camera import PIXEL_FORMAT_MJPEG
-from jpeg_decoding import save_jpeg_failure
+from jpeg_decoding import decode_camera_jpegs
 
 
 SOURCE = Path(__file__).resolve().parents[1] / 'record_lerobot_official.py'
@@ -53,8 +53,7 @@ namespace = {'emit_receipt': emit_receipt, 'time': time, 'Path': Path, 'os': os,
              'Any': Any, 'Empty': Empty, 'validate_dagger_features': validate_dagger_features,
              'shutil': shutil, 'StorageLimitError': StorageLimitError,
              'success_annotation': success_annotation,
-             'PIXEL_FORMAT_MJPEG': PIXEL_FORMAT_MJPEG,
-             'save_jpeg_failure': save_jpeg_failure,
+             'PIXEL_FORMAT_MJPEG': PIXEL_FORMAT_MJPEG, 'decode_camera_jpegs': decode_camera_jpegs,
              'accelerated_rgb_encoding': accelerated_rgb_encoding, 'stage_first_frames': stage_first_frames}
 exec(compile(ast.Module(body=methods, type_ignores=[]), str(SOURCE), 'exec'), namespace)
 
@@ -278,11 +277,11 @@ class RecorderControlsTest(unittest.TestCase):
         outputs = [object(), object()]
         def read(spec, metadata):
             copied.append(spec.name)
-            return SimpleNamespace(timestamp_ns=123, width=2, height=1, data=spec.name.encode(),
+            return SimpleNamespace(timestamp_ns=123, width=2, height=1, data=b'\xff\xd8'+spec.name.encode()+b'\xff\xd9',
                                    pixel_format=2 if spec.name.endswith('depth') else PIXEL_FORMAT_MJPEG)
         def decode(frames):
             self.assertEqual(copied, cameras)
-            self.assertEqual(frames, [(b'hand_left', 2, 1), (b'hand_right', 2, 1)])
+            self.assertEqual(frames, [(b'\xff\xd8'+name.encode()+b'\xff\xd9', 2, 1) for name in cameras[:2]])
             return outputs
         node.jpeg_decoder.decode.side_effect = decode
         with patch.dict(namespace, CAMERA_SPECS=CAMERA_SPECS, read_shm_metadata=lambda spec: (123,),
@@ -301,14 +300,18 @@ class RecorderControlsTest(unittest.TestCase):
         node.args = SimpleNamespace(cameras=['hand_left'], depth_cameras=[])
         node.dataset, node.last_shm_timestamps, node.is_recording = None, {}, True
         node.jpeg_decoder.decode.side_effect = RuntimeError('injected GPU failure')
-        frame = SimpleNamespace(timestamp_ns=1, width=2, height=1, data=b'bad', pixel_format=PIXEL_FORMAT_MJPEG)
+        frame = SimpleNamespace(timestamp_ns=1, width=2, height=1, data=b'\xff\xd8bad\xff\xd9', pixel_format=PIXEL_FORMAT_MJPEG)
         with patch.dict(namespace, CAMERA_SPECS=CAMERA_SPECS, read_shm_metadata=lambda spec: (1,),
                         read_shm_frame=lambda *a: frame):
             namespace['_poll_shm_images'](node)
+            namespace['_poll_shm_images'](node)
+        node.jpeg_decoder.decode.assert_called_once()
         node._store_image.assert_not_called()
         node._invalidate_episode.assert_called_once()
         self.assertEqual(node._invalidate_episode.call_args.args[0], 'jpeg_decode_failed')
-        self.assertEqual(node.last_shm_timestamps, {})
+        self.assertEqual(node.last_shm_timestamps, {CAMERA_SPECS['hand_left'].meta_path: 1})
+        calls = [c[0] for c in node.mock_calls]
+        self.assertLess(calls.index('_invalidate_episode'), calls.index('jpeg_failures.submit'))
 
     def recorder(self):
         node = Mock()
