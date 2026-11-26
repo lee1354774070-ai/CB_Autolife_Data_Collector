@@ -60,7 +60,8 @@ class AlshmCameraReader:
         frames = []
         for channel, reader, sensors in self.readers:
             try:
-                result = reader.read(mode="latest", timeout=0)
+                # A brief recorder stall must not skip an available camera frame.
+                result = reader.read(mode="sequential", timeout=0)
             except self.shm_error as exc:
                 raise RuntimeError(f"{channel} camera read failed: {exc}") from exc
             if result.status in self.publisher_lost:

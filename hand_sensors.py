@@ -127,8 +127,9 @@ class HandSensorCapture:
                 self.poll()
                 self.stopping.wait(max(0.001, interval - (time.monotonic() - tick)))
 
-        self.worker = Thread(target=run, name="hand-sensors", daemon=True)
-        self.worker.start()
+        worker = Thread(target=run, name="hand-sensors", daemon=True)
+        worker.start()
+        self.worker = worker
 
     def poll(self):
         for key, (kind, side, reader) in self.streams.items():

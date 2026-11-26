@@ -533,7 +533,8 @@ class OfficialLeRobotRecorder(Node):
                 raise RuntimeError("Hand sensor capture requires a complete joint-state packet first")
             from hand_sensors import HandSensorCapture
             self.hand_sensors = HandSensorCapture(enabled_force, enabled_tactile, self.args.sync_signal_buffer_size)
-            self.hand_sensors.start(self.args.fps)
+            # Sample both sides of each reference frame without blocking its reader.
+            self.hand_sensors.start(2 * self.args.fps)
         if self.image_decoding['backend'] != 'pending':
             return
         if not self.state_buffer:
