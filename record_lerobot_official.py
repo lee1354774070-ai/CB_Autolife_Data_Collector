@@ -234,6 +234,7 @@ def dataset_features(
     action_names: tuple[str, ...] | list[str],
     with_subtasks: bool = False,
     with_dagger: bool = False,
+    hand_features: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Create metadata directly from the resolved schema and live cameras."""
 
@@ -245,6 +246,8 @@ def dataset_features(
         features["subtask_index"] = dict(SUBTASK_FEATURE)
     if with_dagger:
         features.update(dagger_features(action_names))
+    if hand_features:
+        features.update(hand_features)
     for camera_name, latest in active_images.items():
         feature = {
             "dtype": "video",
@@ -391,6 +394,7 @@ class OfficialLeRobotRecorder(Node):
         self.shm_readers = ({name: ShmCameraReader(CAMERA_SPECS[name]) for name in args.cameras}
                             if args.image_source == 'shm' else {})
         self.alshm_reader = None
+        self.hand_sensors = None
         self.hardware_video_encoder = None
         # Delay CUDA imports/probing until telemetry is ready. The launcher
         # waits for state before starting cameras; GPU startup must not consume
@@ -522,6 +526,14 @@ class OfficialLeRobotRecorder(Node):
 
     def start_image_capture(self) -> None:
         """Select the JPEG backend once, then enable SHM polling after state readiness."""
+        enabled_force = getattr(self.args, "with_force", False)
+        enabled_tactile = getattr(self.args, "with_tactile", False)
+        if (enabled_force or enabled_tactile) and self.hand_sensors is None:
+            if not self.state_buffer:
+                raise RuntimeError("Hand sensor capture requires a complete joint-state packet first")
+            from hand_sensors import HandSensorCapture
+            self.hand_sensors = HandSensorCapture(enabled_force, enabled_tactile, self.args.sync_signal_buffer_size)
+            self.hand_sensors.start(self.args.fps)
         if self.image_decoding['backend'] != 'pending':
             return
         if not self.state_buffer:
@@ -674,6 +686,11 @@ class OfficialLeRobotRecorder(Node):
         """Return whether every configured image topic has produced a frame."""
 
         return set(self.args.cameras).issubset(self.latest_images)
+
+    def hand_sensor_problems(self) -> list[str]:
+        if self.hand_sensors is None:
+            return []
+        return self.hand_sensors.problems(time.time(), self.args.max_state_age_sec)
 
     def requested_eef_ready(self) -> bool:
         now = time.time()
@@ -903,6 +920,19 @@ class OfficialLeRobotRecorder(Node):
 
         features = info.get("features", {})
         validate_dagger_features(features, getattr(self, "dagger", None) is not None)
+        hand_sensors = getattr(self, "hand_sensors", None)
+        expected = hand_sensors.features if hand_sensors is not None else {}
+        existing = {
+            key: value for key, value in features.items()
+            if key.startswith(("observation.force.", "observation.tactile."))
+        }
+        if existing.keys() != expected.keys() or any(
+            existing[key].get("dtype") != spec["dtype"]
+            or tuple(existing[key].get("shape", ())) != spec["shape"]
+            or existing[key].get("names") != spec["names"]
+            for key, spec in expected.items()
+        ):
+            raise RuntimeError("Hand sensor schema differs from the existing dataset. Use the original switches or a new dataset root.")
         subtask_feature = features.get("subtask_index")
         if bool(subtask_feature) != self.subtasks.enabled or (
             subtask_feature and (
@@ -1019,6 +1049,10 @@ class OfficialLeRobotRecorder(Node):
                 f"State: {self.args.state_eef_topic}; target: {self.args.action_eef_topic}. "
                 "Enable the controller's pose reports before recording. No zero filling or FK fallback is used.")
 
+        sensor_problems = self.hand_sensor_problems()
+        if sensor_problems:
+            raise RuntimeError("Required hand sensor data unavailable: " + "; ".join(sensor_problems))
+
         # Construct encoders before touching the output directory so unsupported
         # depth configurations fail without leaving a partial dataset shell.
         rgb_encoder = make_rgb_encoder(self.args)
@@ -1097,7 +1131,8 @@ class OfficialLeRobotRecorder(Node):
                 root=output_dir,
                 fps=int(self.args.fps),
                 features=dataset_features(active, self.state_names, self.action_names, self.subtasks.enabled,
-                                          self.dagger is not None),
+                                          self.dagger is not None,
+                                          self.hand_sensors.features if self.hand_sensors is not None else None),
                 robot_type=self.args.robot_type,
                 use_videos=True,
                 video_files_size_in_mb=self.args.video_files_size_in_mb,
@@ -1659,6 +1694,16 @@ class OfficialLeRobotRecorder(Node):
 
         if not self._append_eef(frame, anchor_sec, now, sync_deltas_ms, receive_ages_ms):
             return
+        if getattr(self, "hand_sensors", None) is not None:
+            try:
+                sensor_fields, sensor_offsets = self.hand_sensors.match(
+                    anchor_sec, now, self.args.max_sync_delta_sec, self.args.max_state_age_sec
+                )
+            except ValueError as exc:
+                self._invalidate_episode("hand_sensor_sync_failed", now, detail=str(exc))
+                return
+            frame.update(sensor_fields)
+            sync_deltas_ms.update(sensor_offsets)
 
         if dagger is not None:
             try:
@@ -2340,6 +2385,8 @@ class OfficialLeRobotRecorder(Node):
                 reader.close()
             if self.alshm_reader is not None:
                 self.alshm_reader.close()
+            if self.hand_sensors is not None:
+                self.hand_sensors.close()
             if self.storage_budget is not None:
                 self.storage_budget.close()
             if self.episode_store is not None:
@@ -2430,7 +2477,8 @@ def main() -> None:
             rclpy.ok()
             and time.time() < camera_deadline
             and not node.stop_requested
-            and not (node.all_requested_cameras_seen() and node.requested_eef_ready())
+            and not (node.all_requested_cameras_seen() and node.requested_eef_ready()
+                     and not node.hand_sensor_problems())
         ):
             executor.spin_once(timeout_sec=0.05)
             node.process_control_commands()

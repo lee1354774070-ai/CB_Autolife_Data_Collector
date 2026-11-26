@@ -24,7 +24,9 @@ WITH_UPPER_WAIST="${WITH_UPPER_WAIST:-0}"
 WITH_WAIST="${WITH_WAIST:-0}"
 WITH_EEF_STATE="${WITH_EEF_STATE:-0}"
 WITH_EEF_ACTION="${WITH_EEF_ACTION:-0}"
-for parameter in WITH_HEAD WITH_WAIST WITH_UPPER_WAIST WITH_EEF_STATE WITH_EEF_ACTION \
+WITH_FORCE="${WITH_FORCE:-0}"
+WITH_TACTILE="${WITH_TACTILE:-0}"
+for parameter in WITH_HEAD WITH_WAIST WITH_UPPER_WAIST WITH_EEF_STATE WITH_EEF_ACTION WITH_FORCE WITH_TACTILE \
     BACKGROUND_SAVE WITH_DEPTH CAMERA_ONLY FALLBACK_ACTION_TO_STATE STREAMING_ENCODING VR_SPEECH VR_DEBUG_INPUT DEPTH_USE_LOG START_HAND_PRODUCER; do
     if [[ -v "${parameter}" && ! "${!parameter}" =~ ^[01]$ ]]; then
         echo "ERROR: ${parameter} must be 0 or 1." >&2
@@ -59,6 +61,10 @@ MODE_CONFIG="$(python3 "${SCRIPT_DIR}/collector_modes.py" --mode "${COLLECTOR_MO
 read -r COLLECTOR_MODE VR_CONTROL SUBTASK_COUNT <<< "${MODE_CONFIG}"
 printf 'AutoLife Collector | mode=%s | %s\n' "${COLLECTOR_MODE}" "${SCRIPT_DIR}"
 if [ "${COLLECTOR_MODE}" = "dagger" ]; then
+    if [[ "${WITH_FORCE}" = "1" || "${WITH_TACTILE}" = "1" ]]; then
+        echo "ERROR: WITH_FORCE and WITH_TACTILE are supported in keyboard, vr and subtask modes." >&2
+        exit 2
+    fi
     exec python3 "${SCRIPT_DIR}/dagger/run.py" "$@"
 fi
 # Factory VR modes read controller targets from the continuous status stream.
@@ -292,6 +298,12 @@ fi
 if [ "${WITH_EEF_ACTION}" = "1" ]; then
     RECORDER_FEATURE_ARGS+=(--with-eef-action)
 fi
+if [ "${WITH_FORCE}" = "1" ]; then
+    RECORDER_FEATURE_ARGS+=(--with-force)
+fi
+if [ "${WITH_TACTILE}" = "1" ]; then
+    RECORDER_FEATURE_ARGS+=(--with-tactile)
+fi
 if [ "${WITH_WAIST}" = "1" ]; then
     RECORDER_FEATURE_ARGS+=(--with-waist)
 elif [ "${WITH_UPPER_WAIST}" = "1" ]; then
@@ -320,6 +332,9 @@ fi
 
 echo "  joint data  : head=${WITH_HEAD}, upper_waist=${WITH_UPPER_WAIST}, waist=${WITH_WAIST}"
 echo "  depth data  : ${WITH_DEPTH}"
+if [[ "${WITH_FORCE}" = "1" || "${WITH_TACTILE}" = "1" ]]; then
+    echo "  hand sensors: six-axis force=${WITH_FORCE}, tactile=${WITH_TACTILE}"
+fi
 echo "  EEF data    : state=${WITH_EEF_STATE}, action=${WITH_EEF_ACTION} (appended after joints)"
 echo "  cameras req : ${MIN_CAMERAS}/${#BRIDGE_CAMERAS[@]}"
 echo "  image FIFO  : ${SYNC_IMAGE_BUFFER_SIZE:-16} frames/camera"

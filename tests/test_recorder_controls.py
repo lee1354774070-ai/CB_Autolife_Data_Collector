@@ -25,6 +25,7 @@ def Mock(*args, **kwargs):
     kwargs.setdefault("_last_shm_poll_sec", time.time())
     kwargs.setdefault("shm_readers", {})
     kwargs.setdefault("alshm_reader", None)
+    kwargs.setdefault("hand_sensors", None)
     node = BaseMock(*args, **kwargs)
     node._read_legacy_shm_frames = lambda: namespace['_read_legacy_shm_frames'](node)
     return node
@@ -175,6 +176,7 @@ class RecorderControlsTest(unittest.TestCase):
     def test_ros_images_never_initialize_nvjpeg(self):
         node = Mock()
         node.image_decoding = {'backend': 'upstream_ros'}
+        node.args = SimpleNamespace(with_force=False, with_tactile=False)
         selector = Mock()
         with patch.dict(namespace, select_jpeg_decoder=selector):
             namespace['start_image_capture'](node)

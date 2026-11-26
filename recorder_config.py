@@ -257,6 +257,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--action-gripper-topic", default=ACTION_GRIPPER_TOPIC, help="ROS2 JSON topic for left/right gripper target commands.")
     parser.add_argument("--with-eef-state", action="store_true", help="Append 14-D measured dual-arm EEF poses to joint state (robot frame, metres, quaternion XYZW).")
     parser.add_argument("--with-eef-action", action="store_true", help="Append 14-D reported dual-arm EEF targets to joint action; never substitutes measured state.")
+    parser.add_argument("--with-force", action="store_true", help="Record both HangKai six-axis hand sensors via SDK 3.x ALSHM.")
+    parser.add_argument("--with-tactile", action="store_true", help="Record both Agile hand tactile sensors via SDK 3.x ALSHM.")
     parser.add_argument("--state-eef-topic", default=STATE_EEF_TOPIC, help="Vendor current EEF pose report, required with --with-eef-state.")
     parser.add_argument("--action-eef-topic", default=ACTION_EEF_TOPIC, help="Vendor target EEF pose report, required with --with-eef-action.")
     parser.add_argument("--image-writer-threads", type=int, default=4, help="Number of background image-writer threads used by LeRobot.")
@@ -341,6 +343,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args.subtasks = args.subtasks_json
     if args.dagger and (args.action_mode != "joint" or args.fallback_action_to_state or args.subtasks):
         parser.error("DAgger requires --action-mode joint, no state fallback, and no subtask plan")
+    if args.dagger and (args.with_force or args.with_tactile):
+        parser.error("Hand force and tactile recording is available in keyboard, VR and subtask modes")
     if not math.isfinite(args.dagger_start_timeout_sec) or args.dagger_start_timeout_sec <= 0:
         parser.error("--dagger-start-timeout-sec must be finite and positive")
     timing_limits = (args.image_poll_fps, args.state_warmup_sec, args.camera_warmup_sec,
