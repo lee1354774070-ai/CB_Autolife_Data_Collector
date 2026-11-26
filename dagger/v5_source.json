@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/liangxinfeng/openarmx_teleop_vr_v5",
-  "branch": "robot345-v5-20261030",
+  "branch": "robot345-20261030",
   "revision": "266cfb4167cf7333601936f56a4536883fd4ee1f",
   "files": {
     "openarmx_teleop_vr_306_v5/__init__.py": "1550442a7e2ecd434c20764807aa96abd827c66303cf4b7a162121825b4e3bb8",

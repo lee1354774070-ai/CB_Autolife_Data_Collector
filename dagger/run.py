@@ -19,7 +19,7 @@ import signal
 import subprocess
 import sys
 import termios
-import tempfile
+import uuid
 import threading
 import time
 import tty
@@ -308,20 +308,26 @@ def _run_main():
 
 
 def main():
-    if '--check' in sys.argv or os.environ.get('DAGGER_BACKEND') == 'attach':
+    if any(s in sys.argv for s in ('--check', '--help', '-h')) or os.environ.get('DAGGER_BACKEND') == 'attach':
         return _run_main()
     from dagger.startup_repair import restore_dashboard
-    with tempfile.TemporaryDirectory(prefix='collector-dashboard-') as directory:
-        receipt = Path(directory) / 'restore.json'
-        previous = os.environ.get('DAGGER_DASHBOARD_RECEIPT')
-        os.environ['DAGGER_DASHBOARD_RECEIPT'] = str(receipt)
+    # Only _pause_dashboard creates this receipt. A crash or failed restore
+    # must leave the evidence intact; do not restart old owners implicitly.
+    directory = Path.home() / '.local/state/autolife-collector/dashboard'
+    pending = next(directory.glob('restore-*.json'), None)
+    if pending is not None:
+        raise RuntimeError(f'Unresolved dashboard pause; inspect {pending} before a new session')
+    receipt = directory / f'restore-{uuid.uuid4().hex}.json'
+    previous = os.environ.get('DAGGER_DASHBOARD_RECEIPT')
+    os.environ['DAGGER_DASHBOARD_RECEIPT'] = str(receipt)
+    try:
+        return _run_main()
+    finally:
         try:
-            return _run_main()
+            restore_dashboard(receipt)
+        except Exception as exc:
+            raise RuntimeError(f'Dashboard restoration not confirmed; inspect {receipt}: {exc}') from exc
         finally:
-            try:
-                restore_dashboard(receipt)
-            except Exception as exc:
-                print('FAIL  原厂dashboard恢复未确认：' + str(exc), flush=True)
             if previous is None:
                 os.environ.pop('DAGGER_DASHBOARD_RECEIPT', None)
             else:

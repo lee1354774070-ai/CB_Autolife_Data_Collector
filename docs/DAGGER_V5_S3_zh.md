@@ -40,7 +40,7 @@ V5是可选后端，默认仍为V4。普通、单人、子任务采集不进入V
 - Thor 可输出有限数量的原始和处理后夹爪诊断，便于排查动作慢；不改变 `binary330` 阈值。JPEG 间歇损坏与夹爪闭合慢仍在排查，不能视为修复完成。
 - 电源优化仅限 DAgger 会话，退出后按既有机制恢复；现场状态与实际运行的代码需要单独确认。
 
-来源：[openarmx_teleop_vr_v5](https://github.com/liangxinfeng/openarmx_teleop_vr_v5/tree/robot345-v5-20261030)，固定提交 `266cfb4167cf7333601936f56a4536883fd4ee1f`。
+来源：[openarmx_teleop_vr_v5 固定版本](https://github.com/liangxinfeng/openarmx_teleop_vr_v5/tree/266cfb4167cf7333601936f56a4536883fd4ee1f)，上游分支 `robot345-20261030`。克隆后按该提交检出，不使用移动的分支头替代。
 源仓库声明许可证 CC-BY-NC-SA-4.0；本适配以补丁和源文件哈希清单记录来源，不重新打包整套遥操。
 
 ## 安装与边界
@@ -151,7 +151,7 @@ S2仍使用8777及原来的管理密钥。S3使用8783和独立受限密钥，�
 ## 340启动与状态修复（2026-11-07）
 
 - 启动时可正常暂停已核实空闲的原厂`dashboard-backend.service`。必须同时满足服务机器人编号匹配、原厂网页连接数为0、导航/建图/探索空闲、实时关节反馈静止且目标到位、控制命令观察窗口无动作。忙碌或状态未知仍拒绝启动；`--check`始终只读。
-- 退出DAgger后恢复本次暂停的dashboard；启动失败也执行恢复。不会停止ARM、视觉或导航服务。原厂控制网页仍连接时请先关闭该网页，再点启动；不需要清错或重启机器人。
+- 退出DAgger后恢复本次暂停的dashboard；启动失败也执行恢复。未确认恢复时启动器返回失败，并保留 `~/.local/state/autolife-collector/dashboard/restore-*.json`。新会话拒绝接管遗留记录。确认没有其他控制器且现场允许恢复后，从本仓库运行 `python3 -c 'from pathlib import Path; from dagger.startup_repair import restore_dashboard; import sys; restore_dashboard(Path(sys.argv[1]))' /实际路径/restore-xxxx.json`；不要手工删除回执。不会停止ARM、视觉或导航服务。
 - 复位计划`task_poses`支持完整任务文字作为键，保留S2旧数字任务编号。340已标定的`Clear the trash from the table.`对应`table_trash_020000`；启动器默认“按任务配置”，未知任务须明确选择标定位姿。
 - 网页模型控制不再显示为绿色“真机遥操中”。只有`EXPERT_ACTIVE`且手柄数据正常才显示人工接管；未进入VR、连接断开、手柄定位丢失分别提示。下方“进入VR”不启动/停止当前模型任务。
 - 本节改动的软件测试不能代替头显与夹爪的真机复测。

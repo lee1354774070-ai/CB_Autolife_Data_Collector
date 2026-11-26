@@ -213,7 +213,7 @@ class DashboardRepairTest(unittest.TestCase):
                 command.assert_not_called()
                 self.assertTrue(receipt.exists())
             with patch('dagger.dependencies.conflicting_processes',return_value=[]), \
-                 patch.object(repair,'_dashboard_unit',return_value={'ActiveState':'inactive'}), \
+                 patch.object(repair,'_dashboard_unit',side_effect=[{'ActiveState':'inactive'}, {'ActiveState':'active'}]), \
                  patch.object(repair.subprocess,'run') as command:
                 repair.restore_dashboard(receipt)
                 self.assertEqual(command.call_args.args[0],['systemctl','--user','start',repair.DASHBOARD_UNIT])
@@ -226,3 +226,21 @@ class DashboardRepairTest(unittest.TestCase):
              patch.object(repair,'restore_dashboard') as restore:
             with self.assertRaises(SystemExit):run.main()
             restore.assert_called_once()
+
+    def test_failed_restore_survives_launcher_and_blocks_implicit_retry(self):
+        from dagger import run
+        with tempfile.TemporaryDirectory() as tmp, patch.object(run.Path, 'home', return_value=Path(tmp)), \
+                patch.object(run.sys, 'argv', ['run.py', 'test']):
+            def paused():
+                p = Path(run.os.environ['DAGGER_DASHBOARD_RECEIPT'])
+                p.parent.mkdir(parents=True)
+                p.write_text(json.dumps({'unit': repair.DASHBOARD_UNIT, 'pid': '123'}))
+            with patch.object(run, '_run_main', side_effect=paused), \
+                    patch.object(repair, 'restore_dashboard', side_effect=RuntimeError('unit failed')):
+                with self.assertRaisesRegex(RuntimeError, 'restoration not confirmed'):
+                    run.main()
+            self.assertEqual(len(list(Path(tmp).rglob('restore-*.json'))), 1)
+            with patch.object(run, '_run_main') as launch:
+                with self.assertRaisesRegex(RuntimeError, 'Unresolved dashboard pause'):
+                    run.main()
+                launch.assert_not_called()

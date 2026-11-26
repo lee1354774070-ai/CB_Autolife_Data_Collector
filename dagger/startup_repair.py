@@ -148,7 +148,9 @@ def _pause_dashboard(receipt, expected_pid):
     if _dashboard_unit().get('MainPID') != expected_pid:
         raise RuntimeError('原厂dashboard进程发生变化，请重新自检')
     # Record before stopping, so even a partial stop/error is restored by the host.
-    receipt.write_text(json.dumps({'unit': DASHBOARD_UNIT, 'pid': expected_pid}))
+    from episode_storage import durable_json
+    receipt.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    durable_json(receipt, {'unit': DASHBOARD_UNIT, 'pid': expected_pid})
     print('INFO  自检修复：正常暂停空闲原厂dashboard；退出DAgger后恢复', flush=True)
     subprocess.run(['systemctl', '--user', 'stop', DASHBOARD_UNIT],
                    check=True, capture_output=True, text=True, timeout=20)
@@ -169,7 +171,8 @@ def restore_dashboard(receipt):
     if unit.get('ActiveState') == 'inactive':
         subprocess.run(['systemctl', '--user', 'start', DASHBOARD_UNIT],
                        check=True, capture_output=True, text=True, timeout=20)
-    elif unit.get('ActiveState') != 'active':
+        unit = _dashboard_unit()
+    if unit.get('ActiveState') != 'active':
         raise RuntimeError('原厂dashboard状态未稳定，请检查 systemctl --user status dashboard-backend.service')
     receipt.unlink()
     print('INFO  原厂dashboard已恢复', flush=True)
