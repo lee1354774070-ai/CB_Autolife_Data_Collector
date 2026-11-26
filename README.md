@@ -156,7 +156,7 @@ export SYNC_IMAGE_BUFFER_SIZE=16
 
 | 参数 | 默认值 | 对应阶段 |
 |---|---:|---|
-| `STATE_READY_TIMEOUT_SEC` | 10秒 | 等待首个完整关节状态包；没有完整包，不初始化GPU JPEG解码器、不启动SHM轮询和可选相机生产者。ROS图像订阅可提前接收，尚不录制。 |
+| `STATE_READY_TIMEOUT_SEC` | 10秒（SDK 3.x ALSHM 为 25 秒） | 等待录制器启动并收到首个完整关节状态包；没有完整包，不初始化GPU JPEG解码器、不启动SHM轮询和可选相机生产者。ROS图像订阅可提前接收，尚不录制。 |
 | `CAMERA_WARMUP_SEC` | 10秒 | 关节就绪且JPEG后端选定后，开始计算相机准备等待时间。直接运行Python的默认值不同，以该入口帮助为准。 |
 | `CAMERA_DETECTION_TIMEOUT_SEC` | 默认SHM auto为45秒 | SHM选用`auto/nvjpeg`或启用视频加速时为45秒，其他情况15秒。外层等待包含GPU初始化、相机warmup及数据集创建；显式设置优先，不改变录制中的同步阈值。 |
 | `CONTROL_ACK_TIMEOUT_SEC` | 300秒 | 等待开始、标记、保存、丢弃等命令的真实回执；不是图像同步阈值。结果未知时先查日志，不盲目重复提交。正常退出会等待编码完成，不按此值强杀录制器。 |

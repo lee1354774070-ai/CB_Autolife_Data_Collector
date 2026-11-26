@@ -273,6 +273,8 @@ fi
 IMAGE_SOURCE="${IMAGE_SOURCE:-shm}"
 if [ "${IMAGE_SOURCE}" = "alshm" ]; then
     START_HAND_PRODUCER=0
+    # The launcher also waits for cold Python and LeRobot imports.
+    STATE_READY_TIMEOUT_SEC="${STATE_READY_TIMEOUT_SEC:-25}"
 fi
 IMAGE_POLL_FPS="${IMAGE_POLL_FPS:-120}"
 RECORDER_CAMERA_ARGS=()

@@ -411,9 +411,10 @@ class OfficialLeRobotRecorder(Node):
                 self.get_logger().info(f"{camera_type} camera {name}: ROS topic {topic}")
         else:
             for name in args.cameras:
+                source = ("SDK 3.x ALSHM" if args.image_source == "alshm"
+                          else f"direct SHM ({CAMERA_SPECS[name].buffer_path})")
                 self.get_logger().info(
-                    f"{'depth' if name in args.depth_cameras else 'RGB'} camera {name}: "
-                    f"direct SHM ({CAMERA_SPECS[name].buffer_path})"
+                    f"{'depth' if name in args.depth_cameras else 'RGB'} camera {name}: {source}"
                 )
 
         self.create_subscription(String, args.state_topic, self._state_ros_cb, 20)
