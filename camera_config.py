@@ -21,6 +21,7 @@ SHM_METADATA_FORMAT = "<qiiiii"
 # Runtime defaults used by recorder_config and parameter help. The launcher
 # preserves these values unless a session explicitly overrides them.
 DEFAULT_IMAGE_POLL_FPS = 120.0
+COLLECTION_WIDTH, COLLECTION_HEIGHT = 640, 480
 DEFAULT_SYNC_IMAGE_BUFFER_SIZE = 16
 DEFAULT_SYNC_SIGNAL_BUFFER_SIZE = 64
 

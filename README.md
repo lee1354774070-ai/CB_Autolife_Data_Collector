@@ -116,7 +116,7 @@ EEF纠错训练需单独核实和标注来源。混合state/action、四元数�
 | 参数 | 默认值 | 功能及调整影响 |
 |---|---|---|
 | `COLLECT_FPS` | `30` | 数据集目标帧率，单位帧/秒；还用于检查参考帧间隔。**不会修改硬件相机帧率**，也不能靠改数值解决源流卡顿。 |
-| `IMAGE_SOURCE` | `shm` | `shm` 直接读共享内存；`ros` 启动 SHM→ROS 图像桥后订阅。普通使用优先保留 `shm`，不必增加图像 topic 传输。 |
+| `IMAGE_SOURCE` | `shm` | `shm` 直接读共享内存；`ros` 启动 SHM→ROS 图像桥后订阅。检测到新版 SDK 3.x 相机时自动选 `alshm`，直接读取 RGB-D 和手部 JPEG，要求 LeRobot 环境可导入原厂 SDK。 |
 | `JPEG_DECODER` | `auto` | SHM录制默认优先使用NVIDIA nvJPEG；启动探针失败才回退OpenCV。`nvjpeg`强制GPU，不可用即拒绝启动；`opencv`强制CPU。ROS图像已在上游解码，`auto/opencv`不初始化CUDA，显式`nvjpeg`被拒绝。详见[使用与实测](docs/GPU_JPEG_zh.md)。 |
 | `JPEG_DEVICE` | `cuda:0` | JPEG解码使用的CUDA可见设备，不控制保存时的视频编码器。 |
 | `IMAGE_POLL_FPS` | 普通 `120`；DAgger `60` | SHM metadata轮询频率，不是录制帧率。新源时间戳才读入图像 FIFO；提高轮询率不能提高相机实际 FPS，反而会增加CPU开销。 |
@@ -307,6 +307,10 @@ python3 record_lerobot_official.py --max-sync-delta-sec --help
 DatasetWriter/resume接口、ROS、OpenCV、PyArrow和编码依赖；深度需要高位深HEVC。
 VR辅助、相机桥和备用生产者使用 `ROBOT_PY`；纯SHM键盘录制不启动这些辅助时，不要求额外robot_env。
 工具不自动安装或重启硬件服务。
+
+键盘、单人和子任务模式统一存储 640×480 的 RGB 与深度。原生尺寸一致时直接保存。
+新版 S3 的 960×540 头部 RGB-D 等比缩到 640×360，上下各填充 60 像素。
+深度使用最近邻取样，填充为无效深度 0。历史数据集按原尺寸保留；尺寸不符时请新建目录。
 
 可一键新建独立的采集环境（已有Conda和ROS 2 Jazzy，不覆盖原环境）：
 

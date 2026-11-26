@@ -69,7 +69,7 @@ from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
-from camera_config import CAMERA_SPECS, DEFAULT_DEPTH_CAMERA_TOPICS
+from camera_config import CAMERA_SPECS, COLLECTION_HEIGHT, COLLECTION_WIDTH, DEFAULT_DEPTH_CAMERA_TOPICS
 from robot_schema import RobotSchema, build_robot_schema, parse_gripper_command
 from dagger_labels import (
     DaggerLabels, features_for_actions as dagger_features, timestamp_ns as dagger_timestamp_ns,
@@ -199,6 +199,33 @@ def image_msg_to_hwc(msg: Image, is_depth_map: bool) -> np.ndarray:
     if msg.encoding == "bgr8":
         image = image[..., ::-1]
     return np.ascontiguousarray(image)
+
+
+def standard_camera_image(image: np.ndarray, width: int, height: int, is_depth: bool) -> np.ndarray:
+    """Letterbox RGB and depth identically in space and preserve depth samples."""
+
+    channels = 1 if is_depth else 3
+    dtype = np.uint16 if is_depth else np.uint8
+    if min(width, height) <= 0 or image.shape != (height, width, channels) or image.dtype != dtype:
+        raise ValueError(f"declared {width}x{height}x{channels}, received {image.shape} {image.dtype}")
+    if (width, height) == (COLLECTION_WIDTH, COLLECTION_HEIGHT):
+        return image
+
+    scale = min(COLLECTION_WIDTH / width, COLLECTION_HEIGHT / height)
+    resized_width = max(1, round(width * scale))
+    resized_height = max(1, round(height * scale))
+    interpolation = cv2.INTER_NEAREST_EXACT if is_depth else cv2.INTER_AREA
+    resized = cv2.resize(image, (resized_width, resized_height), interpolation=interpolation)
+    resized = resized.reshape(resized_height, resized_width, channels)
+    if (resized_width, resized_height) == (COLLECTION_WIDTH, COLLECTION_HEIGHT):
+        return resized
+
+    # Zero is the sensor's invalid depth value.
+    output = np.zeros((COLLECTION_HEIGHT, COLLECTION_WIDTH, channels), dtype=dtype)
+    top = (COLLECTION_HEIGHT - resized_height) // 2
+    left = (COLLECTION_WIDTH - resized_width) // 2
+    output[top:top + resized_height, left:left + resized_width] = resized
+    return output
 
 
 def dataset_features(
@@ -363,6 +390,7 @@ class OfficialLeRobotRecorder(Node):
         self.reported_image_overflows: set[str] = set()
         self.shm_readers = ({name: ShmCameraReader(CAMERA_SPECS[name]) for name in args.cameras}
                             if args.image_source == 'shm' else {})
+        self.alshm_reader = None
         self.hardware_video_encoder = None
         # Delay CUDA imports/probing until telemetry is ready. The launcher
         # waits for state before starting cameras; GPU startup must not consume
@@ -401,6 +429,8 @@ class OfficialLeRobotRecorder(Node):
         self.get_logger().info(f"state topic: {args.state_topic}")
         self.get_logger().info(f"state/action joints ({self.schema.size}): {', '.join(self.schema.names)}")
         self.get_logger().info(f"action mode: {args.action_mode}")
+        if args.standard_camera_resolution:
+            self.get_logger().info(f"collection image resolution: {COLLECTION_WIDTH}x{COLLECTION_HEIGHT} (RGB and depth)")
         if args.action_mode == "status_target":
             self.get_logger().info(
                 f"action source: controller targets in {args.state_topic}; grippers use measured positions")
@@ -446,6 +476,16 @@ class OfficialLeRobotRecorder(Node):
         if self.dataset is not None and camera_name not in self.active_cameras:
             return  # Late cameras cannot change the saved dataset schema.
 
+        if getattr(self.args, "standard_camera_resolution", False):
+            try:
+                image = standard_camera_image(image, width, height, is_depth_map)
+            except ValueError as exc:
+                if self.is_recording:
+                    self._invalidate_episode("camera_resolution_invalid", received_sec, camera=camera_name, detail=str(exc))
+                self.get_logger().warn(f"drop {camera_name}: {exc}")
+                return
+            height, width = image.shape[:2]
+
         sample = ImageSample(
             image_hwc=image,
             stamp_sec=stamp_sec,
@@ -485,6 +525,9 @@ class OfficialLeRobotRecorder(Node):
             return
         if not self.state_buffer:
             raise RuntimeError('Image capture requires a complete joint-state packet first')
+        if getattr(self.args, "image_source", "shm") == "alshm":
+            from alshm_camera import AlshmCameraReader
+            self.alshm_reader = AlshmCameraReader(self.args.cameras)
         self.jpeg_decoder = select_jpeg_decoder(
             self.args.jpeg_decoder, self.args.jpeg_device, self.get_logger())
         self.image_decoding.update(
@@ -509,6 +552,48 @@ class OfficialLeRobotRecorder(Node):
         poll_sec = time.time()
         self._last_shm_poll_gap_ms = (poll_sec - getattr(self, '_last_shm_poll_sec', poll_sec)) * 1000
         self._last_shm_poll_sec = poll_sec
+        try:
+            copied_frames = (self.alshm_reader.read_frames()
+                             if self.alshm_reader is not None else self._read_legacy_shm_frames())
+        except (RuntimeError, ValueError) as exc:
+            if self.is_recording:
+                self._invalidate_episode("camera_source_failed", poll_sec, detail=str(exc))
+            raise
+
+        # Decode only the JPEGs already present in this poll. Raw color/depth
+        # and all original timestamps keep their existing paths and ordering.
+        jpeg_images = {}
+        decoder = getattr(self, 'jpeg_decoder', None)
+        if decoder is not None:
+            jpeg_frames = [frame for name, _, frame, _ in copied_frames
+                           if name not in self.args.depth_cameras and frame.pixel_format == PIXEL_FORMAT_MJPEG]
+            try:
+                decoded = decoder.decode([(frame.data, frame.width, frame.height) for frame in jpeg_frames]) if jpeg_frames else []
+                jpeg_images = {id(frame): image for frame, image in zip(jpeg_frames, decoded, strict=True)}
+            except Exception as exc:
+                if self.is_recording:
+                    self._invalidate_episode('jpeg_decode_failed', time.time(), error=str(exc))
+                raise RuntimeError(f'GPU JPEG decode failed; recording stopped: {exc}') from exc
+        for camera_name, spec, frame, received_sec in copied_frames:
+            try:
+                image = jpeg_images.get(id(frame))
+                if image is None:
+                    image = frame_to_hwc(frame, camera_name in self.args.depth_cameras, rgb=True)
+            except ValueError as exc:
+                self.get_logger().warn(f"drop {camera_name}: {exc}")
+                continue
+            self._store_image(
+                camera_name=camera_name,
+                image=image,
+                stamp_sec=shm_timestamp_sec(frame.timestamp_ns, received_sec),
+                received_sec=received_sec,
+                width=frame.width,
+                height=frame.height,
+                is_depth_map=camera_name in self.args.depth_cameras,
+            )
+            self.last_shm_timestamps[spec.meta_path] = frame.timestamp_ns
+
+    def _read_legacy_shm_frames(self):
         metadata_by_camera: dict[str, tuple[Any, tuple[int, ...]]] = {}
         cameras = self.active_cameras if self.dataset is not None else self.args.cameras
         for camera_name in cameras:
@@ -542,38 +627,7 @@ class OfficialLeRobotRecorder(Node):
             if frame is None or frame.timestamp_ns != metadata[0]:
                 continue
             copied_frames.append((camera_name, spec, frame, time.time()))
-        # Decode only the JPEGs already present in this poll. Raw color/depth
-        # and all original timestamps keep their existing paths and ordering.
-        jpeg_images = {}
-        decoder = getattr(self, 'jpeg_decoder', None)
-        if decoder is not None:
-            jpeg_frames = [frame for name, _, frame, _ in copied_frames
-                           if name not in self.args.depth_cameras and frame.pixel_format == PIXEL_FORMAT_MJPEG]
-            try:
-                decoded = decoder.decode([(frame.data, frame.width, frame.height) for frame in jpeg_frames]) if jpeg_frames else []
-                jpeg_images = {id(frame): image for frame, image in zip(jpeg_frames, decoded, strict=True)}
-            except Exception as exc:
-                if self.is_recording:
-                    self._invalidate_episode('jpeg_decode_failed', time.time(), error=str(exc))
-                raise RuntimeError(f'GPU JPEG decode failed; recording stopped: {exc}') from exc
-        for camera_name, spec, frame, received_sec in copied_frames:
-            try:
-                image = jpeg_images.get(id(frame))
-                if image is None:
-                    image = frame_to_hwc(frame, camera_name in self.args.depth_cameras, rgb=True)
-            except ValueError as exc:
-                self.get_logger().warn(f"drop {camera_name}: {exc}")
-                continue
-            self._store_image(
-                camera_name=camera_name,
-                image=image,
-                stamp_sec=shm_timestamp_sec(frame.timestamp_ns, received_sec),
-                received_sec=received_sec,
-                width=frame.width,
-                height=frame.height,
-                is_depth_map=camera_name in self.args.depth_cameras,
-            )
-            self.last_shm_timestamps[spec.meta_path] = frame.timestamp_ns
+        return copied_frames
 
     def _state_ros_cb(self, msg: String, message_info: Any) -> None:
         # Both arguments are required: rclpy otherwise selects message-only.
@@ -902,6 +956,19 @@ class OfficialLeRobotRecorder(Node):
                 "Requested cameras do not match the existing dataset (" + "; ".join(details) + "). "
                 "Resume with the original camera set or use a new dataset root."
             )
+        if getattr(self.args, "standard_camera_resolution", False):
+            for name, feature in existing_camera_features.items():
+                axes = list(feature.get("names") or [])
+                shape = list(feature.get("shape") or [])
+                if len(shape) == len(axes) == 3 and "width" in axes and "height" in axes:
+                    width, height = shape[axes.index("width")], shape[axes.index("height")]
+                else:
+                    width, height = None, None
+                if (width, height) != (COLLECTION_WIDTH, COLLECTION_HEIGHT):
+                    raise RuntimeError(
+                        f"Existing {name} video shape {shape} does not match "
+                        f"{COLLECTION_WIDTH}x{COLLECTION_HEIGHT}. Select a new dataset root."
+                    )
         existing_depth = {
             name
             for name, feature in existing_camera_features.items()
@@ -2270,6 +2337,8 @@ class OfficialLeRobotRecorder(Node):
                 self.background_saves.close()
             for reader in self.shm_readers.values():
                 reader.close()
+            if self.alshm_reader is not None:
+                self.alshm_reader.close()
             if self.storage_budget is not None:
                 self.storage_budget.close()
             if self.episode_store is not None:

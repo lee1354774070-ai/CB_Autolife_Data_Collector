@@ -29,6 +29,27 @@ if os.environ.get('ROS_DOMAIN_ID') == '211':
 
 @unittest.skipIf(recorder is None, 'requires ROS + LeRobot and isolated ROS_DOMAIN_ID=211')
 class RecorderStorageTest(unittest.TestCase):
+    def test_standard_resolution_keeps_native_output_and_letterboxes_paired_depth(self):
+        native = np.zeros((480, 640, 3), dtype=np.uint8)
+        resize = recorder.standard_camera_image
+        self.assertIs(resize(native, 640, 480, False), native)
+        rgb = np.full((540, 960, 3), 42, dtype=np.uint8)
+        depth = np.full((540, 960, 1), 1234, dtype=np.uint16)
+        depth[:, 480:] = 2728
+        result_rgb = resize(rgb, 960, 540, False)
+        result_depth = resize(depth, 960, 540, True)
+        self.assertEqual(result_rgb.shape, (480, 640, 3))
+        self.assertEqual(result_depth.shape, (480, 640, 1))
+        self.assertEqual(result_depth.dtype, np.uint16)
+        for result in (result_rgb, result_depth):
+            self.assertFalse(result[:60].any())
+            self.assertFalse(result[420:].any())
+        self.assertTrue((result_rgb[60:420] == 42).all())
+        self.assertTrue((result_depth[60:420, :320] == 1234).all())
+        self.assertTrue((result_depth[60:420, 320:] == 2728).all())
+        with self.assertRaisesRegex(ValueError, "declared"):
+            resize(depth, 640, 480, True)
+
     @unittest.skipUnless(os.environ.get('COLLECTOR_TEST_NVJPEG') == '1', 'requires opt-in CUDA JPEG decode')
     def test_nvjpeg_shm_poll_sync_and_real_dataset_save(self):
         from PIL import Image

@@ -24,7 +24,10 @@ def Mock(*args, **kwargs):
     kwargs.setdefault("active_episode_index", None)
     kwargs.setdefault("_last_shm_poll_sec", time.time())
     kwargs.setdefault("shm_readers", {})
-    return BaseMock(*args, **kwargs)
+    kwargs.setdefault("alshm_reader", None)
+    node = BaseMock(*args, **kwargs)
+    node._read_legacy_shm_frames = lambda: namespace['_read_legacy_shm_frames'](node)
+    return node
 from queue import SimpleQueue, Empty
 from collector_pc_speech import emit_receipt
 from subtask_annotations import SubtaskAnnotations, check_pending_annotations, prepare_annotation
@@ -45,7 +48,7 @@ methods = [item for cls in tree.body if isinstance(cls, ast.ClassDef)
                              '_poll_background_saves'}]
 methods.extend(item for cls in tree.body if isinstance(cls, ast.ClassDef)
                for item in cls.body if isinstance(item, ast.FunctionDef)
-               and item.name in {'_write_command_status', 'process_control_commands', '_control_fifo_loop', '_validate_resume_schema', '_poll_shm_images', 'start_image_capture'})
+               and item.name in {'_write_command_status', 'process_control_commands', '_control_fifo_loop', '_validate_resume_schema', '_poll_shm_images', '_read_legacy_shm_frames', 'start_image_capture'})
 methods.extend(item for item in tree.body if isinstance(item, ast.FunctionDef) and item.name in {'write_json_atomic', 'make_depth_encoder'})
 namespace = {'emit_receipt': emit_receipt, 'time': time, 'Path': Path, 'os': os, 'json': json, 'prepare_annotation': prepare_annotation,
              'argparse': __import__('argparse'),

@@ -15,7 +15,7 @@ import socket
 from pathlib import Path
 
 from camera_config import (
-    CAMERA_SPECS, DEFAULT_DEPTH_CAMERA_TOPICS, DEFAULT_RGB_CAMERA_TOPICS,
+    CAMERA_SPECS, COLLECTION_HEIGHT, COLLECTION_WIDTH, DEFAULT_DEPTH_CAMERA_TOPICS, DEFAULT_RGB_CAMERA_TOPICS,
     DEFAULT_IMAGE_POLL_FPS, DEFAULT_SYNC_IMAGE_BUFFER_SIZE, DEFAULT_SYNC_SIGNAL_BUFFER_SIZE,
 )
 from cli_help import show_requested_parameter_help
@@ -115,9 +115,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--image-source",
-        choices=("shm", "ros"),
+        choices=("shm", "alshm", "ros"),
         default="shm",
-        help="Image transport: 'shm' reads camera shared memory directly; 'ros' subscribes to bridge topics.",
+        help="Image transport: legacy direct SHM, SDK 3.x direct ALSHM, or ROS image topics.",
+    )
+    parser.add_argument(
+        "--standard-camera-resolution",
+        action="store_true",
+        help=f"Save RGB and depth at {COLLECTION_WIDTH}x{COLLECTION_HEIGHT} with aspect-ratio-preserving padding.",
     )
     parser.add_argument(
         "--image-poll-fps",
@@ -320,7 +325,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if not re.fullmatch(r'cuda(?::\d+)?', args.jpeg_device):
         parser.error('--jpeg-device must be cuda or cuda:<index>')
-    if args.image_source != 'shm' and args.jpeg_decoder == 'nvjpeg':
+    if args.image_source == 'ros' and args.jpeg_decoder == 'nvjpeg':
         parser.error('--jpeg-decoder nvjpeg requires --image-source shm; ROS Image is already decoded upstream')
     if args.with_eef_action and args.fallback_action_to_state:
         parser.error("EEF targets require genuine joint actions; disable --fallback-action-to-state")
@@ -387,7 +392,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error('--min-cameras exceeds the number of requested cameras')
     if args.sync_reference_camera is not None and args.sync_reference_camera not in args.cameras:
         parser.error('--sync-reference-camera must name a requested camera')
-    if args.image_source == "shm":
+    if args.image_source in ("shm", "alshm"):
         unsupported = sorted(set(args.cameras).difference(CAMERA_SPECS))
         if unsupported:
             parser.error(

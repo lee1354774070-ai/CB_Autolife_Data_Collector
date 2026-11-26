@@ -267,7 +267,13 @@ CAMERA_ONLY="${CAMERA_ONLY:-0}"
 COLLECT_FPS="${COLLECT_FPS:-30}"
 WITH_DEPTH="${WITH_DEPTH:-0}"
 BRIDGE_CAMERAS=(rgbd_head_color hand_left hand_right)
+if [[ "${_COLLECTOR_DAGGER_RECORDING:-0}" != "1" && -z "${IMAGE_SOURCE:-}" && -e /dev/shm/alshm_camera_rgbd_head_rgbd ]]; then
+    IMAGE_SOURCE=alshm
+fi
 IMAGE_SOURCE="${IMAGE_SOURCE:-shm}"
+if [ "${IMAGE_SOURCE}" = "alshm" ]; then
+    START_HAND_PRODUCER=0
+fi
 IMAGE_POLL_FPS="${IMAGE_POLL_FPS:-120}"
 RECORDER_CAMERA_ARGS=()
 RECORDER_FEATURE_ARGS=()
@@ -380,6 +386,8 @@ if [ "${_COLLECTOR_DAGGER_RECORDING:-0}" = "1" ]; then
     RECORDER_PREFIX=(bash "${SCRIPT_DIR}/dagger/run_recorder_isolated.sh")
     RECORDER_ARGS+=(--image-writer-threads "${IMAGE_WRITER_THREADS:-2}" --dagger --action-arm-topic /hg_dagger/collector/arm_action
         --action-gripper-topic /hg_dagger/collector/gripper_action)
+else
+    RECORDER_ARGS+=(--standard-camera-resolution)
 fi
 if [ -n "${SYNC_REFERENCE_CAMERA:-}" ]; then
     RECORDER_ARGS+=(--sync-reference-camera "${SYNC_REFERENCE_CAMERA}")
@@ -430,6 +438,8 @@ if [ "${IMAGE_SOURCE}" = "ros" ]; then
     echo "camera_bridge ${BRIDGE_PID} ${LOG_PREFIX}.camera_bridge.log" >> "${PIDFILE}"
     echo "  camera source     : ROS topics via SHM bridge"
     echo "  camera bridge PID : ${BRIDGE_PID}"
+elif [ "${IMAGE_SOURCE}" = "alshm" ]; then
+    echo "  camera source     : SDK 3.x direct ALSHM (poll=${IMAGE_POLL_FPS} Hz)"
 else
     echo "  camera source     : direct SHM (poll=${IMAGE_POLL_FPS} Hz)"
 fi
@@ -442,7 +452,7 @@ camera_ready_timeout=15
 # Include it and video probes in the launcher deadline, never in sync limits.
 # An explicit operator timeout always wins.
 if [ "${VIDEO_ACCELERATOR:-cpu}" != "cpu" ] || \
-   { [ "${IMAGE_SOURCE}" = "shm" ] && [ "${JPEG_DECODER:-auto}" != "opencv" ]; }; then
+   { [ "${IMAGE_SOURCE}" != "ros" ] && [ "${JPEG_DECODER:-auto}" != "opencv" ]; }; then
     camera_ready_timeout=45
 fi
 python3 "${CONTROL_SCRIPT}" cameras \
