@@ -12,6 +12,7 @@ import argparse
 import os
 
 from subtask_annotations import parse_subtasks
+from tactile_limit import EVENT_OPTION, OPTION, event_threshold, reject_unverified_factory_limit
 
 
 MODES = ("keyboard", "vr", "subtask", "dagger")
@@ -43,10 +44,10 @@ def main() -> None:
     try:
         subtasks = parse_subtasks(args.subtasks_json)
         mode, vr_control = resolve_mode(args.mode, args.vr_control, subtasks)
-        if "GRIPPER_TACTILE_LIMIT_N" in os.environ:
+        if OPTION in os.environ:
             # This runs before camera switching, the DAgger dispatch, or creating files.
-            from tactile_limit import reject_unverified_factory_limit
-            reject_unverified_factory_limit(os.environ["GRIPPER_TACTILE_LIMIT_N"])
+            reject_unverified_factory_limit(os.environ[OPTION])
+        event_threshold(os.getenv(EVENT_OPTION), os.getenv("WITH_TACTILE") == "1", mode)
     except ValueError as exc:
         parser.error(str(exc))
     # Only closed-set tokens and integers reach the launcher's read command.

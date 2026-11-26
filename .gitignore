@@ -11,6 +11,7 @@ __pycache__/
 *.bak_*
 /artifacts/
 /datasets/
+/logs/
 /nas/
 /nas14/
 /tools/pc_speech_*_test.zip

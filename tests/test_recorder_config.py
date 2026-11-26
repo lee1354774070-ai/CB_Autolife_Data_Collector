@@ -10,7 +10,7 @@ import tempfile
 import unittest
 
 from recorder_config import parse_args
-from launcher_help import parameters
+from launcher_help import RECORDER_ENV, parameters
 from time_sync import payload_timestamp_sec
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,10 +73,14 @@ class RecorderConfigTest(unittest.TestCase):
                 parse_args(['--output-dir', '/unused', *options])
 
     def test_all_help_entries_resolve_and_single_help_is_scoped(self):
-        self.assertGreater(len(parameters()), 75)
-        self.assertEqual(parameters()['MAX_EPISODE_TEMP_GB'][0], 0)
-        self.assertEqual(parameters()['JPEG_DECODER'][0], 'auto')
-        self.assertIn('nvjpeg', parameters()['JPEG_DECODER'][1])
+        values = parameters()
+        self.assertEqual(len(RECORDER_ENV), len(set(RECORDER_ENV)))
+        self.assertTrue(set(RECORDER_ENV).issubset(values))
+        self.assertEqual(values['ENCODER_THREADS'][0], 2)
+        self.assertEqual(values['BACKGROUND_SAVE'][0], 1)
+        self.assertEqual(values['MAX_EPISODE_TEMP_GB'][0], 0)
+        self.assertEqual(values['JPEG_DECODER'][0], 'auto')
+        self.assertIn('nvjpeg', values['JPEG_DECODER'][1])
         self.assertEqual(parse_args(['--output-dir', '/unused', '--jpeg-decoder', 'nvjpeg']).jpeg_decoder, 'nvjpeg')
         for args in (['MAX_SYNC_DELTA_SEC', '--help'], ['--help', 'MAX_SYNC_DELTA_SEC']):
             result = subprocess.run(['bash', str(ROOT / 'start_lerobot_official_collect.sh'), *args],

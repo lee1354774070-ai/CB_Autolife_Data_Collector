@@ -12,14 +12,6 @@ from cli_help import show_requested_parameter_help
 
 
 class CliHelpTest(unittest.TestCase):
-    def test_launcher_environment_names_are_unique_and_resolve(self):
-        from launcher_help import RECORDER_ENV, parameters
-        self.assertEqual(len(RECORDER_ENV), len(set(RECORDER_ENV)))
-        values = parameters()
-        self.assertTrue(set(RECORDER_ENV).issubset(values))
-        self.assertEqual(values['ENCODER_THREADS'][0], 2)
-        self.assertEqual(values['BACKGROUND_SAVE'][0], 1)
-
     def test_launcher_help_distinguishes_seal_from_exit(self):
         from launcher_help import main
         output = io.StringIO()

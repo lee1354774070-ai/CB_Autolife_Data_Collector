@@ -22,6 +22,11 @@ def main():
     parser.add_argument('--seconds', type=float, default=20)
     parser.add_argument('--trials', type=int, default=3)
     parser.add_argument('--bounded-native-pools', action='store_true')
+    parser.add_argument('--image-source', choices=('shm', 'alshm'), default='shm')
+    parser.add_argument('--rgb-only', action='store_true')
+    parser.add_argument('--with-force', action='store_true')
+    parser.add_argument('--with-tactile', action='store_true')
+    parser.add_argument('--tactile-event-threshold-n', type=float)
     opts = parser.parse_args()
     if not 1 <= opts.seconds <= 60 or not 1 <= opts.trials <= 5:
         parser.error('bounded validation requires seconds 1..60 and trials 1..5')
@@ -38,20 +43,26 @@ def main():
         torch.set_num_interop_threads(1)
         pa.set_cpu_count(1)
         pa.set_io_thread_count(1)
-    sys.argv = ['passive-validation', '--output-dir', str(base / 'dataset'),
+    recorder_args = ['--output-dir', str(base / 'dataset'),
         '--repo-id', 'local/NOT_TRAINING_passive_validation',
         '--task-name', 'NOT_TRAINING passive no-motion validation',
         '--subtasks-json', '["test phase one", "test phase two"]',
-        '--with-head', '--with-upper-waist', '--with-depth',
-        '--robot-type', 'autolife_s3', '--image-source', 'shm', '--fps', '30',
-        '--image-poll-fps', '120', '--min-cameras', '4',
+        '--with-head', '--with-upper-waist',
+        '--robot-type', 'autolife_s3', '--image-source', opts.image_source, '--fps', '30',
+        '--image-poll-fps', '120', '--min-cameras', '3' if opts.rgb_only else '4',
         '--sync-reference-camera', 'hand_left', '--action-mode', 'status_target',
         '--max-sync-delta-sec', '.03', '--max-image-age-sec', '.15',
         '--max-state-age-sec', '.15', '--max-state-interpolation-gap-sec', '.05',
         '--max-frame-interval-error-ratio', '.45', '--image-writer-threads', '4',
         '--image-writer-max-pending', '64', '--image-writer-max-mb', '256',
         '--max-episode-temp-gb', '8', '--episode-event-file', str(base / 'last_event.json')]
-    args = mod.parse_args()
+    for flag, enabled in (('--with-depth', not opts.rgb_only), ('--with-force', opts.with_force),
+                          ('--with-tactile', opts.with_tactile)):
+        if enabled:
+            recorder_args.append(flag)
+    if opts.tactile_event_threshold_n is not None:
+        recorder_args.extend(('--tactile-event-threshold-n', str(opts.tactile_event_threshold_n)))
+    args = mod.parse_args(recorder_args)
     assert not args.motion_lock_file and not args.control_fifo and not args.dagger
     stats = {}
     for name in ('_poll_shm_images', '_state_cb', '_record_tick'):
@@ -76,11 +87,11 @@ def main():
             executor.spin_once(timeout_sec=.01)
     try:
         deadline = time.monotonic() + 15
-        while not (node.state_buffer and node.all_requested_cameras_seen()):
+        while not (node.state_buffer and node.all_requested_cameras_seen() and not node.hand_sensor_problems()):
             if node.state_buffer:
                 node.start_image_capture()
             if time.monotonic() >= deadline:
-                raise RuntimeError('real telemetry or cameras not ready')
+                raise RuntimeError(f'real telemetry, cameras or hand sensors not ready: {node.hand_sensor_problems()}')
             executor.spin_once(timeout_sec=.02)
         node.create_dataset()
         for index in range(opts.trials):
@@ -96,7 +107,7 @@ def main():
                      'reason': getattr(node, 'episode_invalid_reason', None)}
             result['trials'].append(trial)
             print(json.dumps(trial), flush=True)
-            node.discard_current_episode('passive-validation-never-save')
+            trial['discarded'] = node.discard_current_episode('passive-validation-never-save')
     finally:
         # Explicitly discard before finish(), whose ordinary behavior saves.
         if node.dataset is not None and (node.is_recording or node.has_pending_episode()):
@@ -115,7 +126,8 @@ def main():
             result['saved_episodes'] = json.loads(meta.read_text())['total_episodes']
         (base / 'result.json').write_text(json.dumps(result, indent=2))
         print(json.dumps(result, indent=2), flush=True)
-    if result['saved_episodes'] or any(t['invalid'] for t in result['trials']):
+    if result['saved_episodes'] or any(t['invalid'] or not t['frames'] or not t['discarded']
+                                       for t in result['trials']):
         raise SystemExit(2)
 
 

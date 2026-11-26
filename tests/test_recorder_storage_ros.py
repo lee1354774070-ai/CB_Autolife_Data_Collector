@@ -159,11 +159,11 @@ class RecorderStorageTest(unittest.TestCase):
                                       for side in ('left', 'right')}
                             packet['timestamp'] = stamp
                             with patch.object(recorder.time, 'time', return_value=stamp):
-                                node._state_eef_cb(recorder.String(data=json.dumps(packet)))
+                                node._state_eef_ros_cb(recorder.String(data=json.dumps(packet)), None)
                         packet['left_eef_pose']['position'][0] = .5
                         packet['timestamp'] = anchor - .005
                         with patch.object(recorder.time, 'time', return_value=anchor - .005):
-                            node._action_eef_cb(recorder.String(data=json.dumps(packet)))
+                            node._action_eef_ros_cb(recorder.String(data=json.dumps(packet)), None)
                         if with_dagger:
                             stamp = round((anchor - .005) * 1e9)
                             boundary = max(node.dagger.started_ns, stamp - 20_000_000)

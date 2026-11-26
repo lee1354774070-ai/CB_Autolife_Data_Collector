@@ -2,6 +2,7 @@ import unittest
 from collections import deque
 from threading import Lock
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 
@@ -91,5 +92,17 @@ class HandSensorsTest(unittest.TestCase):
         np.testing.assert_array_equal(sample.status, np.arange(1, 9))
         self.assertEqual(sample.stamps[0], stamp)
         self.assertGreater(sample.stamps[-1], stamp)
+        key = "observation.tactile.right"
+        capture.samples[key].clear()
+        capture.events = Mock()
+        result = SimpleNamespace(status="ok", frame=packet)
+        capture.streams = {key: ("tactile", "right", SimpleNamespace(read=lambda **kw: result))}
+        capture.errors, capture.lost, capture.shm_error = {}, (), RuntimeError
+        capture.poll()
+        capture.poll()
+        capture.events.observe.assert_called_once()
+        side, measured = capture.events.observe.call_args.args
+        self.assertEqual(side, "right")
+        np.testing.assert_array_equal(measured.stamp_s, sample.stamps)
         with self.assertRaisesRegex(ValueError, "Agile left"):
             decode_packet(packet, "tactile", "left")

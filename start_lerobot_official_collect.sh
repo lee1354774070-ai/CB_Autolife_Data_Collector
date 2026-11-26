@@ -14,6 +14,9 @@ for arg in "$@"; do
         --gripper-tactile-limit-n|--gripper-tactile-limit-n=*|GRIPPER_TACTILE_LIMIT_N=*)
             echo "ERROR: set GRIPPER_TACTILE_LIMIT_N before bash, not as a task argument. Not starting." >&2
             exit 2 ;;
+        --tactile-event-threshold-n|--tactile-event-threshold-n=*|TACTILE_EVENT_THRESHOLD_N=*)
+            echo "ERROR: set TACTILE_EVENT_THRESHOLD_N before bash, not as a task argument." >&2
+            exit 2 ;;
     esac
 done
 

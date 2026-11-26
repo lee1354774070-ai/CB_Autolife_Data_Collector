@@ -126,6 +126,7 @@ EEF纠错训练需单独核实和标注来源。混合state/action、四元数�
 | `MAX_STATE_AGE_SEC` | `0.15` 秒 | joint 和可选 EEF state 接收后的新鲜度限制；限制插值端点过旧及状态流停滞。 |
 | `WITH_FORCE` | 0 | 设为 1 录制双侧 HangKai 六维力。需要对应 SDK 3.x 共享内存实时出帧。 |
 | `WITH_TACTILE` | 0 | 设为 1 录制双侧 Agile 触觉。当前兼容每手两个传感器、每个 4 点的布局。 |
+| `TACTILE_EVENT_THRESHOLD_N` | 不设置 | 只读标注：每手最大单触点法向力达到此阈值时，关联参考相机帧。单位 N，要求 `WITH_TACTILE=1`，不控制夹爪。 |
 | `GRIPPER_TACTILE_LIMIT_N` | 不设置 | 要求闭合时限制**每手最大单触点法向力**（N），必须是有限正数。**当前原厂控制器尚无已验证的单手取消闭合并保持接口；指定此参数会拒绝开录，不会退回无限力录制。** 不设置则维持原来的数采行为。 |
 | `MAX_STATE_INTERPOLATION_GAP_SEC` | `0.05` 秒 | joint/EEF state 插值的前、后两个样本之间最大跨度。扩大后可跨更长缺口插值，但时间准确性下降。 |
 | `MAX_ACTION_HOLD_SEC` | `0.5` 秒 | 参考时刻前最近一条有效目标最多保持多久；不使用未来命令作为当前帧标签，也不是允许无新指令无限续录。 |
@@ -332,6 +333,11 @@ TASK_TEXT="Pick up the towel" bash start_lerobot_official_collect.sh towel_hand_
 - `observation.force.left/right` 每手 6 维，依次是 Fx、Fy、Fz、Mx、My、Mz。记录驱动的数值与轴序，当前 SDK 对这两组值未提供单位。
 - `observation.tactile.left/right` 每手 8 点、每点 6 项，按逻辑传感器 ID 和触点编号排序。每点保存 XYZ 接触力、法向力、切向力和切向方向，前五项单位为 N，方向单位为度。`_status` 字段保留厂商触点状态码。
 - 每条流的 `_sync_delta_ms` 字段记录相对参考图像的时间差（触觉逐点）。使用驱动提供的主机接收时间匹配，遵循 `MAX_SYNC_DELTA_SEC` 与 `MAX_STATE_AGE_SEC`。开关启用时，缺数据或旧数据会明确报错。
+
+例如 `WITH_TACTILE=1 TACTILE_EVENT_THRESHOLD_N=1.5 bash start_lerobot_official_collect.sh cup`。
+默认 30 FPS；开启标注后，触觉线程以至少 100 Hz 轮询最新发布，实际采样率仍由传感器决定。两手独立判断，每次连续超阈值只记一次。这里的 1.5 N 只是用法示例，不是纸杯的安全抓力。
+
+在 `dataset/sync_log.jsonl` 查 `tactile_threshold_observed`：`source_stamp_sec` 是最大力触点的主机接收时间，`detected_stamp_sec` 是软件观察时间。只匹配不早于观察时间的第一张**成功写入**的参考帧。帧与这两个时刻的差值都不能超过 `MAX_SYNC_DELTA_SEC`（默认 30 ms）；两个偏差以毫秒列出，方向均为“相机减触觉时间”。`episode_index` 和从 0 开始的 `frame_index` 定位帧，`episode_start_sec` 区分丢弃后重复使用相同序号的不同录制。超窗、停止或丢弃前没有后续帧时，保留原因且 `frame_index=null`；队列满时另记 `tactile_event_overflow` 和数量。标注不改变 Parquet 列，也不表示夹爪已停止。
 - 新增字段独立保存，原来的 state/action 关节列按原配置生成。
 
 **触觉读数不是夹爪限力。** `WITH_TACTILE=1` 只保存测量值；腕部六维力、夹爪电流和电机目标力矩都不是指腹的法向力。已在 S3-344 的原厂 ARM 2.2.5+build0 / SDK 3.0.7+build0 上只读检查：位置和力矩话题可见，但没有核实能逐手撤销已发闭合目标并确认停止的接口。独立同步会话的 hold 会切换整套控制权，不能代用。

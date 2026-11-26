@@ -26,8 +26,10 @@ def Mock(*args, **kwargs):
     kwargs.setdefault("shm_readers", {})
     kwargs.setdefault("alshm_reader", None)
     kwargs.setdefault("hand_sensors", None)
+    kwargs.setdefault("tactile_events", None)
     node = BaseMock(*args, **kwargs)
-    node._read_legacy_shm_frames = lambda: namespace['_read_legacy_shm_frames'](node)
+    for name in ('_read_legacy_shm_frames', '_drain_tactile_events', '_prepare_subtasks', '_check_save_storage'):
+        setattr(node, name, namespace[name].__get__(node))
     return node
 from queue import SimpleQueue, Empty
 from collector_pc_speech import emit_receipt
@@ -47,7 +49,7 @@ methods = [item for cls in tree.body if isinstance(cls, ast.ClassDef)
            and item.name in {'start_episode', '_reset_episode_state', 'mark_subtask', 'seal_batch',
                              'save_current_episode', 'discard_current_episode', 'finish', '_clear_warmup_images',
                              '_invalidate_episode', '_record_tick', '_record_frame', '_log_sync', '_flush_sync_log',
-                             '_poll_background_saves'}]
+                             '_poll_background_saves', '_drain_tactile_events', '_prepare_subtasks', '_check_save_storage'}]
 methods.extend(item for cls in tree.body if isinstance(cls, ast.ClassDef)
                for item in cls.body if isinstance(item, ast.FunctionDef)
                and item.name in {'_write_command_status', 'process_control_commands', '_control_fifo_loop', '_validate_resume_schema', '_poll_shm_images', '_read_legacy_shm_frames', 'start_image_capture'})
@@ -405,6 +407,22 @@ class RecorderControlsTest(unittest.TestCase):
         node.storage_budget.start.side_effect = lambda: setattr(node.storage_budget, 'started', 123)
         self.assertTrue(namespace['start_episode'](node, 'test'))
         self.assertEqual(node.storage_budget.started, 123)
+
+    def test_invalidated_attempt_closes_sensor_window_even_without_an_accepted_frame(self):
+        from tactile_limit import TactileEvents, Touch
+        node = self.recorder()
+        node.args.episode_event_file = None
+        node.tactile_events = TactileEvents(1.5, .15, .03, {0})
+        with patch.object(time, 'time', return_value=10.0):
+            self.assertTrue(namespace['start_episode'](node, 'test'))
+        with patch.object(time, 'time', return_value=10.02):
+            node.tactile_events.observe('right', Touch([2.]*8, [0]*8, [10.01]*8))
+        namespace['_invalidate_episode'](node, 'write_failed', 10.03)
+        logs = [c.args[0] for c in node._log_sync.call_args_list]
+        event, = [e for e in logs if e['event'] == 'tactile_threshold_observed']
+        self.assertEqual((event['episode_index'], event['episode_start_sec'], event['frame_index'],
+                          event['unmatched_reason']), (3, 10., None, 'episode_invalid'))
+        self.assertIsNone(node.tactile_events.attempt)
 
     def test_start_flushes_old_diagnostics_before_establishing_capture_boundary(self):
         node = self.recorder()

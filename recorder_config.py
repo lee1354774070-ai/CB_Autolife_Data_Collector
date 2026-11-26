@@ -20,7 +20,7 @@ from camera_config import (
 )
 from cli_help import show_requested_parameter_help
 from subtask_annotations import parse_subtasks
-from tactile_limit import OPTION as TACTILE_LIMIT_ENV, reject_unverified_factory_limit
+from tactile_limit import EVENT_OPTION, OPTION as TACTILE_LIMIT_ENV, event_threshold, reject_unverified_factory_limit
 
 
 def default_robot_id() -> str:
@@ -260,6 +260,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--with-eef-action", action="store_true", help="Append 14-D reported dual-arm EEF targets to joint action; never substitutes measured state.")
     parser.add_argument("--with-force", action="store_true", help="Record both HangKai six-axis hand sensors via SDK 3.x ALSHM.")
     parser.add_argument("--with-tactile", action="store_true", help="Record both Agile hand tactile sensors via SDK 3.x ALSHM.")
+    parser.add_argument("--tactile-event-threshold-n", metavar="N",
+                        help="Observe per-hand normal force crossings, in newtons, with WITH_TACTILE=1. "
+                             "Log the first accepted camera frame at or after detection within the sync limit. "
+                             "Monitoring only; does not control the grippers.")
     parser.add_argument("--gripper-tactile-limit-n", metavar="N",
                         help="Require a per-hand closing limit in newtons (maximum normal force across 8 points). "
                              "Unset disables the requirement. Without verified factory cancel-and-hold support "
@@ -332,11 +336,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.gripper_tactile_limit_n is None:
         args.gripper_tactile_limit_n = os.environ.get(TACTILE_LIMIT_ENV)
-    if args.gripper_tactile_limit_n is not None:
-        try:
+    try:
+        if args.gripper_tactile_limit_n is not None:
             reject_unverified_factory_limit(args.gripper_tactile_limit_n)
-        except ValueError as exc:
-            parser.error(str(exc))
+        value = args.tactile_event_threshold_n
+        args.tactile_event_threshold_n = event_threshold(
+            os.environ.get(EVENT_OPTION) if value is None else value, args.with_tactile,
+            "dagger" if args.dagger else "keyboard")
+    except ValueError as exc:
+        parser.error(str(exc))
     if not re.fullmatch(r'cuda(?::\d+)?', args.jpeg_device):
         parser.error('--jpeg-device must be cuda or cuda:<index>')
     if args.image_source == 'ros' and args.jpeg_decoder in ('nvjpeg', 'strict_cpu'):

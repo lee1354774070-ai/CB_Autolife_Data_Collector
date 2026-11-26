@@ -394,6 +394,7 @@ class OfficialLeRobotRecorder(Node):
                             if args.image_source == 'shm' else {})
         self.alshm_reader = None
         self.hand_sensors = None
+        self.tactile_events = None
         self.hardware_video_encoder = None
         # Delay CUDA imports/probing until telemetry is ready. The launcher
         # waits for state before starting cameras; GPU startup must not consume
@@ -531,10 +532,16 @@ class OfficialLeRobotRecorder(Node):
         if (enabled_force or enabled_tactile) and self.hand_sensors is None:
             if not self.state_buffer:
                 raise RuntimeError("Hand sensor capture requires a complete joint-state packet first")
-            from hand_sensors import HandSensorCapture
-            self.hand_sensors = HandSensorCapture(enabled_force, enabled_tactile, self.args.sync_signal_buffer_size)
-            # Sample both sides of each reference frame without blocking its reader.
-            self.hand_sensors.start(2 * self.args.fps)
+            from hand_sensors import AGILE_STATUS_NORMAL, HandSensorCapture
+            from tactile_limit import TactileEvents
+            sensor_hz = 2 * self.args.fps
+            if self.args.tactile_event_threshold_n is not None:
+                self.tactile_events = TactileEvents(self.args.tactile_event_threshold_n,
+                    self.args.max_state_age_sec, self.args.max_sync_delta_sec, {AGILE_STATUS_NORMAL})
+                sensor_hz = max(100, sensor_hz)
+            self.hand_sensors = HandSensorCapture(enabled_force, enabled_tactile,
+                self.args.sync_signal_buffer_size, self.tactile_events)
+            self.hand_sensors.start(sensor_hz)
         if self.image_decoding['backend'] != 'pending':
             return
         if not self.state_buffer:
@@ -719,9 +726,6 @@ class OfficialLeRobotRecorder(Node):
     def _action_eef_ros_cb(self, msg: String, message_info: Any) -> None:
         self._store_eef(msg, self.action_eef_buffer, self.args.max_action_hold_sec, message_info)
 
-    def _state_eef_cb(self, msg: String) -> None:
-        self._store_eef(msg, self.eef_state_buffer, self.args.max_state_age_sec)
-
     def _store_action(self, msg: String, parser: Any, buffer: deque[TimedSample]) -> None:
         obj = parse_json_payload(msg.data)
         if obj is None:
@@ -752,9 +756,6 @@ class OfficialLeRobotRecorder(Node):
 
     def _action_gripper_cb(self, msg: String) -> None:
         self._store_action(msg, parse_gripper_action, self.action_gripper_buffer)
-
-    def _action_eef_cb(self, msg: String) -> None:
-        self._store_eef(msg, self.action_eef_buffer, self.args.max_action_hold_sec)
 
     def _control_fifo_loop(self) -> None:
         if not self.args.control_fifo:
@@ -1373,6 +1374,7 @@ class OfficialLeRobotRecorder(Node):
         self.episode_invalid = True
         self.episode_invalid_reason = reason
         self.is_recording = False
+        self._drain_tactile_events(end="episode_invalid")
         self._release_motion_lock()
         pending_start = self.pending_start_payload
         self.pending_start_payload = None
@@ -1740,8 +1742,12 @@ class OfficialLeRobotRecorder(Node):
         self.frames_written += 1
         self.session_frames_written += 1
         self.current_episode_frames += 1
+        frame_index = self.current_episode_frames - 1
+        self._drain_tactile_events(frame_index=frame_index, anchor=anchor_sec)
         self._log_sync({
             "event": "frame",
+            "episode_index": self.active_episode_index,
+            "frame_index": frame_index,
             "frame": self.frames_written,
             "current_episode_frames": self.current_episode_frames,
             "wall_time": now,
@@ -1794,6 +1800,11 @@ class OfficialLeRobotRecorder(Node):
             deltas["eef_action"] = (sample.stamp_sec - anchor_sec) * 1000
             ages["eef_action"] = (now - sample.received_sec) * 1000
         return True
+
+    def _drain_tactile_events(self, **boundary) -> None:
+        if self.tactile_events is not None:
+            for event in self.tactile_events.drain(**boundary):
+                self._log_sync(event)
 
     def _log_sync(self, event: dict[str, Any]) -> None:
         if self.sync_log is None or self.sync_log_failed:
@@ -1935,6 +1946,8 @@ class OfficialLeRobotRecorder(Node):
         # Start a fresh reporting window so time spent paused between episodes
         # does not artificially lower the displayed effective FPS.
         self.started_sec = time.time()
+        if self.tactile_events is not None:
+            self.tactile_events.begin(episode_index, self.started_sec)
         if getattr(self, "dagger", None) is not None:
             self.dagger.started_ns = time.time_ns()
         self.last_progress = self.started_sec
@@ -1943,7 +1956,7 @@ class OfficialLeRobotRecorder(Node):
             "event": "episode_started",
             "episode_index": episode_index,
             "reason": reason,
-            "wall_time": time.time(),
+            "wall_time": self.started_sec,
             "image_decoding": self.image_decoding,
         })
         if self.episode_invalid:
@@ -1998,6 +2011,7 @@ class OfficialLeRobotRecorder(Node):
             return self.discard_current_episode("empty_dagger_episode", request_id)
         if self.dataset is None or not self.has_pending_episode() or self.current_episode_frames <= 0:
             self.is_recording = False
+            self._drain_tactile_events(end="empty_episode")
             self._release_motion_lock()
             self.get_logger().warn(f"no pending episode to save ({reason})")
             self._write_command_status(
@@ -2020,6 +2034,7 @@ class OfficialLeRobotRecorder(Node):
             except ValueError as exc:
                 self._write_command_status("save", False, request_id, message=str(exc))
                 return False
+        self._drain_tactile_events(end="recording_stopped_for_save")
         if getattr(self, 'background_saves', None):
             return self._queue_current_episode(reason, request_id, task_outcome)
         subtask_status = self.subtasks.progress()
@@ -2030,25 +2045,15 @@ class OfficialLeRobotRecorder(Node):
         save_started = time.perf_counter()
         save_stages = {}
         try:
-            if self.dagger_progress_future is not None:
-                self.dagger_progress_future.result()
-                self.dagger_progress_future = None
-            self.dataset.writer.image_writer.wait_until_done()
-            self.storage_budget.refresh()
-            self.storage_budget.check(saving=True)
+            self._check_save_storage(wait_for_images=True)
             save_stages["drain_and_storage_check"] = time.perf_counter() - save_started
             stage_first_frames(self.dataset, self.episode_store.work, episode_index)
             annotation_paths = None
-            if self.subtasks.enabled:
-                manifest = self.subtasks.manifest(
-                    episode_index, self.args.task_name, episode_frames, self.args.fps, reason,
-                )
-                self.subtasks.apply_to_buffer(self.dataset, episode_frames)
+            manifest = self._prepare_subtasks(episode_index, episode_frames, reason, subtask_status)
+            if manifest is not None:
                 annotation_paths = prepare_annotation(self.episode_store.work, manifest)
-                subtask_status.update(complete=manifest["annotation_complete"],
-                                      needs_review=manifest["needs_review"],
-                                      annotation_file=str(Path(self.args.output_dir) /
-                                                          annotation_paths[1].relative_to(self.episode_store.work)))
+                subtask_status["annotation_file"] = str(Path(self.args.output_dir) /
+                                                       annotation_paths[1].relative_to(self.episode_store.work))
             if task_outcome is not None:
                 outcome_path = self.episode_store.work / "annotations/dagger" / f"episode_{episode_index:06d}.json"
                 outcome_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2131,6 +2136,23 @@ class OfficialLeRobotRecorder(Node):
         )
         return True
 
+    def _check_save_storage(self, *, wait_for_images):
+        if self.dagger_progress_future is not None:
+            self.dagger_progress_future.result()
+            self.dagger_progress_future = None
+        if wait_for_images:  # Background publication owns and drains its own image writer.
+            self.dataset.writer.image_writer.wait_until_done()
+        self.storage_budget.refresh()
+        self.storage_budget.check(saving=True)
+
+    def _prepare_subtasks(self, index, frames, reason, progress):
+        if not self.subtasks.enabled:
+            return None
+        manifest = self.subtasks.manifest(index, self.args.task_name, frames, self.args.fps, reason)
+        self.subtasks.apply_to_buffer(self.dataset, frames)
+        progress.update(complete=manifest["annotation_complete"], needs_review=manifest["needs_review"])
+        return manifest
+
     def _queue_current_episode(self, reason, request_id, outcome):
         background = self.background_saves
         index, frames = self.active_episode_index, self.current_episode_frames
@@ -2138,16 +2160,8 @@ class OfficialLeRobotRecorder(Node):
         self.is_recording = False
         started = time.monotonic()
         try:
-            if self.dagger_progress_future is not None:
-                self.dagger_progress_future.result()
-                self.dagger_progress_future = None
-            self.storage_budget.refresh()
-            self.storage_budget.check(saving=True)
-            annotation = None
-            if self.subtasks.enabled:
-                annotation = self.subtasks.manifest(index, self.args.task_name, frames, self.args.fps, reason)
-                self.subtasks.apply_to_buffer(self.dataset, frames)
-                progress.update(complete=annotation['annotation_complete'], needs_review=annotation['needs_review'])
+            self._check_save_storage(wait_for_images=False)
+            annotation = self._prepare_subtasks(index, frames, reason, progress)
             receipt = dict(request_id=request_id, task=self.args.task_name, frames=frames,
                            image_decoding=self.image_decoding,
                            reserved_bytes=self.storage_budget.bytes,
@@ -2215,6 +2229,7 @@ class OfficialLeRobotRecorder(Node):
                                        message="discard failed: previous save result uncertain; inspect dataset")
             return False
         invalid_reason = self.episode_invalid_reason
+        self._drain_tactile_events(end="episode_discarded")
         has_buffered_frames = self.has_pending_episode() and self.current_episode_frames > 0
         if self.dataset is None or (not has_buffered_frames and not self.episode_invalid
                                     and not (getattr(self, "dagger", None) and self.is_recording)):
@@ -2377,6 +2392,7 @@ class OfficialLeRobotRecorder(Node):
 
     def finish(self) -> None:
         self.stop_requested = True
+        self._drain_tactile_events(end="shutdown")
         self.mark_status_writer.shutdown(wait=True)
         self.receipt_writer_closed = True
         pending = self.mark_status_future

@@ -89,7 +89,7 @@ def decode_packet(frame, kind, side):
 
 
 class HandSensorCapture:
-    def __init__(self, with_force, with_tactile, buffer_size):
+    def __init__(self, with_force, with_tactile, buffer_size, events=None):
         try:
             from autolife_robot_sdk.shm import ReadStatus, ShmError
             if with_force:
@@ -104,6 +104,7 @@ class HandSensorCapture:
         self.lock = Lock()
         self.stopping = Event()
         self.worker = None
+        self.events = events
         self.streams = {}
         self.samples = {}
         self.errors = {}
@@ -162,9 +163,12 @@ class HandSensorCapture:
                     # SDK latest can return the same publication on every poll,
                     # even after its producer stalls. Never evict useful history
                     # or manufacture a new measurement from a repeated timestamp.
-                    if not ring or not np.array_equal(ring[-1].stamps, sample.stamps):
-                        ring.append(sample)
                     self.errors.pop(key, None)
+                    if ring and np.array_equal(ring[-1].stamps, sample.stamps):
+                        continue
+                    ring.append(sample)
+                if kind == "tactile" and self.events is not None:
+                    self.events.observe(side, sample.as_touch())
             except (OSError, ValueError, KeyError, StopIteration, self.shm_error) as exc:
                 with self.lock:
                     self.samples[key].clear()
@@ -191,10 +195,11 @@ class HandSensorCapture:
     def match(self, anchor_sec, now, max_delta, max_age):
         values, deltas_ms = {}, {}
         with self.lock:
-            snapshot = [(key, tuple(samples), self.errors.get(key, "no fresh sample"))
+            # Select immutable sample references while locked; do not allocate
+            # a copy of four complete history rings for every camera frame.
+            snapshot = [(key, nearest_sample(samples, anchor_sec), self.errors.get(key, "no fresh sample"))
                         for key, samples in self.samples.items()]
-        for key, samples, fault in snapshot:
-            matched = nearest_sample(samples, anchor_sec)
+        for key, matched, fault in snapshot:
             reason = matched[0].freshness_error(now, max_age) if matched is not None else fault
             if reason:
                 raise ValueError(f"{key}: {reason}")
