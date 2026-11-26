@@ -31,8 +31,14 @@ class SensorSample:
     values: np.ndarray
     status: np.ndarray | None = None
 
-    def fresh(self, now, max_age):
-        return self.stamps.max() <= now and now - self.stamps.min() <= max_age
+    def freshness_error(self, now, max_age):
+        newest = float(self.stamps.max())
+        age = now - float(self.stamps.min())
+        if newest > now:
+            return f"host timestamp is {(newest - now) * 1000:.1f} ms in the future"
+        if age > max_age:
+            return f"no fresh sample: oldest point is {age:.3f} s old (limit {max_age:.3f} s)"
+        return None
 
 
 def read_field(frame, name, shape):
@@ -48,7 +54,7 @@ def decode_packet(frame, kind, side):
         linear = read_field(frame, "force", (1, 3))
         moment = read_field(frame, "torque", (1, 3))
         values = np.concatenate((linear[0], moment[0])).astype(np.float32)
-        stamps = read_field(frame, "host_receipt_epoch_s", (1,))
+        stamps = read_field(frame, "host_receipt_epoch_s", (1,)).copy()
         status = None
     else:
         layout = tactile_points(side)
@@ -141,7 +147,12 @@ class HandSensorCapture:
                     continue
                 sample = decode_packet(result.frame, kind, side)
                 with self.lock:
-                    self.samples[key].append(sample)
+                    ring = self.samples[key]
+                    # SDK latest can return the same publication on every poll,
+                    # even after its producer stalls. Never evict useful history
+                    # or manufacture a new measurement from a repeated timestamp.
+                    if not ring or not np.array_equal(ring[-1].stamps, sample.stamps):
+                        ring.append(sample)
                     self.errors.pop(key, None)
             except (OSError, ValueError, KeyError, StopIteration, self.shm_error) as exc:
                 with self.lock:
@@ -150,11 +161,13 @@ class HandSensorCapture:
 
     def problems(self, now, max_age):
         with self.lock:
-            return [
-                f"{key}: {self.errors.get(key, 'no fresh sample')}"
-                for key, samples in self.samples.items()
-                if not samples or not samples[-1].fresh(now, max_age)
-            ]
+            faults = []
+            for key, samples in self.samples.items():
+                reason = (samples[-1].freshness_error(now, max_age) if samples
+                          else self.errors.get(key, "no fresh sample received"))
+                if reason:
+                    faults.append(f"{key}: {reason}")
+            return faults
 
     def match(self, anchor_sec, now, max_delta, max_age):
         values, deltas_ms = {}, {}
@@ -163,8 +176,9 @@ class HandSensorCapture:
                         for key, samples in self.samples.items()]
         for key, samples, fault in snapshot:
             matched = nearest_sample(samples, anchor_sec)
-            if matched is None or not matched[0].fresh(now, max_age):
-                raise ValueError(f"{key}: {fault}")
+            reason = matched[0].freshness_error(now, max_age) if matched is not None else fault
+            if reason:
+                raise ValueError(f"{key}: {reason}")
             sample, _ = matched
             offsets = sample.stamps - anchor_sec
             largest = offsets[np.argmax(np.abs(offsets))]

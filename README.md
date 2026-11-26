@@ -318,6 +318,16 @@ VR辅助、相机桥和备用生产者使用 `ROBOT_PY`；纯SHM键盘录制不�
 新 S3 的键盘、单人和子任务可独立开启六维力与触觉。在上述启动命令前加 `WITH_FORCE=1 WITH_TACTILE=1`。
 两项默认关闭。开启任意项后，请用新数据集目录或沿用相同开关与字段布局。
 
+在配有 SDK 3.x、HangKai 双腕力和 Agile 双手触觉的 S3（如 343、344、364）上，从仓库目录启动：
+
+```bash
+COLLECTOR_MODE=keyboard ROBOT_TYPE=autolife_s3 IMAGE_SOURCE=alshm \
+WITH_FORCE=1 WITH_TACTILE=1 COLLECT_FPS=30 \
+TASK_TEXT="Pick up the towel" bash start_lerobot_official_collect.sh towel_hand_sensors
+```
+
+机器人编号默认取本机 hostname 的数字后缀。如果提示某侧 `no fresh sample`，检查原厂传感器是否持续发布；共享内存文件存在不代表有新测量。相同时间戳不会刷新有效期，不用零或另一只手的数据替代。
+
 - `observation.force.left/right` 每手 6 维，依次是 Fx、Fy、Fz、Mx、My、Mz。记录驱动的数值与轴序，当前 SDK 对这两组值未提供单位。
 - `observation.tactile.left/right` 每手 8 点、每点 6 项，按逻辑传感器 ID 和触点编号排序。每点保存 XYZ 接触力、法向力、切向力和切向方向，前五项单位为 N，方向单位为度。`_status` 字段保留厂商触点状态码。
 - 每条流的 `_sync_delta_ms` 字段记录相对参考图像的时间差（触觉逐点）。使用驱动提供的主机接收时间匹配，遵循 `MAX_SYNC_DELTA_SEC` 与 `MAX_STATE_AGE_SEC`。开关启用时，缺数据或旧数据会明确报错。
