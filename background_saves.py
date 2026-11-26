@@ -43,6 +43,7 @@ class BackgroundSaves:
             marker = store.root / 'annotations/background' / (spec['job_id'] + '.json')
             if marker.exists():
                 # Publication is authoritative, including a crash before receipt.
+                self._confirmed_result(job)
                 self._cleanup_committed(job.parent)
                 continue
             self._dispatch(job)
@@ -134,6 +135,9 @@ class BackgroundSaves:
         env = {**os.environ, 'OMP_NUM_THREADS': '1', 'OPENBLAS_NUM_THREADS': '1',
                'MKL_NUM_THREADS': '1', 'NUMEXPR_NUM_THREADS': '1'}
         try:
+            if self.worker is not None and self.worker.poll() is not None:
+                # A previous commit may have survived the worker that published it.
+                self._close_worker()
             if self.worker is None:
                 self.worker_log = (self.root / 'encoder.log').open('a')
                 self.worker = subprocess.Popen([sys.executable, str(Path(__file__).resolve()),
@@ -146,16 +150,44 @@ class BackgroundSaves:
                 if self.worker.poll() is not None:
                     raise RuntimeError(f'encoder exited {self.worker.returncode}; see {self.root / "encoder.log"}')
                 time.sleep(.05)
-            result = json.loads((job.parent / 'result.json').read_text())
-            # Thousands of raw files must never be deleted on the capture tick.
-            marker = self.store.root / 'annotations/background' / (job.parent.name + '.json')
-            if not marker.exists():
-                raise RuntimeError('encoder receipt lacks durable publication marker')
-            self._cleanup_committed(job.parent)
-            return result
+            ack = json.loads((job.parent / 'result.json').read_text())
+            result = self._confirmed_result(job)
+            if (isinstance(ack, dict) and ack.get('job_id') == result['job_id']
+                    and type(ack.get('committed_at')) in (float, int)):
+                result['committed_at'] = ack['committed_at']
         except Exception as exc:
-            self.error = f'{exc}; inspect {log}'
-            raise RuntimeError(self.error) from exc
+            # result.json is only a wake-up signal. ENOSPC or process death
+            # after commit must not invalidate this job or the next capture.
+            try:
+                result = self._confirmed_result(job)
+            except (OSError, ValueError, TypeError, KeyError, RuntimeError) as proof_error:
+                self.error = f'{exc}; publication not confirmed: {proof_error}; inspect {log}'
+                raise RuntimeError(self.error) from exc
+            logging.warning('Recovered committed save %s without encoder acknowledgement: %s',
+                            job.parent.name, exc)
+        self._cleanup_committed(job.parent)
+        return result
+
+    def _confirmed_result(self, job):
+        spec = json.loads(job.read_text())
+        job_id = job.parent.name
+        index = spec['episode_index']
+        # A prepared transaction can already have linked the marker into the
+        # output tree. Only a sealed commit (or a cleaned journal) is visible.
+        if self.store.journal.exists():
+            journal = json.loads(self.store.journal.read_text())
+            if journal.get('version') != 1 or journal.get('phase') != 'committed':
+                raise RuntimeError('unfinished episode publication journal')
+        result = json.loads((self.store.root / 'annotations/background' / (job_id + '.json')).read_text())
+        info = json.loads((self.store.root / 'meta/info.json').read_text())
+        if (spec['job_id'] != job_id or result.get('job_id') != job_id
+                or result.get('event') != 'save' or result.get('success') is not True
+                or type(index) is not int or index < 0 or type(result.get('episode_index')) is not int
+                or result['episode_index'] != index or type(result.get('frames')) is not int
+                or result['frames'] <= 0 or result['frames'] != spec['receipt']['frames']
+                or type(info.get('total_episodes')) is not int or info['total_episodes'] <= index):
+            raise RuntimeError('job, published marker and dataset metadata do not agree')
+        return result
 
     def poll(self, wait=False):
         results = []
@@ -177,9 +209,15 @@ class BackgroundSaves:
     def close(self):
         self._ready.set()
         self.pool.shutdown(wait=True)
+        self._close_worker()
+
+    def _close_worker(self):
         if self.worker is not None:
             if self.worker.stdin:
-                self.worker.stdin.close()
+                try:
+                    self.worker.stdin.close()
+                except BrokenPipeError:
+                    pass
             self.worker.wait()
             self.worker = None
         if self.worker_log is not None:
