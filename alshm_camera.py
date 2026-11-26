@@ -19,7 +19,7 @@ CHANNELS = {
 
 
 class AlshmCameraReader:
-    def __init__(self, camera_names):
+    def __init__(self, camera_names, logger=None):
         try:
             from autolife_robot_sdk import GLOBAL_VARS
             from autolife_robot_sdk.shm import ReadStatus, ShmError
@@ -28,6 +28,10 @@ class AlshmCameraReader:
         except ImportError as exc:
             raise RuntimeError("ALSHM requires the vendor SDK 3.x in the recorder's Python environment") from exc
         self.readers = []
+        self.logger = logger
+        self.open_camera_channel = open_camera_channel
+        self.decoded_wrists = {}
+        self.last_wrists = {}
         self.shm_error = ShmError
         self.publisher_lost = (ReadStatus.CLOSED, ReadStatus.OWNER_LOST)
         self.formats = {
@@ -39,10 +43,11 @@ class AlshmCameraReader:
         requested = set(camera_names)
         found = set()
         try:
-            for channel in robot_camera_channels(
+            channels = {channel.spec.name.lstrip("/"): channel for channel in robot_camera_channels(
                 robot_model=GLOBAL_VARS.ACTIVE_ROBOT_MODEL, robot_version=GLOBAL_VARS.ACTIVE_ROBOT_VERSION
-            ):
-                names = CHANNELS.get(channel.spec.name.lstrip("/"), {})
+            )}
+            for channel_name, channel in channels.items():
+                names = CHANNELS.get(channel_name, {})
                 sensors = {
                     plane.sensor_id: names[plane.output]
                     for plane in channel.spec.planes if names.get(plane.output) in requested
@@ -50,11 +55,80 @@ class AlshmCameraReader:
                 if sensors:
                     self.readers.append((channel.spec.name, open_camera_channel(channel, start="latest"), sensors))
                     found.update(sensors.values())
+                    if channel_name.endswith("_jpeg"):
+                        decoded = channels.get(channel_name.removesuffix("_jpeg") + "_decoded")
+                        if decoded is not None and decoded.module_name == channel.module_name:
+                            for name in sensors.values():
+                                self.decoded_wrists[name] = decoded
             if requested != found:
                 raise RuntimeError(f"Required SDK camera streams missing: {', '.join(sorted(requested - found))}")
         except Exception:
             self.close()
             raise
+
+    def _frame_from_plane(self, plane, timestamp):
+        pixel_format, channels, bytes_per_channel = self.formats[plane.pixel_format]
+        data = bytes(plane.data)
+        if bytes_per_channel and len(data) != plane.width * plane.height * channels * bytes_per_channel:
+            data = plane.numpy().tobytes()
+        return ShmFrame(timestamp, plane.width, plane.height, channels, pixel_format, len(data), data)
+
+    def _recover_wrist_gap(self, name, plane, timestamp):
+        source_id, capture_id = plane.source_frame_id, plane.capture_id
+        previous = self.last_wrists.get(name)
+        self.last_wrists[name] = (source_id, capture_id, timestamp)
+        if previous is None or None in (*previous, source_id, capture_id):
+            return []
+        previous_source, previous_capture, previous_timestamp = previous
+        channel = self.decoded_wrists[name]
+        gap = source_id - previous_source
+        if not 1 < gap <= min(8, channel.spec.slots) or capture_id - previous_capture != gap:
+            return []
+
+        # The decoded ring holds the very same camera exposures. Recover only a
+        # complete gap, with both identities and publication order verified.
+        recovered = {}
+        try:
+            reader = self.open_camera_channel(channel, start="oldest")
+            try:
+                for _ in range(min(8, channel.spec.slots)):
+                    packet = reader.read(mode="sequential", timeout=0)
+                    if packet.status in self.publisher_lost or packet.frame is None:
+                        break
+                    for candidate in packet.frame.planes:
+                        candidate_id = candidate.source_frame_id
+                        candidate_time = candidate.publish_epoch_ns or packet.frame.meta.publish_epoch_ns
+                        candidate_format = self.formats.get(candidate.pixel_format)
+                        if (
+                            candidate.sensor_id == plane.sensor_id
+                            and candidate_id is not None and previous_source < candidate_id < source_id
+                            and candidate.capture_id == previous_capture + candidate_id - previous_source
+                            and candidate_time is not None and previous_timestamp < candidate_time < timestamp
+                            and (candidate.width, candidate.height) == (plane.width, plane.height)
+                            and candidate_format is not None
+                            and candidate_format[0] in (PIXEL_FORMAT_BGR, PIXEL_FORMAT_RGB)
+                        ):
+                            frame = self._frame_from_plane(candidate, candidate_time)
+                            if frame.byte_count == plane.width * plane.height * 3:
+                                recovered[candidate_id] = frame
+                    if len(recovered) == gap - 1:
+                        break
+            finally:
+                reader.close()
+        except (OSError, ValueError, self.shm_error):
+            return []
+
+        if len(recovered) != gap - 1:
+            return []
+        ordered = [recovered[i] for i in range(previous_source + 1, source_id)]
+        if any(a.timestamp_ns >= b.timestamp_ns for a, b in zip(ordered, ordered[1:])):
+            return []
+        if self.logger is not None:
+            self.logger.info(
+                f"Recovered original {name} frame(s) {previous_source + 1}..{source_id - 1} "
+                f"from the SDK decoded stream (capture {previous_capture + 1}..{capture_id - 1})"
+            )
+        return ordered
 
     def read_frames(self):
         frames = []
@@ -87,11 +161,10 @@ class AlshmCameraReader:
                 plane = planes[sensor_id]
                 if plane.pixel_format not in self.formats:
                     raise ValueError(f"{name} has unsupported SDK pixel format {plane.pixel_format}")
-                pixel_format, channels, bytes_per_channel = self.formats[plane.pixel_format]
-                data = bytes(plane.data)
-                if bytes_per_channel and len(data) != plane.width * plane.height * channels * bytes_per_channel:
-                    data = plane.numpy().tobytes()
-                frame = ShmFrame(timestamp, plane.width, plane.height, channels, pixel_format, len(data), data)
+                if name in self.decoded_wrists:
+                    frames.extend((name, CAMERA_SPECS[name], frame, received_sec)
+                                  for frame in self._recover_wrist_gap(name, plane, timestamp))
+                frame = self._frame_from_plane(plane, timestamp)
                 frames.append((name, CAMERA_SPECS[name], frame, received_sec))
         return frames
 

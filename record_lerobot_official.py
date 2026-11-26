@@ -542,7 +542,7 @@ class OfficialLeRobotRecorder(Node):
             raise RuntimeError('Image capture requires a complete joint-state packet first')
         if getattr(self.args, "image_source", "shm") == "alshm":
             from alshm_camera import AlshmCameraReader
-            self.alshm_reader = AlshmCameraReader(self.args.cameras)
+            self.alshm_reader = AlshmCameraReader(self.args.cameras, logger=self.get_logger())
         self.jpeg_decoder = select_jpeg_decoder(
             self.args.jpeg_decoder, self.args.jpeg_device, self.get_logger())
         self.image_decoding.update(
