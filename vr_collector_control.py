@@ -331,6 +331,11 @@ class VrSession:
         if not status.get("success"):
             event = status.get("event")
             message = str(status.get("message", ""))
+            if event == "save" and message.startswith("invalid episode discarded:"):
+                self.state = "idle"
+                self.speak("本条未保存，已丢弃")
+                self.feedback("error")
+                return
             if (event in ("save", "discard") and message == f"no pending episode to {event}"
                     and status.get("recording") is False and not status.get("episode_invalid")):
                 self.state = "idle"
