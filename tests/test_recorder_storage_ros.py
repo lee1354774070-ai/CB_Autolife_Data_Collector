@@ -104,8 +104,7 @@ class RecorderStorageTest(unittest.TestCase):
                              for p in (root / folder).rglob('*') if p.is_file()}
                     self.assertTrue(node.start_episode('injected-gpu-failure'))
                     with patch.object(node.jpeg_decoder, 'decode', side_effect=RuntimeError('injected GPU failure')):
-                        with self.assertRaisesRegex(RuntimeError, 'GPU JPEG decode failed'):
-                            seed(time.time() + 1)
+                        seed(time.time() + 1)
                     self.assertTrue(node.episode_invalid)
                     self.assertEqual(node.episode_invalid_reason, 'jpeg_decode_failed')
                 finally:

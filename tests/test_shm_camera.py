@@ -239,6 +239,22 @@ class PersistentShmReaderTest(unittest.TestCase):
         with patch('shm_camera.os.pread', side_effect=changing_read):
             self.assertIsNone(self.reader.read_frame())
 
+    def test_jpeg_rejects_active_slot_mutation_without_metadata_change(self):
+        header = (*self.header[:4], PIXEL_FORMAT_MJPEG, 6)
+        self.publish(header, b'abcdef')
+        pread = os.pread
+        reads = []
+        def mutation(fd, count, offset):
+            data = pread(fd, count, offset)
+            if fd == self.reader._buffer.fd:
+                reads.append(True)
+                Path(self.spec.buffer_path).write_bytes(b'uvwxyz')
+            return data
+        with patch('shm_camera.os.pread', side_effect=mutation):
+            self.assertIsNone(self.reader.read_frame())
+        self.assertEqual(len(reads), 2)
+        self.assertEqual(self.reader.read_frame().data, b'uvwxyz')
+
     def test_rejects_metadata_inode_change_even_with_same_timestamp(self):
         pread = os.pread
         def replacing_read(fd, count, offset):

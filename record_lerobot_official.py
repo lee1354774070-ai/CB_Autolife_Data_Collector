@@ -85,7 +85,7 @@ from subtask_annotations import (
     SUBTASK_FEATURE, SubtaskAnnotations, check_pending_annotations, prepare_annotation,
 )
 from shm_camera import PIXEL_FORMAT_MJPEG, ShmCameraReader, frame_to_hwc, read_shm_frame, read_shm_metadata, shm_timestamp_sec
-from jpeg_decoding import select_jpeg_decoder
+from jpeg_decoding import JpegFailureDiagnostics, decode_camera_jpegs, select_jpeg_decoder
 from time_sync import (
     frame_interval_error_ratio,
     latest_at_or_before,
@@ -400,6 +400,7 @@ class OfficialLeRobotRecorder(Node):
         # waits for state before starting cameras; GPU startup must not consume
         # that state-ready deadline or place CPU warmup frames in a GPU session.
         self.jpeg_decoder = None
+        self.jpeg_failures = JpegFailureDiagnostics(args.output_dir)
         self.image_decoding = {
             'image_source': args.image_source, 'requested_backend': args.jpeg_decoder,
             'backend': 'upstream_ros' if args.image_source == 'ros' else 'pending',
@@ -545,7 +546,7 @@ class OfficialLeRobotRecorder(Node):
         self.jpeg_decoder = select_jpeg_decoder(
             self.args.jpeg_decoder, self.args.jpeg_device, self.get_logger())
         self.image_decoding.update(
-            backend='nvjpeg' if self.jpeg_decoder is not None else 'opencv',
+            backend=getattr(self.jpeg_decoder, 'backend', 'nvjpeg') if self.jpeg_decoder is not None else 'opencv',
             device=str(self.jpeg_decoder.device) if self.jpeg_decoder is not None else None)
         self.create_timer(1.0 / float(self.args.image_poll_fps), self._poll_shm_images)
 
@@ -576,18 +577,21 @@ class OfficialLeRobotRecorder(Node):
 
         # Decode only the JPEGs already present in this poll. Raw color/depth
         # and all original timestamps keep their existing paths and ordering.
-        jpeg_images = {}
-        decoder = getattr(self, 'jpeg_decoder', None)
-        if decoder is not None:
-            jpeg_frames = [frame for name, _, frame, _ in copied_frames
-                           if name not in self.args.depth_cameras and frame.pixel_format == PIXEL_FORMAT_MJPEG]
-            try:
-                decoded = decoder.decode([(frame.data, frame.width, frame.height) for frame in jpeg_frames]) if jpeg_frames else []
-                jpeg_images = {id(frame): image for frame, image in zip(jpeg_frames, decoded, strict=True)}
-            except Exception as exc:
-                if self.is_recording:
-                    self._invalidate_episode('jpeg_decode_failed', time.time(), error=str(exc))
-                raise RuntimeError(f'GPU JPEG decode failed; recording stopped: {exc}') from exc
+        try:
+            jpeg_images = decode_camera_jpegs(copied_frames, self.args.depth_cameras, self.jpeg_decoder)
+        except Exception as exc:
+            for _, spec, frame, _ in copied_frames:
+                self.last_shm_timestamps[spec.meta_path] = frame.timestamp_ns
+            now = time.monotonic()
+            if not self.is_recording and now - self.__dict__.get('_last_jpeg_failure_log_sec', -float('inf')) < 1:
+                return
+            self._last_jpeg_failure_log_sec = now
+            event_ns = time.time_ns()
+            if self.is_recording:
+                self._invalidate_episode('jpeg_decode_failed', time.time(), error=str(exc), diagnostic_id=event_ns)
+            self.get_logger().error(f'JPEG decode failed; batch rejected: {exc} (diagnostic {event_ns})')
+            self.jpeg_failures.submit(copied_frames, str(exc), event_ns)
+            return
         for camera_name, spec, frame, received_sec in copied_frames:
             try:
                 image = jpeg_images.get(id(frame))
@@ -2384,6 +2388,7 @@ class OfficialLeRobotRecorder(Node):
                 self.background_saves.close()
             for reader in self.shm_readers.values():
                 reader.close()
+            self.jpeg_failures.close()
             if self.alshm_reader is not None:
                 self.alshm_reader.close()
             if self.hand_sensors is not None:

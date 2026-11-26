@@ -172,6 +172,9 @@ def read_shm_frame(
                 return None
             stream.seek(data_offset)
             data = stream.read(expected_size)
+            if first[4] == PIXEL_FORMAT_MJPEG:
+                if os.pread(stream.fileno(), expected_size, data_offset) != data:
+                    return None
     except (FileNotFoundError, OSError):
         return None
     if len(data) != expected_size:
@@ -238,8 +241,9 @@ class ShmCameraReader:
     process if a producer truncates its file during restart. Like the legacy
     functions, this depends on the producer's publication protocol: metadata
     equality alone cannot detect bytes overwritten in an active slot *before*
-    the producer publishes its next generation. It is not JPEG repair and does
-    not hide decoder warnings or change synchronization tolerances.
+    the producer publishes its next generation. MJPEG bytes are copied twice
+    and must agree too. This reduces that race; it is not a producer lock or
+    JPEG repair. Decoder warnings and synchronization guards remain active.
     """
 
     def __init__(self, spec: CameraSpec) -> None:
@@ -288,6 +292,8 @@ class ShmCameraReader:
                     return None
                 data = os.pread(self._buffer.fd, expected_size, data_offset)
                 if len(data) != expected_size:
+                    return None
+                if first[4] == PIXEL_FORMAT_MJPEG and os.pread(self._buffer.fd, expected_size, data_offset) != data:
                     return None
                 second = self.read_metadata()
                 if (second != first

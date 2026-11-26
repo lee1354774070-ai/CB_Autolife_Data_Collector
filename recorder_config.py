@@ -130,8 +130,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_IMAGE_POLL_FPS,
         help="Direct-SHM metadata polling frequency. This is the camera polling rate, not dataset FPS; new source timestamps are buffered once.",
     )
-    parser.add_argument('--jpeg-decoder', choices=('auto', 'nvjpeg', 'opencv'), default='auto',
-                        help='JPEG decoder: auto prefers NVIDIA nvJPEG and falls back to OpenCV only at startup; nvjpeg requires GPU initialization to succeed; opencv forces CPU. ROS Image is already decoded upstream. Raw RGB and depth are unchanged.')
+    parser.add_argument('--jpeg-decoder', choices=('auto', 'nvjpeg', 'opencv', 'strict_cpu'), default='auto',
+                        help='JPEG decoder: auto prefers nvJPEG, with startup fallback to OpenCV; nvjpeg requires GPU, opencv forces CPU, strict_cpu rejects libjpeg corruption warnings (build scripts/build_strict_jpeg.py first). Raw RGB and depth are unchanged.')
     parser.add_argument('--jpeg-device', default='cuda:0',
                         help='CUDA device for nvJPEG, e.g. cuda:0. Requires compatible CUDA torch/torchvision and CUDA >= 11.6; does not select the video encoder.')
     parser.add_argument(
@@ -327,8 +327,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if not re.fullmatch(r'cuda(?::\d+)?', args.jpeg_device):
         parser.error('--jpeg-device must be cuda or cuda:<index>')
-    if args.image_source == 'ros' and args.jpeg_decoder == 'nvjpeg':
-        parser.error('--jpeg-decoder nvjpeg requires --image-source shm; ROS Image is already decoded upstream')
+    if args.image_source == 'ros' and args.jpeg_decoder in ('nvjpeg', 'strict_cpu'):
+        parser.error(f'--jpeg-decoder {args.jpeg_decoder} requires SHM camera input; ROS Image is already decoded upstream')
     if args.with_eef_action and args.fallback_action_to_state:
         parser.error("EEF targets require genuine joint actions; disable --fallback-action-to-state")
     if args.streaming_encoding or args.batch_encoding_size != 1:
