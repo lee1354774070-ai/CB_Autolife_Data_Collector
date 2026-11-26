@@ -78,6 +78,14 @@ class HandSensorsTest(unittest.TestCase):
             host_receipt_epoch_s=stamp + samples / 1000,
         )
         sample = decode_packet(packet, "tactile", "right")
+        capture = HandSensorCapture.__new__(HandSensorCapture)
+        capture.lock = Lock()
+        capture.samples = {"observation.tactile.right": deque([sample])}
+        self.assertIsNone(capture.latest_touch("left"))
+        touch = capture.latest_touch("right")
+        np.testing.assert_array_equal(touch.normal_n, np.arange(8) + 30)
+        np.testing.assert_array_equal(touch.status, sample.status)
+        np.testing.assert_array_equal(touch.stamp_s, sample.stamps)
         result = sample.values.reshape(8, 6)
         np.testing.assert_array_equal(result, np.arange(8)[:, None] + np.arange(6)[None, :] * 10)
         np.testing.assert_array_equal(sample.status, np.arange(1, 9))

@@ -9,6 +9,7 @@ adapter; it never falls back to the factory VR helper.
 from __future__ import annotations
 
 import argparse
+import os
 
 from subtask_annotations import parse_subtasks
 
@@ -42,6 +43,10 @@ def main() -> None:
     try:
         subtasks = parse_subtasks(args.subtasks_json)
         mode, vr_control = resolve_mode(args.mode, args.vr_control, subtasks)
+        if "GRIPPER_TACTILE_LIMIT_N" in os.environ:
+            # This runs before camera switching, the DAgger dispatch, or creating files.
+            from tactile_limit import reject_unverified_factory_limit
+            reject_unverified_factory_limit(os.environ["GRIPPER_TACTILE_LIMIT_N"])
     except ValueError as exc:
         parser.error(str(exc))
     # Only closed-set tokens and integers reach the launcher's read command.

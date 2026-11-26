@@ -20,6 +20,7 @@ from camera_config import (
 )
 from cli_help import show_requested_parameter_help
 from subtask_annotations import parse_subtasks
+from tactile_limit import OPTION as TACTILE_LIMIT_ENV, reject_unverified_factory_limit
 
 
 def default_robot_id() -> str:
@@ -259,6 +260,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--with-eef-action", action="store_true", help="Append 14-D reported dual-arm EEF targets to joint action; never substitutes measured state.")
     parser.add_argument("--with-force", action="store_true", help="Record both HangKai six-axis hand sensors via SDK 3.x ALSHM.")
     parser.add_argument("--with-tactile", action="store_true", help="Record both Agile hand tactile sensors via SDK 3.x ALSHM.")
+    parser.add_argument("--gripper-tactile-limit-n", metavar="N",
+                        help="Require a per-hand closing limit in newtons (maximum normal force across 8 points). "
+                             "Unset disables the requirement. Without verified factory cancel-and-hold support "
+                             "the run is rejected; recording tactile data alone is not force protection.")
     parser.add_argument("--state-eef-topic", default=STATE_EEF_TOPIC, help="Vendor current EEF pose report, required with --with-eef-state.")
     parser.add_argument("--action-eef-topic", default=ACTION_EEF_TOPIC, help="Vendor target EEF pose report, required with --with-eef-action.")
     parser.add_argument("--image-writer-threads", type=int, default=4, help="Number of background image-writer threads used by LeRobot.")
@@ -325,6 +330,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = build_parser()
     show_requested_parameter_help(parser, argv)
     args = parser.parse_args(argv)
+    if args.gripper_tactile_limit_n is None:
+        args.gripper_tactile_limit_n = os.environ.get(TACTILE_LIMIT_ENV)
+    if args.gripper_tactile_limit_n is not None:
+        try:
+            reject_unverified_factory_limit(args.gripper_tactile_limit_n)
+        except ValueError as exc:
+            parser.error(str(exc))
     if not re.fullmatch(r'cuda(?::\d+)?', args.jpeg_device):
         parser.error('--jpeg-device must be cuda or cuda:<index>')
     if args.image_source == 'ros' and args.jpeg_decoder in ('nvjpeg', 'strict_cpu'):

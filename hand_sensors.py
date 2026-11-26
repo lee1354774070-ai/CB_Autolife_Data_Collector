@@ -10,9 +10,12 @@ import time
 import numpy as np
 
 from time_sync import EPOCH_SEC_MAX, EPOCH_SEC_MIN, nearest_sample
+from tactile_limit import Touch
 
 FORCE_AXES = ["Fx", "Fy", "Fz", "Mx", "My", "Mz"]
 TACTILE_AXES = ("Fx_N", "Fy_N", "Fz_N", "normal_N", "tangential_N", "direction_deg")
+# SDK 3.0.7 Agile STATUS_NORMAL; 1 is over-range and 2 is no handshake.
+AGILE_STATUS_NORMAL = 0
 TACTILE_IDS = {"left": (0, 1), "right": (2, 3)}
 
 
@@ -30,6 +33,14 @@ class SensorSample:
     stamps: np.ndarray
     values: np.ndarray
     status: np.ndarray | None = None
+
+    def as_touch(self) -> Touch:
+        """Expose the eight normal forces without mixing in XYZ, shear, or wrist force."""
+        if (self.values.shape != (8 * len(TACTILE_AXES),) or self.stamps.shape != (8,)
+                or self.status is None or self.status.shape != (8,)):
+            raise ValueError("expected one complete Agile tactile hand")
+        return Touch(self.values.reshape(8, -1)[:, TACTILE_AXES.index("normal_N")],
+                     self.status, self.stamps)
 
     def freshness_error(self, now, max_age):
         newest = float(self.stamps.max())
@@ -158,6 +169,14 @@ class HandSensorCapture:
                 with self.lock:
                     self.samples[key].clear()
                     self.errors[key] = str(exc)
+
+    def latest_touch(self, side: str) -> Touch | None:
+        """Read the last publisher sample, not a camera/FIFO time match. Never renew its age."""
+        if side not in TACTILE_IDS:
+            raise ValueError(f"unknown tactile hand: {side}")
+        with self.lock:
+            ring = self.samples.get(f"observation.tactile.{side}")
+            return ring[-1].as_touch() if ring else None
 
     def problems(self, now, max_age):
         with self.lock:

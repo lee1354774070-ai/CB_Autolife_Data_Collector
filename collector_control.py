@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from tactile_limit import positive_limit
+
 
 @dataclass(frozen=True)
 class SessionPaths:
@@ -107,7 +109,8 @@ def process_is_running(pid: int) -> bool:
     return True
 
 
-def send_fifo_command(fifo_path: Path, command: str, request_id: str | None = None) -> None:
+def send_fifo_command(fifo_path: Path, command: str, request_id: str | None = None, *,
+                      start_limit_n: float | None = None) -> None:
     """Send one atomic command, never append to a mistaken file or retry it."""
 
     if not fifo_path.exists():
@@ -116,7 +119,15 @@ def send_fifo_command(fifo_path: Path, command: str, request_id: str | None = No
         raise RuntimeError(f"Invalid collector command: {command!r}")
     if request_id is not None and (not request_id or any(c.isspace() for c in request_id)):
         raise RuntimeError("Request ID must be one nonempty token")
-    line = (command + (f" {request_id}" if request_id else "") + "\n").encode("utf-8")
+    suffix = ""
+    if start_limit_n is not None:
+        if command != "start" or not request_id:
+            raise RuntimeError("A per-episode tactile limit requires an acknowledged start")
+        # Legacy readers may ignore trailing metadata on "start". A distinct
+        # verb cannot start an unguarded episode even with such a reader.
+        command = "guarded_start"
+        suffix = " " + json.dumps({"gripper_tactile_limit_n": positive_limit(start_limit_n)})
+    line = (command + (f" {request_id}" if request_id else "") + suffix + "\n").encode("utf-8")
     try:
         fd = os.open(fifo_path, os.O_WRONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
     except OSError as exc:
@@ -230,13 +241,17 @@ def format_status(status: dict[str, Any]) -> str:
 
 def run_command(
     base_dir: Path, command: str, wait: bool, timeout_sec: float,
-    cancel: threading.Event | None = None,
+    cancel: threading.Event | None = None, *, start_limit_n: float | None = None,
 ) -> dict[str, Any] | None:
     """Validate a session, send a command, and optionally await its result."""
 
     # Reject invalid waits BEFORE sending a state-changing command.
     if not math.isfinite(timeout_sec) or timeout_sec <= 0:
         raise RuntimeError('Command timeout must be finite and positive')
+    if start_limit_n is not None:
+        if command != "start" or not wait:
+            raise RuntimeError("A per-episode tactile limit is only valid for start --wait")
+        start_limit_n = positive_limit(start_limit_n)
     paths = SessionPaths(base_dir)
     recorder_pid = read_recorder_pid(paths.pidfile)
     if not process_is_running(recorder_pid):
@@ -252,7 +267,10 @@ def run_command(
         except BlockingIOError as exc:
             raise RuntimeError("Another collector command is awaiting acknowledgement; try again later") from exc
         request_id = f"{os.getpid()}-{time.time_ns()}" if wait else None
-        send_fifo_command(paths.control_fifo, command, request_id)
+        if start_limit_n is None:
+            send_fifo_command(paths.control_fifo, command, request_id)
+        else:
+            send_fifo_command(paths.control_fifo, command, request_id, start_limit_n=start_limit_n)
         if not wait or request_id is None:
             return None
         return wait_for_status(paths.status_file, request_id, recorder_pid, timeout_sec, cancel)
@@ -389,6 +407,8 @@ def parse_args() -> argparse.Namespace:
     command_parser.add_argument("--base-dir", type=Path, required=True)
     command_parser.add_argument("--wait", action="store_true", help="Wait for save/discard completion.")
     command_parser.add_argument("--timeout", type=float, default=300.0)
+    command_parser.add_argument("--gripper-tactile-limit-n", metavar="N", type=float,
+                                help="Require this limit for this start only; use --wait. Never starts unguarded on failure.")
     command_parser.add_argument("command", choices=("start", "mark_subtask", "save", "discard", "seal", "quit"))
 
     summary_parser = subparsers.add_parser("summary", help="Print dataset metadata summary.")
@@ -439,12 +459,13 @@ def main() -> None:
         if args.subcommand == "episode-event":
             print(consume_episode_event(args.path))
             return
-        status = run_command(args.base_dir, args.command, args.wait, args.timeout)
+        status = run_command(args.base_dir, args.command, args.wait, args.timeout,
+                             start_limit_n=args.gripper_tactile_limit_n)
         if status is not None:
             print(format_status(status))
             if not status.get("success"):
                 raise SystemExit(1)
-    except (RuntimeError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+    except (RuntimeError, OSError, ValueError) as exc:
         print(f"ERROR: {exc}")
         raise SystemExit(1) from exc
 

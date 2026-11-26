@@ -31,7 +31,6 @@ import inspect
 import json
 import os
 import signal
-import sys
 import threading
 import time
 from collections import Counter, deque
@@ -44,9 +43,9 @@ from typing import Any
 from recorder_config import TOPIC_NODE_ID, parse_args
 from collector_pc_speech import emit_receipt
 
-# Help must work from the system interpreter without ROS/ML imports or devices.
-if __name__ == "__main__" and any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
-    parse_args()
+# Validate standalone invocations (including help) before any ROS/ML imports.
+if __name__ == "__main__":
+    _cli_args = parse_args()
 
 import cv2
 import numpy as np
@@ -2333,6 +2332,18 @@ class OfficialLeRobotRecorder(Node):
             command = parts[0].lower()
             request_id = parts[1] if len(parts) >= 2 else None
             metadata = None
+            if command == "guarded_start":
+                from tactile_limit import reject_unverified_factory_limit
+                try:
+                    if len(parts) != 3:
+                        raise ValueError("missing request ID or tactile limit")
+                    metadata = json.loads(parts[2])
+                    if not isinstance(metadata, dict) or set(metadata) != {"gripper_tactile_limit_n"}:
+                        raise ValueError("expected exactly gripper_tactile_limit_n")
+                    reject_unverified_factory_limit(metadata["gripper_tactile_limit_n"])
+                except ValueError as exc:
+                    self._write_command_status("start", False, request_id, message=f"guarded start rejected: {exc}")
+                continue  # Never fall through to the unguarded start or aliases.
             if len(parts) == 3:
                 try:
                     metadata = json.loads(parts[2])
@@ -2411,8 +2422,9 @@ class OfficialLeRobotRecorder(Node):
             raise RuntimeError('Background save failed; raw jobs retained; restart with BACKGROUND_SAVE=1 for recovery')
 
 
-def main() -> None:
-    args = parse_args()
+def main(args=None) -> None:
+    if args is None:
+        args = parse_args()
     # The ROS recorder is single-threaded; avoid a second OpenCV worker pool
     # competing with LeRobot image writers and the robot's control processes.
     cv2.setNumThreads(1)
@@ -2512,4 +2524,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(_cli_args)

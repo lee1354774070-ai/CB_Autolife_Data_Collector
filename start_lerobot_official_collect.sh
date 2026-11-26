@@ -9,6 +9,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ "${1:-}" = "--help" || "${1:-}" = "-h" || "${2:-}" = "--help" || "${2:-}" = "-h" ]]; then
     exec python3 "${SCRIPT_DIR}/launcher_help.py" "$@"
 fi
+for arg in "$@"; do
+    case "$arg" in
+        --gripper-tactile-limit-n|--gripper-tactile-limit-n=*|GRIPPER_TACTILE_LIMIT_N=*)
+            echo "ERROR: set GRIPPER_TACTILE_LIMIT_N before bash, not as a task argument. Not starting." >&2
+            exit 2 ;;
+    esac
+done
 
 # Keep small telemetry/image operations from creating competing BLAS pools.
 # Explicit operator settings win; video/image writer concurrency is unchanged.

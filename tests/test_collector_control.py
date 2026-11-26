@@ -52,6 +52,24 @@ class CollectorControlTest(unittest.TestCase):
                     send_fifo_command(path, 'save')
             self.assertEqual(regular.read_text(), 'preserve me')
 
+    def test_per_episode_limit_is_atomic_and_never_fire_and_forget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fifo = Path(directory) / "control"
+            os.mkfifo(fifo)
+            fd = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
+            try:
+                for cmd, request in (("start", None), ("save", "r")):
+                    with self.assertRaises(RuntimeError):
+                        send_fifo_command(fifo, cmd, request, start_limit_n=1.25)
+                with self.assertRaises(BlockingIOError):
+                    os.read(fd, 200)
+                send_fifo_command(fifo, "start", "r", start_limit_n=1.25)
+                cmd, req, metadata = os.read(fd, 200).decode().split(maxsplit=2)
+                self.assertEqual((cmd, req), ("guarded_start", "r"))
+                self.assertEqual(json.loads(metadata), {"gripper_tactile_limit_n": 1.25})
+            finally:
+                os.close(fd)
+
     def test_fifo_rejects_injection_and_oversize_without_writing(self):
         with tempfile.TemporaryDirectory() as directory:
             fifo = Path(directory) / 'fifo'

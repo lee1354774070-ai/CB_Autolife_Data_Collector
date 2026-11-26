@@ -441,6 +441,18 @@ class RecorderControlsTest(unittest.TestCase):
                 self.assertEqual(len(node.image_buffers['left']), 1)
                 self.assertEqual(node._write_command_status.call_args.args, ('start', False, 'rejected'))
 
+    def test_guarded_start_never_degrades_to_plain_start(self):
+        for data in ({'gripper_tactile_limit_n': 1.5}, {'gripper_tactile_limit_n': None},
+                     {'gripper_tactile_limit_n': 0}, {'wrong': 1}, []):
+            node = self.recorder()
+            node.control_queue = SimpleQueue()
+            node.control_queue.put("guarded_start r " + json.dumps(data))
+            namespace["process_control_commands"](node)
+            node.start_episode.assert_not_called()
+            self.assertEqual(node._write_command_status.call_args.args, ("start", False, "r"))
+            if data == {'gripper_tactile_limit_n': 1.5}:
+                self.assertIn("no verified factory", node._write_command_status.call_args.kwargs["message"])
+
     def test_motion_lock_rejection_is_acknowledged(self):
         node = self.recorder()
         node._acquire_motion_lock.return_value = False

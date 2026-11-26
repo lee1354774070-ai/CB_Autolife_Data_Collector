@@ -126,6 +126,7 @@ EEF纠错训练需单独核实和标注来源。混合state/action、四元数�
 | `MAX_STATE_AGE_SEC` | `0.15` 秒 | joint 和可选 EEF state 接收后的新鲜度限制；限制插值端点过旧及状态流停滞。 |
 | `WITH_FORCE` | 0 | 设为 1 录制双侧 HangKai 六维力。需要对应 SDK 3.x 共享内存实时出帧。 |
 | `WITH_TACTILE` | 0 | 设为 1 录制双侧 Agile 触觉。当前兼容每手两个传感器、每个 4 点的布局。 |
+| `GRIPPER_TACTILE_LIMIT_N` | 不设置 | 要求闭合时限制**每手最大单触点法向力**（N），必须是有限正数。**当前原厂控制器尚无已验证的单手取消闭合并保持接口；指定此参数会拒绝开录，不会退回无限力录制。** 不设置则维持原来的数采行为。 |
 | `MAX_STATE_INTERPOLATION_GAP_SEC` | `0.05` 秒 | joint/EEF state 插值的前、后两个样本之间最大跨度。扩大后可跨更长缺口插值，但时间准确性下降。 |
 | `MAX_ACTION_HOLD_SEC` | `0.5` 秒 | 参考时刻前最近一条有效目标最多保持多久；不使用未来命令作为当前帧标签，也不是允许无新指令无限续录。 |
 | `MAX_FRAME_INTERVAL_ERROR_RATIO` | `0.45` | 参考帧间隔相对 `1/COLLECT_FPS` 的最大误差比例，取值大于0、小于1。30FPS下允许约18.3～48.3ms；不是每帧代码运行超时。 |
@@ -332,6 +333,18 @@ TASK_TEXT="Pick up the towel" bash start_lerobot_official_collect.sh towel_hand_
 - `observation.tactile.left/right` 每手 8 点、每点 6 项，按逻辑传感器 ID 和触点编号排序。每点保存 XYZ 接触力、法向力、切向力和切向方向，前五项单位为 N，方向单位为度。`_status` 字段保留厂商触点状态码。
 - 每条流的 `_sync_delta_ms` 字段记录相对参考图像的时间差（触觉逐点）。使用驱动提供的主机接收时间匹配，遵循 `MAX_SYNC_DELTA_SEC` 与 `MAX_STATE_AGE_SEC`。开关启用时，缺数据或旧数据会明确报错。
 - 新增字段独立保存，原来的 state/action 关节列按原配置生成。
+
+**触觉读数不是夹爪限力。** `WITH_TACTILE=1` 只保存测量值；腕部六维力、夹爪电流和电机目标力矩都不是指腹的法向力。已在 S3-344 的原厂 ARM 2.2.5+build0 / SDK 3.0.7+build0 上只读检查：位置和力矩话题可见，但没有核实能逐手撤销已发闭合目标并确认停止的接口。独立同步会话的 hold 会切换整套控制权，不能代用。
+
+旧启动器可能忽略它不认识的环境变量，不能在旧版本上用此变量判断限力已开启。在安装此版代码的目录下，下面的命令**只读触觉，不会移动或保护夹爪**。输出包含每手不同时间戳的数据包数、观察到的最大法向力，以及假设持续闭合时第一次会触发的时间、手别、触点和原因。示例的 1 N 不是纸杯推荐值。
+
+```bash
+/home/ubuntu/miniconda3/envs/lerobot/bin/python -B scripts/observe_tactile_limit.py --limit-n 1 --seconds 3
+```
+
+也可在单条开始请求中要求阈值：`python3 collector_control.py command --base-dir "$SESSION_DIR" --wait --gripper-tactile-limit-n 1 start`。其中 `SESSION_DIR` 为本次任务的目录（含控制 FIFO，不是其 `dataset/` 子目录）。请求只针对这一条；在不支持的控制器上会明确失败，不会改动已保存数据。需要整场都有限力时，在启动器上设置 `GRIPPER_TACTILE_LIMIT_N`，不要在失败后按普通开始键代替。
+
+真正接入时，限力判断必须在唯一的电机指令发送处独立于录制帧率执行。任一触点超限、故障或过期只阻止本手继续闭合，张开仍放行；低于阈值本身不解除锁定。触发值不是物理峰值保证，启用易变形物体实抓前还需测量制动时延和超调。
 
 可一键新建独立的采集环境（已有Conda和ROS 2 Jazzy，不覆盖原环境）：
 
