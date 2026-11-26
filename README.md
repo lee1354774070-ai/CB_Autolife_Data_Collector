@@ -137,6 +137,7 @@ EEF纠错训练需单独核实和标注来源。混合state/action、四元数�
 | `START_HAND_PRODUCER` | 默认1；检测到手相机设备占用时自动0 | `0` 复用已运行视觉服务的手相机SHM；`1` 尝试启动本工具的手相机生产者。已有生产服务时建议显式0，避免争抢设备。不会自动启动原厂视觉服务。 |
 
 双手相机采用 **JPEG SHM→解码为RGB**：GPU直接输出RGB，OpenCV路径将BGR转为RGB；不回退到旧的直接BGR SHM路径。
+S3 的 `alshm` 按顺序读 JPEG。只有发现编号缺口，才尝试从**同一 SDK 相机**的解码环取回原曝光：曝光与采集编号、图像大小和发布时序都必须对应，且缺口必须补全。缺编号、辅助数据损坏或找不到原帧时不补，不复制上一帧，也不放宽同步窗口。头部 RGB-D 匹配会在当前帧已有其他合格选择时，为已到达的下一参考帧保留图像。
 四种模式共用默认`JPEG_DECODER=auto`，原启动命令不变。日志输出`JPEG decoder: nvjpeg on cuda:0`才表示已选择GPU；
 `JPEG decoder: opencv (CPU startup fallback)`表示本次使用CPU。录制途中不切换后端，GPU解码失败使当前episode无效并停止录制器。
 要求固定旧解码行为时显式设置`JPEG_DECODER=opencv`；要求GPU必须可用时设置`JPEG_DECODER=nvjpeg`。
@@ -427,6 +428,8 @@ bash start_lerobot_official_collect.sh pick_water
 | D | 丢弃当前条，不影响以前保存的数据 |
 | N | 仅有子任务计划时标记当前片段 |
 | Q | 收尾退出；有效待处理数据尝试保存，invalid不保存 |
+
+普通、单人和子任务模式下，对已 invalid 的 episode 按保存，回执是**未保存，已丢弃**。丢弃完成不代表保存成功；此前已保存的 episode 不受影响。
 | Ctrl+C | 请求正常收尾，不等于已经保存成功 |
 
 推荐：**S确认保存 → Q → 等待正常退出 → 下一批 → 重新启用控制 → Enter**。

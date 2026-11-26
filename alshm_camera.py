@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from numbers import Integral
 import time
 
 from camera_config import CAMERA_SPECS
@@ -57,7 +58,8 @@ class AlshmCameraReader:
                     found.update(sensors.values())
                     if channel_name.endswith("_jpeg"):
                         decoded = channels.get(channel_name.removesuffix("_jpeg") + "_decoded")
-                        if decoded is not None and decoded.module_name == channel.module_name:
+                        owner = getattr(channel, "module_name", None)
+                        if owner and getattr(decoded, "module_name", None) == owner:
                             for name in sensors.values():
                                 self.decoded_wrists[name] = decoded
             if requested != found:
@@ -74,15 +76,26 @@ class AlshmCameraReader:
         return ShmFrame(timestamp, plane.width, plane.height, channels, pixel_format, len(data), data)
 
     def _recover_wrist_gap(self, name, plane, timestamp):
-        source_id, capture_id = plane.source_frame_id, plane.capture_id
+        # Older SDKs can expose a perfectly valid JPEG without exposure IDs.
+        # Never bridge across an unidentified packet or rewind the last good
+        # boundary on a late delivery.
+        source_id, capture_id = getattr(plane, "source_frame_id", None), getattr(plane, "capture_id", None)
         previous = self.last_wrists.get(name)
+        if previous is not None and timestamp <= previous[2]:
+            return []
+        if not all(isinstance(i, Integral) and not isinstance(i, bool) and i >= 0
+                   for i in (source_id, capture_id)):
+            self.last_wrists.pop(name, None)
+            return []
         self.last_wrists[name] = (source_id, capture_id, timestamp)
-        if previous is None or None in (*previous, source_id, capture_id):
+        if previous is None:
             return []
         previous_source, previous_capture, previous_timestamp = previous
         channel = self.decoded_wrists[name]
         gap = source_id - previous_source
-        if not 1 < gap <= min(8, channel.spec.slots) or capture_id - previous_capture != gap:
+        slots = getattr(channel.spec, "slots", 0)
+        if (gap <= 1 or capture_id - previous_capture != gap
+                or not isinstance(slots, Integral) or gap > min(8, slots)):
             return []
 
         # The decoded ring holds the very same camera exposures. Recover only a
@@ -91,18 +104,19 @@ class AlshmCameraReader:
         try:
             reader = self.open_camera_channel(channel, start="oldest")
             try:
-                for _ in range(min(8, channel.spec.slots)):
+                for _ in range(min(8, slots)):
                     packet = reader.read(mode="sequential", timeout=0)
                     if packet.status in self.publisher_lost or packet.frame is None:
                         break
                     for candidate in packet.frame.planes:
-                        candidate_id = candidate.source_frame_id
-                        candidate_time = candidate.publish_epoch_ns or packet.frame.meta.publish_epoch_ns
+                        candidate_id = getattr(candidate, "source_frame_id", None)
+                        candidate_time = (getattr(candidate, "publish_epoch_ns", None)
+                                          or getattr(packet.frame.meta, "publish_epoch_ns", None))
                         candidate_format = self.formats.get(candidate.pixel_format)
                         if (
                             candidate.sensor_id == plane.sensor_id
                             and candidate_id is not None and previous_source < candidate_id < source_id
-                            and candidate.capture_id == previous_capture + candidate_id - previous_source
+                            and getattr(candidate, "capture_id", None) == previous_capture + candidate_id - previous_source
                             and candidate_time is not None and previous_timestamp < candidate_time < timestamp
                             and (candidate.width, candidate.height) == (plane.width, plane.height)
                             and candidate_format is not None
@@ -115,7 +129,9 @@ class AlshmCameraReader:
                         break
             finally:
                 reader.close()
-        except (OSError, ValueError, self.shm_error):
+        except (OSError, ValueError, AttributeError, TypeError, BufferError, self.shm_error):
+            # This is a best-effort auxiliary channel only. Keep the genuine
+            # JPEG; the normal gap/age checks still decide if the episode is valid.
             return []
 
         if len(recovered) != gap - 1:

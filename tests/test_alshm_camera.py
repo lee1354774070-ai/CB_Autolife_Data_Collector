@@ -62,3 +62,31 @@ class WristRecoveryTest(unittest.TestCase):
         reader.read_frames()
         self.assertEqual(len(reader.read_frames()), 1)
         reader.open_camera_channel.assert_not_called()
+
+    def test_optional_sdk_fields_and_malformed_auxiliary_never_hide_the_jpeg(self):
+        for failure in ("missing_primary_id", "missing_aux_id", "truncated_aux_pixels", "bad_slot_metadata"):
+            with self.subTest(failure=failure):
+                candidate = packet(5489, 5491, 34, "BGR", bytes(12))
+                reader = self.make_reader(candidate)
+                if failure == "missing_primary_id":
+                    baseline = packet(5488, 5490, 0, "MJPG", b"a")
+                    del baseline.frame.planes[0].capture_id
+                    reader.readers[0][1].read.side_effect = [baseline, packet(5490, 5492, 68, "MJPG", b"b")]
+                elif failure == "missing_aux_id":
+                    del candidate.frame.planes[0].capture_id
+                elif failure == "truncated_aux_pixels":
+                    candidate.frame.planes[0].data = b"short"
+                else:
+                    reader.decoded_wrists["hand_right"].spec.slots = None
+                self.assertEqual([row[2].data for row in reader.read_frames()], [b"a"])
+                self.assertEqual([row[2].data for row in reader.read_frames()], [b"b"])
+                reader.logger.info.assert_not_called()
+
+    def test_a_late_jpeg_does_not_reopen_an_already_consumed_gap(self):
+        reader = self.make_reader(packet(5489, 5491, 34, "BGR", bytes(12)))
+        reader.read_frames()
+        reader.read_frames()
+        for source, capture, ms in ((5488, 5490, 0), (5491, 5493, 101)):
+            plane = packet(source, capture, ms, "MJPG", b"x").frame.planes[0]
+            self.assertFalse(reader._recover_wrist_gap("hand_right", plane, plane.publish_epoch_ns))
+        self.assertEqual(reader.open_camera_channel.call_count, 1)
